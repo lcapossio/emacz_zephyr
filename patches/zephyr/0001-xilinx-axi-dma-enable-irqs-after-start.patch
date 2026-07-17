@@ -1,0 +1,27 @@
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+index 79e45084e4c..b54741da6cb 100644
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -689,6 +689,8 @@ static int dma_xilinx_axi_dma_start(const struct device *dev, uint32_t channel)
+ 
+ 	dma_xilinx_axi_dma_unlock_irq(cfg, channel, irq_key);
+ 
++	irq_enable(cfg->irq0_channels[channel]);
++
+ 	/* commit stores before returning to caller */
+ 	barrier_dmem_fence_full();
+ 
+@@ -1129,11 +1131,9 @@ static int dma_xilinx_axi_dma_init(const struct device *dev)
+ /* first IRQ is TX */
+ #define TX_IRQ_CONFIGURE(inst)                                                                     \
+ 	IRQ_CONNECT(DT_INST_IRQN_BY_IDX(inst, 0), DT_INST_IRQ_BY_IDX(inst, 0, priority),           \
+-		    dma_xilinx_axi_dma_tx_isr, DEVICE_DT_INST_GET(inst), 0);                       \
+-	irq_enable(DT_INST_IRQN_BY_IDX(inst, 0));
++		    dma_xilinx_axi_dma_tx_isr, DEVICE_DT_INST_GET(inst), 0);
+ /* second IRQ is RX */
+ #define RX_IRQ_CONFIGURE(inst)                                                                     \
+ 	IRQ_CONNECT(DT_INST_IRQN_BY_IDX(inst, 1), DT_INST_IRQ_BY_IDX(inst, 1, priority),           \
+-		    dma_xilinx_axi_dma_rx_isr, DEVICE_DT_INST_GET(inst), 0);                       \
+-	irq_enable(DT_INST_IRQN_BY_IDX(inst, 1));
++		    dma_xilinx_axi_dma_rx_isr, DEVICE_DT_INST_GET(inst), 0);
+ 

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+---
+build:
+  kconfig: Kconfig
+  settings:
+    dts_root: .
+samples:
+  - app

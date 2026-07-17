@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+build/
+build-*/
+twister-out/
+.west/
+deps/
+modules/
+tools/
+bootloader/
+out/
+*.log
+*.elf
+*.hex
+*.bin
+*.map
+*.uf2
+*.bit
+*.vcd
+*.vvp
+*.jou
+dfx_runtime.txt
+.Xil/
+*.str
+*.xpr
+*.runs/
+*.cache/
+__pycache__/
+*.py[cod]
+.venv*/
+no_commit/

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+---
+name: CI
+
+'on':
+  push:
+  pull_request:
+
+jobs:
+  lint-and-configure:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Python tools
+        run: |
+          python3 -m pip install --user \
+            west pykwalify yamllint ruff clang-format pytest psutil
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Lint YAML
+        run: >-
+          yamllint west.yml zephyr/module.yml
+          dts/bindings/ethernet/bard0,emaczero.yaml
+          .github/workflows/ci.yml
+
+      - name: Validate Zephyr module metadata
+        run: python3 scripts/check_env.py --skip-toolchain
+
+      - name: Lint Python and C sources
+        run: python3 scripts/lint.py
+
+      - name: Test portable tooling and patch integrity
+        run: >-
+          python3 -m pytest tests/test_apply_zephyr_patches.py
+          tests/test_emacz_config.py
+          tests/test_run_arty_stress.py -q -p no:cacheprovider

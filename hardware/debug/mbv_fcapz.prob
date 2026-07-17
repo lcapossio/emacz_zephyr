@@ -1,0 +1,33 @@
+{
+  "format": "fpgacapzero.probes.v1",
+  "core": "ela",
+  "sample_width": 32,
+  "sample_clock_hz": 81247969,
+  "probes": [
+    {"name": "dma_rx_axis_tvalid", "width": 1, "lsb": 0},
+    {"name": "dma_rx_axis_tready", "width": 1, "lsb": 1},
+    {"name": "dma_rx_axis_tlast", "width": 1, "lsb": 2},
+    {"name": "dma_rx_axis_stall", "width": 1, "lsb": 3},
+    {"name": "dma_stall_no_s2mm_wvalid", "width": 1, "lsb": 4},
+    {"name": "s2mm_awvalid", "width": 1, "lsb": 5},
+    {"name": "s2mm_awready", "width": 1, "lsb": 6},
+    {"name": "s2mm_wvalid", "width": 1, "lsb": 7},
+    {"name": "s2mm_wready", "width": 1, "lsb": 8},
+    {"name": "s2mm_wlast", "width": 1, "lsb": 9},
+    {"name": "s2mm_bvalid", "width": 1, "lsb": 10},
+    {"name": "s2mm_aw_stall", "width": 1, "lsb": 11},
+    {"name": "s2mm_w_stall", "width": 1, "lsb": 12},
+    {"name": "s2mm_write_active", "width": 1, "lsb": 13},
+    {"name": "sg_arvalid", "width": 1, "lsb": 14},
+    {"name": "sg_arready", "width": 1, "lsb": 15},
+    {"name": "sg_rvalid", "width": 1, "lsb": 16},
+    {"name": "sg_rready", "width": 1, "lsb": 17},
+    {"name": "sg_rlast", "width": 1, "lsb": 18},
+    {"name": "sg_awvalid", "width": 1, "lsb": 19},
+    {"name": "sg_wvalid", "width": 1, "lsb": 20},
+    {"name": "sg_bvalid", "width": 1, "lsb": 21},
+    {"name": "sg_read_active", "width": 1, "lsb": 22},
+    {"name": "sg_write_active", "width": 1, "lsb": 23},
+    {"name": "dma_rx_stall_run", "width": 8, "lsb": 24}
+  ]
+}

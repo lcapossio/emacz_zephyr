@@ -1,0 +1,89 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ */
+
+/ {
+	/delete-node/ memory@80000000;
+
+	ram0: memory@90000000 {
+		device_type = "memory";
+		reg = <0x90000000 0x0f000000>;
+	};
+
+	aliases {
+		ethernet0 = &emaczero0;
+		/delete-property/ serial0;
+	};
+
+	chosen {
+		/delete-property/ bootargs;
+		/delete-property/ stdout-path;
+		/delete-property/ zephyr,console;
+		/delete-property/ zephyr,shell-uart;
+	};
+};
+
+&uart0 {
+	status = "disabled";
+};
+
+&axi_gpio {
+	status = "disabled";
+};
+
+&axi_intc {
+	xlnx,kind-of-intr = <0x0a>;
+};
+
+/*
+ * On this Arty A7 MBV shell the AXI fabric (and the AXI Timer that backs
+ * sys_clock_cycle_get_32) is clocked from MIG ui_clk at ~81.25 MHz, not the
+ * 100 MHz board oscillator. Override the upstream mbv32 DTS clock-frequency
+ * values so any DT-derived rate math matches hardware. Rounded from
+ * SOC_CLK_HZ=81247969 in hardware/scripts/build_arty_a7_mbv.py so it is
+ * cleanly divisible by CONFIG_SYS_CLOCK_TICKS_PER_SEC (25 ppm error).
+ */
+&clk100 {
+	clock-frequency = <81250000>;
+};
+
+&cpu_0 {
+	clock-frequency = <81250000>;
+};
+
+&cpus {
+	timebase-frequency = <81250000>;
+};
+
+/*
+ * Arty A7-100T MicroBlaze V example integration point.
+ *
+ * Keep this address map synchronized with the Vivado block design that
+ * instantiates MicroBlaze V, AXI INTC, AXI Timer, UARTLite, and emacZero.
+ */
+&axi {
+	emaczero0: ethernet@44a00000 {
+		compatible = "bard0,emaczero";
+		status = "okay";
+		reg = <0x44a00000 0x100>;
+		interrupt-parent = <&axi_intc>;
+		interrupts = <5 2>;
+		axistream-connected = <&axi_dma0>;
+		local-mac-address = [02 00 00 00 00 01];
+		phy-connection-type = "mii";
+		link-speed = <100>;
+	};
+
+	axi_dma0: dma@41e00000 {
+		compatible = "xlnx,axi-dma-1.00.a";
+		status = "okay";
+		reg = <0x41e00000 0x10000>;
+		interrupt-parent = <&axi_intc>;
+		interrupts = <6 2 7 2>;
+		interrupt-names = "mm2s_introut", "s2mm_introut";
+		#dma-cells = <0>;
+		dma-channels = <2>;
+		xlnx,addrwidth = <32>;
+	};
+};

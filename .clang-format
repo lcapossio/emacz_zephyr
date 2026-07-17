@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+---
+BasedOnStyle: LLVM
+AlignConsecutiveMacros: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Linux
+ColumnLimit: 100
+ContinuationIndentWidth: 8
+IndentCaseLabels: false
+IndentGotoLabels: false
+IndentWidth: 8
+InsertBraces: true
+InsertNewlineAtEOF: true
+SortIncludes: Never
+UseTab: ForContinuationAndIndentation

@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+menuconfig ETH_EMACZERO
+	bool "emacZero Ethernet MAC driver"
+	default y
+	depends on DT_HAS_BARD0_EMACZERO_ENABLED
+	select ETHERNET
+	help
+	  Enable the Zephyr Ethernet driver for bard0 emacZero. The driver
+	  controls the AXI-Lite CSR block, exposes MAC statistics, and can use
+	  Xilinx AXI DMA for packet RX/TX when axistream-connected is present.
+
+if ETH_EMACZERO
+
+config ETH_EMACZERO_INIT_PRIORITY
+	int "emacZero init priority"
+	default 80
+	help
+	  Device initialization priority for the emacZero Ethernet driver.
+
+config ETH_EMACZERO_PROFILE
+	bool "emacZero RX profiling counters"
+	help
+	  Enable low-overhead counters and cycle accumulators around the
+	  emacZero RX DMA callback, RX worker packet construction, and
+	  net_recv_data() handoff. The driver also exposes runtime profiling
+	  modes that can drop packets after DMA completion or after Zephyr
+	  packet construction to isolate bottlenecks without rebuilding.
+
+config ETH_EMACZERO_RX_DIRECT_RING
+	bool "emacZero direct AXI DMA S2MM RX descriptor ring"
+	depends on ETH_EMACZERO_DMA_MEMORY_SIZE != 0
+	help
+	  Let the emacZero Ethernet driver own the AXI DMA S2MM scatter/gather
+	  descriptor ring directly for RX. This bypasses Zephyr's generic DMA
+	  API on the receive hot path while leaving TX on the generic DMA API.
+	  The Zephyr Xilinx AXI DMA driver must not install its RX ISR when
+	  this option is enabled.
+
+config ETH_EMACZERO_RX_BUFFER_COUNT
+	int "emacZero RX DMA buffer count"
+	default 64
+	range 8 256
+	help
+	  Number of DMA-visible RX buffers/descriptors allocated by the
+	  driver. The generic default is 64 so small BRAM-backed builds keep
+	  memory use bounded. The Arty DDR performance app intentionally
+	  overrides this to 128 so it can keep 64 RX descriptors posted while
+	  retaining free-list slack for Zephyr-owned and copy-fallback buffers.
+
+config ETH_EMACZERO_RX_DMA_POST_COUNT
+	int "emacZero posted RX DMA buffer target"
+	default 16
+	range 1 255
+	help
+	  Maximum number of RX buffers kept posted to the AXI DMA S2MM channel.
+	  Keep this below ETH_EMACZERO_RX_BUFFER_COUNT so the driver retains
+	  free-list slack while Zephyr owns received zero-copy buffers.
+
+config ETH_EMACZERO_RX_MAX_STACK_OWNED_ZEROCOPY
+	int "emacZero max zero-copy buffers owned by Zephyr"
+	default 56
+	range 0 255
+	help
+	  Maximum number of RX buffers that may be handed to Zephyr as
+	  external zero-copy net_buf fragments before the driver falls back
+	  to copying packets into Zephyr-owned buffers. Set this to 0 for
+	  DDR-backed designs that must not hand DMA buffers directly to the
+	  Zephyr network stack.
+
+config ETH_EMACZERO_RX_COPY_FALLBACK_COUNT
+	int "emacZero packet-sized RX copy fallback buffer count"
+	default 32
+	range 0 4096
+	help
+	  Number of packet-sized driver-owned buffers used by the RX copy
+	  fallback path. These buffers avoid allocating many small Zephyr
+	  net_buf data fragments for each MTU-sized fallback packet.
+
+config ETH_EMACZERO_DMA_MEMORY_BASE
+	hex "emacZero DMA-visible memory base"
+	default 0x0
+	help
+	  Base address of a memory window visible to both MicroBlaze V data
+	  AXI and the AXI DMA masters. When non-zero, emacZero RX/TX packet
+	  buffers and Xilinx AXI DMA SG descriptors are allocated from this
+	  window instead of normal kernel RAM. Use this when kernel code/data
+	  live in CPU-local LMB that the DMA cannot access.
+
+config ETH_EMACZERO_DMA_MEMORY_SIZE
+	hex "emacZero DMA-visible memory size"
+	default 0x0
+	help
+	  Size in bytes of the DMA-visible memory window. A zero size keeps
+	  the legacy in-kernel static packet buffers and the Zephyr DMA
+	  driver's normal SG descriptor allocation.
+
+endif

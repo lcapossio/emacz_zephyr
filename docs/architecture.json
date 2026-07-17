@@ -1,0 +1,200 @@
+{
+  "title": "Arty A7-100T MicroBlaze V DDR Top Level",
+  "top": "arty_a7_100t_mbv",
+  "theme": "light",
+  "legend": "compact",
+  "grid": {
+    "cell_w": 220,
+    "cell_h": 96,
+    "gutter_x": 132,
+    "gutter_y": 72,
+    "margin": 44
+  },
+  "domains": {
+    "board100": {
+      "freq_mhz": 100,
+      "color": "#DBEAFE",
+      "border": "#2563EB"
+    },
+    "ddr_ui": {
+      "freq_mhz": 81.247969,
+      "color": "#DCFCE7",
+      "border": "#16A34A"
+    },
+    "eth_mii": {
+      "freq_mhz": 25,
+      "color": "#FEF3C7",
+      "border": "#D97706"
+    }
+  },
+  "blocks": [
+    {
+      "id": "clk100",
+      "label": "Board Oscillator",
+      "external": true,
+      "side": "top",
+      "row": 0,
+      "col": 4,
+      "lines": ["CLK100MHZ", "100 MHz", "MIG sys_clk_i"]
+    },
+    {
+      "id": "eth_phy",
+      "label": "Arty Ethernet PHY",
+      "external": true,
+      "side": "left",
+      "row": 1,
+      "col": 0,
+      "lines": ["DP83848 PHY", "MII / MDIO", "RX/TX clocks 25 MHz"]
+    },
+    {
+      "id": "emaczero",
+      "label": "emacZero MAC",
+      "domain": "ddr_ui",
+      "domain_b": "eth_mii",
+      "row": 1,
+      "col": 1,
+      "lines": ["emacZero MAC", "AXI side 81.247969 MHz", "MII side 25 MHz"]
+    },
+    {
+      "id": "axi_dma",
+      "label": "AXI DMA",
+      "domain": "ddr_ui",
+      "row": 1,
+      "col": 2,
+      "lines": ["AXI DMA", "MM2S / S2MM", "SG descriptors"]
+    },
+    {
+      "id": "ddr_axi",
+      "label": "DDR SmartConnect",
+      "domain": "ddr_ui",
+      "row": 1,
+      "col": 3,
+      "lines": ["AXI SmartConnect", "4 SI / 1 MI", "81.247969 MHz"]
+    },
+    {
+      "id": "mig",
+      "label": "Arty A7 MIG",
+      "domain": "ddr_ui",
+      "row": 1,
+      "col": 4,
+      "lines": ["MIG 7-Series", "S_AXI on ui_clk", "ui_addn_clk0 199.692 MHz"]
+    },
+    {
+      "id": "ddr3",
+      "label": "DDR3 SDRAM",
+      "external": true,
+      "side": "right",
+      "row": 1,
+      "col": 5,
+      "lines": ["DDR3 SDRAM", "0x90000000..0x9fffffff", "Zephyr + buffers"]
+    },
+    {
+      "id": "mbv",
+      "label": "MicroBlaze V",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 3,
+      "lines": ["MicroBlaze V", "RV32IMAC @ 81.247969 MHz", "I/D cache over DDR"]
+    },
+    {
+      "id": "ctrl_axi",
+      "label": "Control AXI",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 2,
+      "lines": ["AXI-Lite fabric", "81.247969 MHz", "CSR fanout"]
+    },
+    {
+      "id": "loader_bram",
+      "label": "Loader BRAM",
+      "domain": "ddr_ui",
+      "row": 3,
+      "col": 3,
+      "lines": ["BRAM scratch only", "32 KiB LMB", "32 KiB AXI loader"]
+    },
+    {
+      "id": "peripherals",
+      "label": "Peripherals",
+      "domain": "ddr_ui",
+      "row": 3,
+      "col": 2,
+      "lines": ["UARTLite / Timer", "INTC / GPIO", "MAC + DMA CSRs"]
+    },
+    {
+      "id": "ddr_map",
+      "label": "DDR Address Map",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 5,
+      "lines": ["0x90000000 Zephyr RAM", "lower 240 MiB", "0x9f000000 DMA heap"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "clk100",
+      "to": "mig",
+      "kind": "generic",
+      "width": "100 MHz"
+    },
+    {
+      "from": "eth_phy",
+      "to": "emaczero",
+      "kind": "generic",
+      "width": "MII MDIO"
+    },
+    {
+      "from": "emaczero",
+      "to": "axi_dma",
+      "kind": "axi-stream",
+      "width": "TX/RX 8b"
+    },
+    {
+      "from": "axi_dma",
+      "to": "ddr_axi",
+      "kind": "axi-mm",
+      "width": 32
+    },
+    {
+      "from": "ddr_axi",
+      "to": "mig",
+      "kind": "axi-mm",
+      "width": 32
+    },
+    {
+      "from": "mig",
+      "to": "ddr3",
+      "kind": "generic",
+      "width": "DDR3"
+    },
+    {
+      "from": "mbv",
+      "to": "ddr_axi",
+      "kind": "axi-mm",
+      "width": "I/D 32b"
+    },
+    {
+      "from": "mbv",
+      "to": "ctrl_axi",
+      "kind": "axi-lite",
+      "width": 32
+    },
+    {
+      "from": "mbv",
+      "to": "loader_bram",
+      "kind": "generic",
+      "width": "LMB 32b"
+    },
+    {
+      "from": "ctrl_axi",
+      "to": "peripherals",
+      "kind": "axi-lite",
+      "width": 32
+    },
+    {
+      "from": "mig",
+      "to": "ddr_map",
+      "kind": "generic",
+      "width": "addr map"
+    }
+  ]
+}

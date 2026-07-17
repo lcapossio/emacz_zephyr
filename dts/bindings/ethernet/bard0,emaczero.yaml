@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+---
+description: bard0 emacZero Ethernet MAC
+
+compatible: "bard0,emaczero"
+
+include: ethernet-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: false
+
+  phy-handle:
+    type: phandle
+    description: Optional PHY node controlled through emacZero MDIO.
+
+  axistream-connected:
+    type: phandle
+    description: Xilinx AXI DMA connected to emacZero packet streams.
+
+  link-speed:
+    type: int
+    default: 100
+    enum:
+      - 10
+      - 100
+      - 1000
+    description: Initial fixed link speed in Mbit/s.

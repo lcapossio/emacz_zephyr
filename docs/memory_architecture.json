@@ -1,0 +1,236 @@
+{
+  "title": "Arty A7-100T MBV Memory Architecture Bottleneck",
+  "top": "arty_a7_100t_mbv_wrapper",
+  "theme": "dark",
+  "legend": "compact",
+  "grid": {
+    "cell_w": 245,
+    "cell_h": 84,
+    "gutter_x": 105,
+    "gutter_y": 108,
+    "margin": 44
+  },
+  "domains": {
+    "sys": {
+      "freq_mhz": 100,
+      "color": "#DBEAFE",
+      "border": "#2563EB"
+    },
+    "rx": {
+      "freq_mhz": 100,
+      "color": "#DCFCE7",
+      "border": "#16A34A"
+    },
+    "local": {
+      "freq_mhz": 100,
+      "color": "#FEF3C7",
+      "border": "#D97706"
+    }
+  },
+  "bands": {
+    "current": {
+      "label": "current shell: one shared AXI BRAM service point",
+      "rows": [0, 1],
+      "color": "#F8FAFC",
+      "border": "#64748B"
+    },
+    "next": {
+      "label": "next experiment: split CPU-local memory from DMA-visible memory",
+      "rows": [3, 4],
+      "color": "#ECFDF5",
+      "border": "#059669"
+    }
+  },
+  "blocks": [
+    {
+      "id": "cpu_axi",
+      "lines": [
+        "MBV + fcapz AXI masters",
+        "I-fetch / data / debug",
+        "M_AXI_IP + M_AXI_DP + M_AXI"
+      ],
+      "domain": "sys",
+      "row": 0,
+      "col": 2,
+      "w": 285
+    },
+    {
+      "id": "emacz_rx",
+      "lines": [
+        "emacZero RX",
+        "error-drop gate",
+        "good frames only"
+      ],
+      "domain": "rx",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "axi_dma",
+      "lines": [
+        "AXI DMA",
+        "S2MM writes",
+        "SG BD fetch/writeback"
+      ],
+      "domain": "sys",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "axi_ic",
+      "lines": [
+        "AXI Interconnect",
+        "all masters arbitrate",
+        "to one memory target"
+      ],
+      "domain": "sys",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "bram_ctrl",
+      "lines": [
+        "AXI BRAM Ctrl",
+        "32-bit",
+        "single-port path"
+      ],
+      "domain": "sys",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "bram",
+      "lines": [
+        "512 KiB BRAM",
+        "code + data",
+        "packets + BDs"
+      ],
+      "domain": "sys",
+      "row": 1,
+      "col": 4
+    },
+    {
+      "id": "lmb_cpu",
+      "lines": [
+        "MicroBlaze V",
+        "code/data path",
+        "I/D LMB"
+      ],
+      "domain": "local",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "id": "lmb_bram",
+      "lines": [
+        "CPU-local BRAM",
+        "instructions",
+        "stack/heap"
+      ],
+      "domain": "local",
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "dma_next",
+      "lines": [
+        "AXI DMA",
+        "RX/TX packets",
+        "BD ring"
+      ],
+      "domain": "sys",
+      "row": 4,
+      "col": 1
+    },
+    {
+      "id": "axi_ic_next",
+      "lines": [
+        "AXI Interconnect",
+        "DMA + peripherals",
+        "less CPU pressure"
+      ],
+      "domain": "sys",
+      "row": 4,
+      "col": 2
+    },
+    {
+      "id": "dma_bram",
+      "lines": [
+        "AXI-visible BRAM",
+        "packet buffers",
+        "SG descriptors"
+      ],
+      "domain": "sys",
+      "row": 4,
+      "col": 3
+    }
+  ],
+  "edges": [
+    {
+      "from": "cpu_axi",
+      "to": "axi_ic",
+      "kind": "axi-mm",
+      "width": 32
+    },
+    {
+      "from": "emacz_rx",
+      "to": "axi_dma",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "axi_dma",
+      "to": "axi_ic",
+      "kind": "axi-mm",
+      "width": 32,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "axi_ic",
+      "to": "bram_ctrl",
+      "kind": "axi-mm",
+      "width": 32,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "bram_ctrl",
+      "to": "bram",
+      "kind": "generic",
+      "width": 32,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "lmb_cpu",
+      "to": "lmb_bram",
+      "kind": "generic",
+      "width": "LMB",
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "dma_next",
+      "to": "axi_ic_next",
+      "kind": "axi-mm",
+      "width": 32,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "axi_ic_next",
+      "to": "dma_bram",
+      "kind": "axi-mm",
+      "width": 32,
+      "route": {
+        "mode": "direct"
+      }
+    }
+  ]
+}

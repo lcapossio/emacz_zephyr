@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+tests:
+  emacz.app.build:
+    build_only: true
+    platform_allow: mbv32
+    integration_platforms:
+      - mbv32
+    tags:
+      - build
+      - net
+      - drivers

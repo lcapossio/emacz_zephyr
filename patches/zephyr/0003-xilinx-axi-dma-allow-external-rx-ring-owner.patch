@@ -1,0 +1,21 @@
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+index 0000000000..0000000000 100644
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -1146,11 +1146,16 @@ static int dma_xilinx_axi_dma_init(const struct device *dev)
+ #define RX_IRQ_CONFIGURE(inst)                                                                     \
+ 	IRQ_CONNECT(DT_INST_IRQN_BY_IDX(inst, 1), DT_INST_IRQ_BY_IDX(inst, 1, priority),           \
+ 		    dma_xilinx_axi_dma_rx_isr, DEVICE_DT_INST_GET(inst), 0);
+ 
++#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
++#define CONFIGURE_ALL_IRQS(inst)                                                                   \
++	TX_IRQ_CONFIGURE(inst);
++#else
+ #define CONFIGURE_ALL_IRQS(inst)                                                                   \
+ 	TX_IRQ_CONFIGURE(inst);                                                                    \
+ 	RX_IRQ_CONFIGURE(inst);
++#endif
+ 
+ #define XILINX_AXI_DMA_INIT(inst)                                                                  \
+ 	static void dma_xilinx_axi_dma##inst##_irq_configure(void)                                 \
+ 	{                                                                                          \

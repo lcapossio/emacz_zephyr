@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+---
+manifest:
+  self:
+    path: emacz_zephyr
+  projects:
+    - name: zephyr
+      url: https://github.com/Xilinx/zephyr-amd
+      path: deps/zephyr
+      revision: xlnx_rel_v2026.1
+      import: true

@@ -1,0 +1,7 @@
+[submodule "external/emacZero"]
+	path = external/emacZero
+	url = https://github.com/lcapossio/emacZero.git
+	branch = main
+[submodule "fcapz"]
+	path = fcapz
+	url = https://github.com/lcapossio/fpgacapZero

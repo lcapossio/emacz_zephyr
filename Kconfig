@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+rsource "drivers/Kconfig"
+
+menu "emacz Zephyr app"
+
+config EMACZ_APP_RAW_UART
+	bool "emacz app raw UART status output"
+	default y
+	help
+	  Enable the bring-up application's direct UARTLite status prints.
+	  Disable this for performance tests that must rule out blocking UART
+	  output independently from Zephyr's console and logging settings.
+
+endmenu

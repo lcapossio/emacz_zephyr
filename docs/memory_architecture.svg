@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="2005" height="970" viewBox="0 0 2005 970" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" style="background:#000000">
+  <defs>
+    <marker id="ah-solid" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#e2e8f0"/></marker>
+    <marker id="ah-thin" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#9ca3af"/></marker>
+    <marker id="ah-stream" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d9f99d"/></marker>
+    <marker id="ah-axil" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#93c5fd"/></marker>
+    <marker id="ah-tilelink" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#5eead4"/></marker>
+    <marker id="ah-cdc" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d8b4fe"/></marker>
+    <marker id="ah-open" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0.5,0.5 L0.5,5.5 L8,3 z" fill="#000000" stroke="#e2e8f0" stroke-width="1"/></marker>
+  </defs>
+  <rect width="2005" height="970" fill="#000000" id="_canvas_bg"/>
+  <text x="866.5" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MBV Memory Architecture Bottleneck</text>
+  <rect id="band_current" x="10" y="44" width="1713" height="320" fill="#F8FAFC" fill-opacity="0.1" stroke="#64748B" stroke-width="1" stroke-dasharray="6,4" rx="4"/>
+  <text x="24" y="62" font-size="13" font-weight="700" fill="#64748B">current shell: one shared AXI BRAM service point</text>
+  <rect id="band_next" x="10" y="620" width="1713" height="320" fill="#ECFDF5" fill-opacity="0.1" stroke="#059669" stroke-width="1" stroke-dasharray="6,4" rx="4"/>
+  <text x="24" y="638" font-size="13" font-weight="700" fill="#059669">next experiment: split CPU-local memory from DMA-visible memory</text>
+  <rect id="cpu_axi" x="744" y="74" width="285" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="886" y="106" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">MBV + fcapz AXI masters</text>
+  <text x="886" y="121" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">I-fetch / data / debug</text>
+  <text x="886" y="136" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">M_AXI_IP + M_AXI_DP + M_AXI</text>
+  <rect id="emacz_rx" x="44" y="266" width="245" height="84" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
+  <text x="166" y="298" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">emacZero RX</text>
+  <text x="166" y="313" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">error-drop gate</text>
+  <text x="166" y="328" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">good frames only</text>
+  <rect id="axi_dma" x="394" y="266" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="516" y="298" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI DMA</text>
+  <text x="516" y="313" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">S2MM writes</text>
+  <text x="516" y="328" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">SG BD fetch/writeback</text>
+  <rect id="axi_ic" x="744" y="266" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="866" y="298" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI Interconnect</text>
+  <text x="866" y="313" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">all masters arbitrate</text>
+  <text x="866" y="328" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">to one memory target</text>
+  <rect id="bram_ctrl" x="1094" y="266" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="1216" y="298" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI BRAM Ctrl</text>
+  <text x="1216" y="313" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">32-bit</text>
+  <text x="1216" y="328" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">single-port path</text>
+  <rect id="bram" x="1444" y="266" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="1566" y="298" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">512 KiB BRAM</text>
+  <text x="1566" y="313" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">code + data</text>
+  <text x="1566" y="328" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">packets + BDs</text>
+  <rect id="lmb_cpu" x="44" y="650" width="245" height="84" fill="#FEF3C7" stroke="#D97706" stroke-width="1.4" rx="8"/>
+  <text x="166" y="682" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">MicroBlaze V</text>
+  <text x="166" y="697" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">code/data path</text>
+  <text x="166" y="712" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">I/D LMB</text>
+  <rect id="lmb_bram" x="394" y="650" width="245" height="84" fill="#FEF3C7" stroke="#D97706" stroke-width="1.4" rx="8"/>
+  <text x="516" y="682" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">CPU-local BRAM</text>
+  <text x="516" y="697" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">instructions</text>
+  <text x="516" y="712" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">stack/heap</text>
+  <rect id="dma_next" x="394" y="842" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="516" y="874" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI DMA</text>
+  <text x="516" y="889" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">RX/TX packets</text>
+  <text x="516" y="904" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">BD ring</text>
+  <rect id="axi_ic_next" x="744" y="842" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="866" y="874" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI Interconnect</text>
+  <text x="866" y="889" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">DMA + peripherals</text>
+  <text x="866" y="904" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">less CPU pressure</text>
+  <rect id="dma_bram" x="1094" y="842" width="245" height="84" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.4" rx="8"/>
+  <text x="1216" y="874" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI-visible BRAM</text>
+  <text x="1216" y="889" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">packet buffers</text>
+  <text x="1216" y="904" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">SG descriptors</text>
+  <path id="edge_cpu_axi_to_axi_ic" d="M 886.5,158.0 L 886.5,212.0 L 866.5,212.0 L 866.5,266.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
+  <rect x="842.2" y="173.2" width="88.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="886.5" y="188.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <path id="edge_emacz_rx_to_axi_dma" d="M 289.0,308.0 L 341.5,308.0 L 394.0,308.0" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)"/>
+  <rect x="292.0" y="289.2" width="72.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="328.0" y="304.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-S 8b</text>
+  <path id="edge_axi_dma_to_axi_ic" d="M 639.0,308.0 L 691.5,308.0 L 744.0,308.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
+  <rect x="642.0" y="289.2" width="88.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="686.2" y="304.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <path id="edge_axi_ic_to_bram_ctrl" d="M 989.0,308.0 L 1041.5,308.0 L 1094.0,308.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
+  <rect x="992.0" y="289.2" width="88.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="1036.2" y="304.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <path id="edge_bram_ctrl_to_bram" d="M 1339.0,308.0 L 1391.5,308.0 L 1444.0,308.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="1349.9" y="289.2" width="30.8" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="1365.2" y="304.0" text-anchor="middle" font-size="15" fill="#e2e8f0">32b</text>
+  <path id="edge_lmb_cpu_to_lmb_bram" d="M 289.0,692.0 L 341.5,692.0 L 394.0,692.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="299.9" y="673.2" width="30.8" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="315.2" y="688.0" text-anchor="middle" font-size="15" fill="#e2e8f0">LMB</text>
+  <path id="edge_dma_next_to_axi_ic_next" d="M 639.0,884.0 L 691.5,884.0 L 744.0,884.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
+  <rect x="642.0" y="865.2" width="88.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="686.2" y="880.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <path id="edge_axi_ic_next_to_dma_bram" d="M 989.0,884.0 L 1041.5,884.0 L 1094.0,884.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
+  <rect x="992.0" y="865.2" width="88.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="1036.2" y="880.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <rect id="legend_card" x="1749" y="46" width="240" height="116" fill="#0f172a" stroke="#475569" stroke-width="1" rx="6"/>
+  <text x="1869" y="74" text-anchor="middle" font-size="13" font-weight="700" fill="#e2e8f0" letter-spacing="0.4">Clock domains</text>
+  <rect x="1763" y="86" width="22" height="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.2" rx="2"/>
+  <text x="1795" y="98" font-size="13" fill="#e2e8f0">sys  100 MHz</text>
+  <rect x="1763" y="108" width="22" height="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.2" rx="2"/>
+  <text x="1795" y="120" font-size="13" fill="#e2e8f0">rx  100 MHz</text>
+  <rect x="1763" y="130" width="22" height="14" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2" rx="2"/>
+  <text x="1795" y="142" font-size="13" fill="#e2e8f0">local  100 MHz</text>
+</svg>

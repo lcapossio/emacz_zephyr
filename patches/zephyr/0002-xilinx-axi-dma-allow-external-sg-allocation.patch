@@ -1,0 +1,46 @@
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -577,6 +577,16 @@ typedef uint64_t dma_addr_t;
+ typedef uint32_t dma_addr_t;
+ #endif
+ 
++__weak void *dma_xilinx_axi_dma_sg_descriptor_alloc(size_t align, size_t size)
++{
++	return k_aligned_alloc(align, size);
++}
++
++__weak void dma_xilinx_axi_dma_sg_descriptor_free(void *ptr)
++{
++	k_free(ptr);
++}
++
+ static int dma_xilinx_axi_dma_start(const struct device *dev, uint32_t channel)
+ {
+ 	const struct dma_xilinx_axi_dma_config *cfg = dev->config;
+@@ -737,7 +747,7 @@ static int dma_xilinx_axi_dma_stop(const struct device *dev, uint32_t channel)
+ 
+ 	/* Free the TX/RX SG descriptor ring; dma_configure() will allocate a fresh ring on next start. */
+ 	if (channel_data->descriptors) {
+-		k_free((void *)channel_data->descriptors);
++		dma_xilinx_axi_dma_sg_descriptor_free((void *)channel_data->descriptors);
+ 		channel_data->descriptors = NULL;
+ 		channel_data->num_descriptors = 0;
+ 	}
+@@ -1095,14 +1105,14 @@ static int dma_xilinx_axi_dma_alloc_sg_ring(struct dma_xilinx_axi_dma_channel *c
+ {
+ 	/* Free any previously allocated ring first */
+ 	if (channel->descriptors) {
+-		k_free((void *)channel->descriptors);
++		dma_xilinx_axi_dma_sg_descriptor_free((void *)channel->descriptors);
+ 		channel->descriptors = NULL;
+ 	}
+ 
+ 	size_t alloc_size = num_desc * sizeof(struct dma_xilinx_axi_dma_sg_descriptor);
+ 
+ 	/* DMA SG descriptors must be 64-byte aligned (hardware requirement) */
+-	channel->descriptors = k_aligned_alloc(64, alloc_size);
++	channel->descriptors = dma_xilinx_axi_dma_sg_descriptor_alloc(64, alloc_size);
+ 	if (!channel->descriptors) {
+ 		return -ENOMEM;
+ 	}
