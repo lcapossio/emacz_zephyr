@@ -30,3 +30,4 @@ __pycache__/
 *.py[cod]
 .venv*/
 no_commit/
+.claude/

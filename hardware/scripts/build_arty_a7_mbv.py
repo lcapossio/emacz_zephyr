@@ -31,6 +31,8 @@ EMACZERO_RTL = [
     "external/emacZero/rtl/async_fifo.v",
     "external/emacZero/rtl/sync_fifo.v",
     "external/emacZero/rtl/mii_if.v",
+    "external/emacZero/rtl/mii_tx_saf.v",
+    "external/emacZero/rtl/axil_arb2.v",
     "external/emacZero/rtl/eth_mac_rx.v",
     "external/emacZero/rtl/eth_mac_tx.v",
     "external/emacZero/rtl/eth_mac.v",
@@ -75,6 +77,7 @@ FCAPZ_RTL = [
 LOCAL_DEBUG_RTL = [
     "hardware/rtl/bram_port_mux.v",
     "hardware/rtl/fcapz_mbv_debug.v",
+    "hardware/rtl/axis_rx_stream_stats.v",
 ]
 
 
@@ -208,7 +211,7 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.4 lmb_bram
 set_property -dict [list CONFIG.Memory_Type True_Dual_Port_RAM CONFIG.Use_Byte_Write_Enable true CONFIG.Byte_Size 8 CONFIG.Write_Depth_A {LOADER_BRAM_WORDS} CONFIG.Enable_32bit_Address true] [get_bd_cells lmb_bram]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 ctrl_axi_ic
-set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 9] [get_bd_cells ctrl_axi_ic]
+set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 10] [get_bd_cells ctrl_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 dma_axi_ic
 set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1] [get_bd_cells dma_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_axi_ic
@@ -249,6 +252,7 @@ set_property -dict [list \\
     CONFIG.c_sg_length_width 16 \\
     CONFIG.c_addr_width 32 \\
 ] [get_bd_cells axi_dma]
+create_bd_cell -type module -reference axis_rx_stream_stats s2mm_stream_stats
 create_bd_cell -type module -reference axis_async_fifo tx_axis_cc
 create_bd_cell -type module -reference axis_async_fifo rx_axis_cc
 create_bd_cell -type module -reference clock_root_100m clock_root
@@ -318,6 +322,8 @@ connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins tx_axis_cc/s_clk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins tx_axis_cc/m_clk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins rx_axis_cc/s_clk]
 connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins rx_axis_cc/m_clk]
+connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins s2mm_stream_stats/clk]
+connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins s2mm_stream_stats/rst_n]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins emaczero/clk]
 connect_bd_net [get_bd_pins clock_root/clk25] [get_bd_pins emaczero/phy_ref_clk_25]
 connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins debug/clk]
@@ -394,6 +400,7 @@ connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M05_AXI] [get_bd_intf_pins axi
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M06_AXI] [get_bd_intf_pins bram_ctrl_cpu/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M07_AXI] [get_bd_intf_pins lmb_loader_ctrl/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M08_AXI] [get_bd_intf_pins ddr_axi_ic/S00_AXI]
+connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M09_AXI] [get_bd_intf_pins s2mm_stream_stats/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins dma_axi_ic/M00_AXI] [get_bd_intf_pins ddr_axi_ic/S01_AXI]
 connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_IC] [get_bd_intf_pins ddr_axi_ic/S02_AXI]
 connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_DC] [get_bd_intf_pins ddr_axi_ic/S03_AXI]
@@ -402,7 +409,8 @@ connect_bd_intf_net [get_bd_intf_pins ddr_axi_ic/M00_AXI] [get_bd_intf_pins mig_
 connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXIS_MM2S] [get_bd_intf_pins tx_axis_cc/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins tx_axis_cc/M_AXIS] [get_bd_intf_pins emaczero/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins emaczero/M_AXIS] [get_bd_intf_pins rx_axis_cc/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins rx_axis_cc/M_AXIS] [get_bd_intf_pins axi_dma/S_AXIS_S2MM]
+connect_bd_intf_net [get_bd_intf_pins rx_axis_cc/M_AXIS] [get_bd_intf_pins s2mm_stream_stats/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins s2mm_stream_stats/M_AXIS] [get_bd_intf_pins axi_dma/S_AXIS_S2MM]
 
 connect_bd_net [get_bd_pins const0_8/dout] [get_bd_pins debug/dma_rx_axis_tdata]
 connect_bd_net [get_bd_pins const0/dout] [get_bd_pins debug/dma_rx_axis_tvalid]
@@ -557,6 +565,7 @@ foreach {{space}} {{mbv/Instruction mbv/Data debug/m_axi}} {{
     map_seg $space gpio/S_AXI/Reg         0x40010000 0x00010000
     map_seg $space emaczero/S_AXI/reg0    0x44A00000 0x00001000
     map_seg $space axi_dma/S_AXI_LITE/Reg 0x41E00000 0x00010000
+    map_seg $space s2mm_stream_stats/S_AXI/reg0 0x41F00000 0x00010000
 }}
 
 validate_bd_design

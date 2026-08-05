@@ -184,7 +184,7 @@ module fcapz_mbv_debug #(
     fcapz_ejtagaxi_xilinx7 #(
         .ADDR_W(32),
         .DATA_W(32),
-        .FIFO_DEPTH(16),
+        .FIFO_DEPTH(64),
         .TIMEOUT(4096),
         .ASYNC_FIFO_IMPL(0),
         .CHAIN(3)
