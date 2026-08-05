@@ -64,6 +64,28 @@ LOG_MODULE_REGISTER(eth_emaczero, CONFIG_ETHERNET_LOG_LEVEL);
 #define EMZ_DMA_BUFFER_COUNT_TX 32u
 #define EMZ_DMA_BUFFER_COUNT_RX CONFIG_ETH_EMACZERO_RX_BUFFER_COUNT
 #define EMZ_DMA_CACHE_LINE_SIZE 16u
+/* MicroBlaze V D-cache aperture (see build_arty_a7_mbv.py C_DCACHE_*ADDR).
+ * DMA buffers live in DDR at 0x9F000000 and SG BDs in BRAM at 0xC0000000,
+ * both outside this range. Cache maintenance on addresses outside the
+ * aperture is dead overhead (~285 CBOs/frame for a 1514-byte payload).
+ */
+#define EMZ_DMA_DCACHE_BASE 0x90000000u
+#define EMZ_DMA_DCACHE_HIGH 0x97FFFFFFu
+
+/* Sol r7 instrumentation regions. Slot indices are wire-format for host tools;
+ * do not reorder without bumping EMACZERO_PERF_STATS_VERSION and updating readers.
+ */
+enum emz_r7_region {
+	EMZ_R7_ISR_TOTAL = 0,      /* ISR entry -> ISR exit (whole poll incl. cache/CSR) */
+	EMZ_R7_LOCK_CONSUME = 1,   /* spin_lock..spin_unlock in emz_rx_direct_poll body */
+	EMZ_R7_READY_ENQUEUE = 2,  /* atomic_inc + k_fifo_put(rx_ready_fifo) */
+	EMZ_R7_RELEASE_REFILL = 3, /* emz_release_rx_buffer entry -> refill returns */
+	EMZ_R7_LOCK_POST = 4,      /* spin_lock..spin_unlock in emz_rx_direct_post_one */
+	EMZ_R7_TAIL_CSR = 5,       /* barrier + TAILDESC write in emz_rx_direct_update_tail */
+	EMZ_R7_RX_THREAD_BUILD = 6,/* rx_thread: net_pkt build -> net_recv_data() return */
+	EMZ_R7_SLOT_COUNT = 8,
+};
+#define EMZ_R7_MAGIC 0x50524632u  /* "PRF2" LE */
 #define EMZ_DMA_RX_MAX_INFLIGHT CONFIG_ETH_EMACZERO_RX_DMA_POST_COUNT
 #define EMZ_RX_MAX_STACK_OWNED_ZEROCOPY CONFIG_ETH_EMACZERO_RX_MAX_STACK_OWNED_ZEROCOPY
 #define EMZ_RX_COPY_FALLBACK_COUNT CONFIG_ETH_EMACZERO_RX_COPY_FALLBACK_COUNT
@@ -255,6 +277,12 @@ static void emz_dma_cache_range(const void *addr, size_t size,
 	start = (uintptr_t)addr & ~(uintptr_t)(EMZ_DMA_CACHE_LINE_SIZE - 1u);
 	end = ROUND_UP((uintptr_t)addr + size, EMZ_DMA_CACHE_LINE_SIZE);
 
+	/* Skip if the whole range is outside the D-cache aperture. */
+	if (end <= (uintptr_t)EMZ_DMA_DCACHE_BASE ||
+	    start > (uintptr_t)EMZ_DMA_DCACHE_HIGH) {
+		return;
+	}
+
 	emz_dma_cache_fence();
 	for (uintptr_t line = start; line < end; line += EMZ_DMA_CACHE_LINE_SIZE) {
 		op(line);
@@ -272,9 +300,60 @@ static void emz_dma_cache_invd(const void *addr, size_t size)
 	emz_dma_cache_range(addr, size, emz_dma_cache_invd_line);
 }
 
+#if defined(CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION)
+static inline uint32_t emz_r7_elapsed(uint32_t start, uint32_t end)
+{
+	return end - start;
+}
+
+static inline void emz_r7_add(enum emz_r7_region slot, uint32_t cycles)
+{
+	uint64_t sum;
+
+	if ((unsigned)slot >= EMZ_R7_SLOT_COUNT) {
+		return;
+	}
+	emaczero_perf_stats.r7_samples[slot]++;
+	sum = ((uint64_t)emaczero_perf_stats.r7_sum_hi[slot] << 32) |
+	      emaczero_perf_stats.r7_sum_lo[slot];
+	sum += cycles;
+	emaczero_perf_stats.r7_sum_lo[slot] = (uint32_t)sum;
+	emaczero_perf_stats.r7_sum_hi[slot] = (uint32_t)(sum >> 32);
+	if (cycles > emaczero_perf_stats.r7_max[slot]) {
+		emaczero_perf_stats.r7_max[slot] = cycles;
+	}
+}
+
+static inline void emz_r7_init_magic(void)
+{
+	emaczero_perf_stats.r7_magic = EMZ_R7_MAGIC;
+	emaczero_perf_stats.r7_hz = (uint32_t)sys_clock_hw_cycles_per_sec();
+}
+#else
+static inline uint32_t emz_r7_elapsed(uint32_t start, uint32_t end)
+{
+	(void)start; (void)end;
+	return 0u;
+}
+static inline void emz_r7_add(enum emz_r7_region slot, uint32_t cycles)
+{
+	(void)slot; (void)cycles;
+}
+static inline void emz_r7_init_magic(void) {}
+#endif
+
+static inline void emz_r7_note_lock(void)
+{
+#if defined(CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION)
+	emaczero_perf_stats.r7_lock_acquisitions++;
+#endif
+}
+
 #if CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0
 static uintptr_t emz_dma_mem_cursor;
 static uintptr_t emz_dma_mem_end;
+static uintptr_t emz_sg_mem_cursor;
+static uintptr_t emz_sg_mem_end;
 
 static void emz_dma_mem_reset(void)
 {
@@ -282,6 +361,18 @@ static void emz_dma_mem_reset(void)
 	emz_dma_mem_end = CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE +
 			  CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE -
 			  EMACZERO_PERF_STATS_DMA_RESERVED;
+}
+
+static void emz_sg_mem_reset(void)
+{
+#if CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE != 0
+	emz_sg_mem_cursor = CONFIG_ETH_EMACZERO_SG_MEMORY_BASE;
+	emz_sg_mem_end = CONFIG_ETH_EMACZERO_SG_MEMORY_BASE +
+			 CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE;
+#else
+	emz_sg_mem_cursor = 0u;
+	emz_sg_mem_end = 0u;
+#endif
 }
 
 static void *emz_dma_mem_alloc(size_t align, size_t size)
@@ -297,9 +388,26 @@ static void *emz_dma_mem_alloc(size_t align, size_t size)
 	return (void *)ptr;
 }
 
+static void *emz_sg_mem_alloc(size_t align, size_t size)
+{
+#if CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE != 0
+	uintptr_t ptr = ROUND_UP(emz_sg_mem_cursor, align);
+	uintptr_t next = ROUND_UP(ptr + size, align);
+
+	if (ptr == 0u || next > emz_sg_mem_end || next < ptr) {
+		return NULL;
+	}
+
+	emz_sg_mem_cursor = next;
+	return (void *)ptr;
+#else
+	return emz_dma_mem_alloc(align, size);
+#endif
+}
+
 void *dma_xilinx_axi_dma_sg_descriptor_alloc(size_t align, size_t size)
 {
-	return emz_dma_mem_alloc(align, size);
+	return emz_sg_mem_alloc(align, size);
 }
 
 void dma_xilinx_axi_dma_sg_descriptor_free(void *ptr)
@@ -405,6 +513,7 @@ static void emz_release_rx_buffer(const struct device *dev, struct emaczero_rx_b
 {
 	struct emaczero_data *data = dev->data;
 	uint32_t stack_handoff_cycle = rx->stack_handoff_cycle;
+	uint32_t r7_rel_start = k_cycle_get_32();
 
 #if defined(CONFIG_ETH_EMACZERO_PROFILE)
 	emaczero_profile_note_release(emaczero_profile_elapsed(rx->dma_done_cycle, k_cycle_get_32()));
@@ -418,6 +527,7 @@ static void emz_release_rx_buffer(const struct device *dev, struct emaczero_rx_b
 	emz_perf_update_pool_inflight(data);
 	k_fifo_put(&data->rx_free_fifo, rx);
 	(void)emz_refill_dma_rx(dev);
+	emz_r7_add(EMZ_R7_RELEASE_REFILL, emz_r7_elapsed(r7_rel_start, k_cycle_get_32()));
 }
 
 static void emz_release_rx_buffer_from_worker(const struct device *dev,
@@ -724,7 +834,7 @@ static int emz_tx_direct_start(const struct device *dev)
 	struct emaczero_data *data = dev->data;
 	uintptr_t bd_addr;
 
-	data->tx_bd_ring = emz_dma_mem_alloc(64u,
+	data->tx_bd_ring = emz_sg_mem_alloc(64u,
 					     sizeof(struct emaczero_rx_bd) *
 					     EMZ_DMA_BUFFER_COUNT_TX);
 	if (data->tx_bd_ring == NULL) {
@@ -898,15 +1008,18 @@ static void emz_rx_direct_update_tail(const struct device *dev, size_t index)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
+	uint32_t r7_tail_start;
 
 	data->rx_bd_tail_index = index;
 	if (!data->rx_direct_ring_started) {
 		return;
 	}
 
+	r7_tail_start = k_cycle_get_32();
 	barrier_dmem_fence_full();
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
 		      (uint32_t)(uintptr_t)&data->rx_bd_ring[index]);
+	emz_r7_add(EMZ_R7_TAIL_CSR, emz_r7_elapsed(r7_tail_start, k_cycle_get_32()));
 	emaczero_perf_stats.rx_bd_tail_updates++;
 }
 
@@ -915,17 +1028,21 @@ static int emz_rx_direct_post_one(const struct device *dev, struct emaczero_rx_b
 	struct emaczero_data *data = dev->data;
 	size_t index;
 	k_spinlock_key_t key;
+	uint32_t r7_post_start = k_cycle_get_32();
 
 	key = k_spin_lock(&data->rx_direct_lock);
+	emz_r7_note_lock();
 	index = data->rx_bd_refill_index;
 	if (data->rx_bd_buffer[index] != NULL) {
 		k_spin_unlock(&data->rx_direct_lock, key);
+		emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
 		emaczero_perf_stats.rx_bd_no_free++;
 		return 0;
 	}
 
 	if (data->rx_dma_inflight >= EMZ_DMA_RX_MAX_INFLIGHT) {
 		k_spin_unlock(&data->rx_direct_lock, key);
+		emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
 		return 0;
 	}
 	data->rx_dma_inflight++;
@@ -939,8 +1056,9 @@ static int emz_rx_direct_post_one(const struct device *dev, struct emaczero_rx_b
 	emaczero_perf_stats.rx_bd_refilled++;
 
 	data->rx_bd_refill_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_RX;
-	emz_rx_direct_update_tail(dev, index);
+	data->rx_bd_tail_index = index;
 	k_spin_unlock(&data->rx_direct_lock, key);
+	emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
 
 	atomic_inc(&data->rx_dma_fifo_count);
 	emz_perf_update_pool_inflight(data);
@@ -979,6 +1097,10 @@ static int emz_rx_direct_refill(const struct device *dev)
 		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_QUEUED);
 	}
 
+	if (queued > 0) {
+		emz_rx_direct_update_tail(dev, data->rx_bd_tail_index);
+	}
+
 	return queued;
 }
 
@@ -993,8 +1115,11 @@ static void emz_rx_direct_poll(const struct device *dev)
 		struct emaczero_rx_buffer *rx;
 		uint32_t status;
 		k_spinlock_key_t key;
+		uint32_t r7_lock_start;
 
+		r7_lock_start = k_cycle_get_32();
 		key = k_spin_lock(&data->rx_direct_lock);
+		emz_r7_note_lock();
 		index = data->rx_bd_consume_index;
 		bd = &data->rx_bd_ring[index];
 		rx = data->rx_bd_buffer[index];
@@ -1004,11 +1129,15 @@ static void emz_rx_direct_poll(const struct device *dev)
 		if ((status & (EMZ_AXI_DMA_BD_STATUS_COMPLETE |
 			       EMZ_AXI_DMA_BD_STATUS_ERROR_MASK)) == 0u) {
 			k_spin_unlock(&data->rx_direct_lock, key);
+			emz_r7_add(EMZ_R7_LOCK_CONSUME,
+				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
 			break;
 		}
 
 		if (rx == NULL) {
 			k_spin_unlock(&data->rx_direct_lock, key);
+			emz_r7_add(EMZ_R7_LOCK_CONSUME,
+				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
 			emaczero_perf_stats.rx_bd_errors++;
 			break;
 		}
@@ -1022,6 +1151,8 @@ static void emz_rx_direct_poll(const struct device *dev)
 			data->rx_dma_inflight--;
 		}
 		k_spin_unlock(&data->rx_direct_lock, key);
+		emz_r7_add(EMZ_R7_LOCK_CONSUME,
+			   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
 		atomic_dec(&data->rx_dma_fifo_count);
 
 		rx->status = (status & EMZ_AXI_DMA_BD_STATUS_ERROR_MASK) != 0u ? -EFAULT :
@@ -1054,8 +1185,13 @@ static void emz_rx_direct_poll(const struct device *dev)
 			continue;
 		}
 #endif
-		atomic_inc(&data->rx_ready_fifo_count);
-		k_fifo_put(&data->rx_ready_fifo, rx);
+		{
+			uint32_t r7_enq_start = k_cycle_get_32();
+			atomic_inc(&data->rx_ready_fifo_count);
+			k_fifo_put(&data->rx_ready_fifo, rx);
+			emz_r7_add(EMZ_R7_READY_ENQUEUE,
+				   emz_r7_elapsed(r7_enq_start, k_cycle_get_32()));
+		}
 		emz_perf_update_pool_inflight(data);
 
 		emaczero_perf_stats.dma_callbacks++;
@@ -1092,6 +1228,7 @@ static void emz_rx_direct_isr(const void *arg)
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 	uint32_t now_cycle = k_cycle_get_32();
+	uint32_t r7_isr_start = now_cycle;
 	uint32_t dmasr = emz_dma_read(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR);
 
 	emaczero_perf_stats.rx_irq_count++;
@@ -1112,6 +1249,7 @@ static void emz_rx_direct_isr(const void *arg)
 	barrier_dmem_fence_full();
 	emz_rx_direct_poll(dev);
 	barrier_dmem_fence_full();
+	emz_r7_add(EMZ_R7_ISR_TOTAL, emz_r7_elapsed(r7_isr_start, k_cycle_get_32()));
 }
 
 static int emz_rx_direct_start(const struct device *dev)
@@ -1121,7 +1259,7 @@ static int emz_rx_direct_start(const struct device *dev)
 	uint32_t dmacr;
 	int queued;
 
-	data->rx_bd_ring = emz_dma_mem_alloc(64u,
+	data->rx_bd_ring = emz_sg_mem_alloc(64u,
 					     sizeof(struct emaczero_rx_bd) *
 					     EMZ_DMA_BUFFER_COUNT_RX);
 	if (data->rx_bd_ring == NULL) {
@@ -1153,13 +1291,15 @@ static int emz_rx_direct_start(const struct device *dev)
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_CURDESC, (uint32_t)(uintptr_t)data->rx_bd_ring);
 	barrier_dmem_fence_full();
-	/* Direct RX owns the S2MM ring, so use immediate completion interrupts.
-	 * Delay IRQs add a second wakeup mechanism that can hide missed IOC
-	 * edges and make tail starvation harder to diagnose.
+	/* Coalesce IOC interrupts across up to 32 completions to amortise ISR
+	 * cost. Enable Dly_IrqEn with a short delay so bursts smaller than the
+	 * threshold still get serviced quickly. IRQDelay unit = 125 SG cycles;
+	 * at 81.25 MHz that is ~1.54 us, so 32 = ~50 us of idle before wakeup.
 	 */
 	dmacr = EMZ_AXI_DMA_DMACR_RS | EMZ_AXI_DMA_DMACR_IOC_IRQEN |
-		EMZ_AXI_DMA_DMACR_ERR_IRQEN |
-		(1u << EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT);
+		EMZ_AXI_DMA_DMACR_DLY_IRQEN | EMZ_AXI_DMA_DMACR_ERR_IRQEN |
+		(32u << EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT) |
+		(32u << EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, dmacr);
 	barrier_dmem_fence_full();
 	data->rx_direct_ring_started = true;
@@ -1857,6 +1997,7 @@ static void emz_rx_thread(void *arg1, void *arg2, void *arg3)
 
 	while (true) {
 		struct emaczero_rx_buffer *rx = k_fifo_get(&data->rx_ready_fifo, K_FOREVER);
+		uint32_t r7_thread_start = k_cycle_get_32();
 		struct emaczero_rx_frag_ctx *ctx;
 		struct net_buf *frag;
 		struct net_pkt *pkt;
@@ -1969,6 +2110,8 @@ static void emz_rx_thread(void *arg1, void *arg2, void *arg3)
 					       emaczero_profile_elapsed(build_start_cycle,
 								   k_cycle_get_32()));
 #endif
+			emz_r7_add(EMZ_R7_RX_THREAD_BUILD,
+				   emz_r7_elapsed(r7_thread_start, k_cycle_get_32()));
 			emz_release_rx_buffer_from_worker(dev, rx);
 			continue;
 		}
@@ -2045,6 +2188,8 @@ static void emz_rx_thread(void *arg1, void *arg2, void *arg3)
 		EMZ_PROFILE_ADD_CYCLES(EMACZERO_PROFILE_CYCLES_NET_RECV,
 				       emaczero_profile_elapsed(build_start_cycle, k_cycle_get_32()));
 #endif
+		emz_r7_add(EMZ_R7_RX_THREAD_BUILD,
+			   emz_r7_elapsed(r7_thread_start, k_cycle_get_32()));
 	}
 }
 
@@ -2111,6 +2256,8 @@ static int emz_init(const struct device *dev)
 	k_fifo_init(&data->rx_ready_fifo);
 #if CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0
 	emz_dma_mem_reset();
+	emz_sg_mem_reset();
+	emz_r7_init_magic();
 	for (size_t i = 0; i < ARRAY_SIZE(data->rx_buffer); i++) {
 		data->rx_buffer[i].bytes = emz_dma_mem_alloc(64u, EMZ_ETH_BUFFER_SIZE);
 		if (data->rx_buffer[i].bytes == NULL) {

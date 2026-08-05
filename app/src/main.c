@@ -777,6 +777,14 @@ static void init_perf_stats_metadata(void)
 	emaczero_perf_stats.magic = EMACZERO_PERF_STATS_MAGIC;
 	emaczero_perf_stats.version = EMACZERO_PERF_STATS_VERSION;
 	emaczero_perf_stats.cycles_per_sec = sys_clock_hw_cycles_per_sec();
+#if defined(CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION)
+	/* r7 sol instrumentation magic + hz — set here after the memset so the
+	 * driver-side accumulators (which fire once packet flow starts) land in a
+	 * region the host tool can locate by scanning for the "PRF2" magic.
+	 */
+	emaczero_perf_stats.r7_magic = 0x50524632u;
+	emaczero_perf_stats.r7_hz = sys_clock_hw_cycles_per_sec();
+#endif
 	emaczero_perf_stats.rx_pool_size = CONFIG_ETH_EMACZERO_RX_BUFFER_COUNT;
 	emaczero_perf_stats.rx_min_free = UINT32_MAX;
 	// Four-point-trace sentinels — host tooling scans for these so the byte

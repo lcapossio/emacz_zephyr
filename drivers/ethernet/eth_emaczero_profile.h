@@ -238,6 +238,24 @@ struct emaczero_perf_stats {
 	uint32_t tx_ext_word13;
 	uint32_t tx_ext_word14;
 	uint32_t tx_ext_word15;
+#if defined(CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION)
+	/* Per-packet region cycle accounting (R7). Layout: magic "PRF2"
+	 * (0x50524632) then 8 slots, each {samples, sum_lo, sum_hi, max}. Slot
+	 * indices match enum emz_r7_region in the driver. Two scalar fields at
+	 * the end track spinlock acquisitions and the longest IRQ-disabled
+	 * window. Appended at end so all existing offsets stay stable when the
+	 * option is disabled (host tools locate the block by scanning for the
+	 * "PRF2" magic and skip it when absent).
+	 */
+	uint32_t r7_magic;
+	uint32_t r7_hz;
+	uint32_t r7_samples[8];
+	uint32_t r7_sum_lo[8];
+	uint32_t r7_sum_hi[8];
+	uint32_t r7_max[8];
+	uint32_t r7_lock_acquisitions;
+	uint32_t r7_irq_disabled_cycles_max;
+#endif
 };
 
 #if defined(CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE) && CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0

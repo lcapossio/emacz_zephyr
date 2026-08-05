@@ -96,4 +96,32 @@ config ETH_EMACZERO_DMA_MEMORY_SIZE
 	  the legacy in-kernel static packet buffers and the Zephyr DMA
 	  driver's normal SG descriptor allocation.
 
+config ETH_EMACZERO_SG_MEMORY_BASE
+	hex "emacZero AXI DMA scatter-gather descriptor memory base"
+	default 0x0
+	help
+	  Base address of a dedicated memory window (typically an AXI BRAM)
+	  used for AXI DMA scatter-gather descriptor rings and the TX/RX BDs.
+	  When zero, SG allocations fall back to the general DMA memory pool
+	  (ETH_EMACZERO_DMA_MEMORY_BASE).
+
+config ETH_EMACZERO_SG_MEMORY_SIZE
+	hex "emacZero AXI DMA scatter-gather descriptor memory size"
+	default 0x0
+	help
+	  Size in bytes of the SG descriptor memory window. Set to non-zero
+	  when the hardware has a dedicated BRAM on the AXI DMA M_AXI_SG
+	  port, keeping small descriptor transactions off DDR.
+
+config ETH_EMACZERO_R7_INSTRUMENTATION
+	bool "emacZero per-region cycle instrumentation (R7)"
+	depends on ETH_EMACZERO_PROFILE
+	help
+	  Enable per-region cycle accumulators inside the RX hot path so a host
+	  tool can attribute per-packet wall time to individual driver regions
+	  (ISR, spinlocks, ready-fifo enqueue, release/refill, tail CSR write,
+	  RX-thread build). The counters land in the perf-stats block behind a
+	  "PRF2" magic word so host tools can locate them by scan. Cost is a
+	  handful of k_cycle_get_32() reads per packet — off by default.
+
 endif
