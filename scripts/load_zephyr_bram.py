@@ -53,10 +53,7 @@ def main() -> int:
         print("held MBV reset through USER1 EIO")
 
     axi = EjtagAxiController(transport, chain=args.chain)
-    if eio is None:
-        axi.connect()
-    else:
-        axi.attach()
+    axi.connect()
 
     try:
         for offset in range(0, len(words), args.chunk_words):
