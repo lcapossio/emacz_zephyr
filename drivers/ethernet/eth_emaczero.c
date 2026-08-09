@@ -467,7 +467,14 @@ static void emz_perf_update_pool_inflight(struct emaczero_data *data)
 	emaczero_perf_stats.rx_worker_current = worker_count;
 	emaczero_perf_stats.rx_stack_owned_current = stack_owned_count;
 	emaczero_perf_stats.rx_owner_sum_current = owner_sum;
-	if (owner_sum != EMZ_DMA_BUFFER_COUNT_RX) {
+	/* The five atomic reads above are not a consistent snapshot: a buffer
+	 * mid-transfer between two owner counters shows a transient off-by-one
+	 * or off-by-two on nearly every callback. Only flag when the drift is
+	 * larger than a plausible in-flight window, so this counter continues
+	 * to catch real leaks without firing on every completion.
+	 */
+	if (owner_sum + 8u < EMZ_DMA_BUFFER_COUNT_RX ||
+	    owner_sum > EMZ_DMA_BUFFER_COUNT_RX + 8u) {
 		emaczero_perf_stats.rx_owner_sum_bad++;
 	}
 	emaczero_perf_stats.rx_pool_inflight_current = inflight;
