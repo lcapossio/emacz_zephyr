@@ -1,7 +1,7 @@
 {
   "title": "Arty A7-100T MicroBlaze V DDR Top Level",
   "top": "arty_a7_100t_mbv",
-  "theme": "light",
+  "theme": "dark",
   "legend": "compact",
   "grid": {
     "cell_w": 220,
@@ -11,20 +11,15 @@
     "margin": 44
   },
   "domains": {
-    "board100": {
-      "freq_mhz": 100,
-      "color": "#DBEAFE",
-      "border": "#2563EB"
-    },
     "ddr_ui": {
       "freq_mhz": 81.247969,
-      "color": "#DCFCE7",
-      "border": "#16A34A"
+      "color": "#047857",
+      "border": "#6EE7B7"
     },
     "eth_mii": {
       "freq_mhz": 25,
-      "color": "#FEF3C7",
-      "border": "#D97706"
+      "color": "#B45309",
+      "border": "#FCD34D"
     }
   },
   "blocks": [
@@ -34,50 +29,57 @@
       "external": true,
       "side": "top",
       "row": 0,
-      "col": 4,
+      "col": 5,
       "lines": ["CLK100MHZ", "100 MHz", "MIG sys_clk_i"]
     },
     {
       "id": "eth_phy",
       "label": "Arty Ethernet PHY",
-      "external": true,
-      "side": "left",
+      "domain": "eth_mii",
       "row": 1,
       "col": 0,
-      "lines": ["DP83848 PHY", "MII / MDIO", "RX/TX clocks 25 MHz"]
+      "lines": ["DP83848 PHY (off-chip)", "MII / MDIO", "RX/TX 25 MHz"]
     },
     {
       "id": "emaczero",
       "label": "emacZero MAC",
-      "domain": "ddr_ui",
-      "domain_b": "eth_mii",
+      "domain": "eth_mii",
+      "domain_b": "ddr_ui",
       "row": 1,
       "col": 1,
-      "lines": ["emacZero MAC", "AXI side 81.247969 MHz", "MII side 25 MHz"]
+      "lines": ["emacZero MAC", "MII 25 MHz", "AXI 81.25 MHz"]
+    },
+    {
+      "id": "axis_rx_stats",
+      "label": "axis_rx_stream_stats",
+      "domain": "ddr_ui",
+      "row": 1,
+      "col": 2,
+      "lines": ["axis_rx_stream_stats", "CSR @ 0x41F00000", "TLAST/stall probe"]
     },
     {
       "id": "axi_dma",
       "label": "AXI DMA",
       "domain": "ddr_ui",
       "row": 1,
-      "col": 2,
-      "lines": ["AXI DMA", "MM2S / S2MM", "SG descriptors"]
+      "col": 3,
+      "lines": ["AXI DMA @ 0x41E00000", "MM2S / S2MM", "SG descriptors on DDR"]
     },
     {
       "id": "ddr_axi",
       "label": "DDR SmartConnect",
       "domain": "ddr_ui",
       "row": 1,
-      "col": 3,
-      "lines": ["AXI SmartConnect", "4 SI / 1 MI", "81.247969 MHz"]
+      "col": 4,
+      "lines": ["AXI SmartConnect", "data fabric", "81.25 MHz"]
     },
     {
       "id": "mig",
       "label": "Arty A7 MIG",
       "domain": "ddr_ui",
       "row": 1,
-      "col": 4,
-      "lines": ["MIG 7-Series", "S_AXI on ui_clk", "ui_addn_clk0 199.692 MHz"]
+      "col": 5,
+      "lines": ["MIG 7-Series", "S_AXI on ui_clk", "ui_addn 199.7 MHz"]
     },
     {
       "id": "ddr3",
@@ -85,16 +87,16 @@
       "external": true,
       "side": "right",
       "row": 1,
-      "col": 5,
-      "lines": ["DDR3 SDRAM", "0x90000000..0x9fffffff", "Zephyr + buffers"]
+      "col": 6,
+      "lines": ["DDR3 SDRAM", "0x90000000..0x9FFFFFFF", "Zephyr + buffers"]
     },
     {
-      "id": "mbv",
-      "label": "MicroBlaze V",
+      "id": "fcapz_ejtagaxi",
+      "label": "fcapz EJTAG-AXI",
       "domain": "ddr_ui",
       "row": 2,
-      "col": 3,
-      "lines": ["MicroBlaze V", "RV32IMAC @ 81.247969 MHz", "I/D cache over DDR"]
+      "col": 1,
+      "lines": ["fcapz EJTAG-AXI", "BSCANE2 USER3", "AXI master bridge"]
     },
     {
       "id": "ctrl_axi",
@@ -102,15 +104,39 @@
       "domain": "ddr_ui",
       "row": 2,
       "col": 2,
-      "lines": ["AXI-Lite fabric", "81.247969 MHz", "CSR fanout"]
+      "lines": ["AXI-Lite fabric", "81.25 MHz", "CSR fan-out"]
     },
     {
-      "id": "loader_bram",
-      "label": "Loader BRAM",
+      "id": "mbv",
+      "label": "MicroBlaze V",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 3,
+      "lines": ["MicroBlaze V", "RV32IMAC @ 81.25 MHz", "I/D cache over DDR"]
+    },
+    {
+      "id": "fcapz_eio",
+      "label": "fcapz EIO",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 4,
+      "lines": ["fcapz EIO", "BSCANE2 USER1 ch1", "MBV reset ctrl"]
+    },
+    {
+      "id": "ddr_map",
+      "label": "DDR Address Map",
+      "domain": "ddr_ui",
+      "row": 2,
+      "col": 5,
+      "lines": ["0x90000000 Zephyr RAM", "lower 240 MiB", "0x9F000000 DMA heap"]
+    },
+    {
+      "id": "fcapz_ejtaguart",
+      "label": "fcapz EJTAG-UART",
       "domain": "ddr_ui",
       "row": 3,
-      "col": 3,
-      "lines": ["BRAM scratch only", "32 KiB LMB", "32 KiB AXI loader"]
+      "col": 1,
+      "lines": ["fcapz EJTAG-UART", "BSCANE2 USER4", "console into UARTLite"]
     },
     {
       "id": "peripherals",
@@ -121,80 +147,38 @@
       "lines": ["UARTLite / Timer", "INTC / GPIO", "MAC + DMA CSRs"]
     },
     {
-      "id": "ddr_map",
-      "label": "DDR Address Map",
+      "id": "loader_bram",
+      "label": "Loader BRAM",
       "domain": "ddr_ui",
-      "row": 2,
-      "col": 5,
-      "lines": ["0x90000000 Zephyr RAM", "lower 240 MiB", "0x9f000000 DMA heap"]
+      "row": 3,
+      "col": 3,
+      "lines": ["BRAM scratch only", "32 KiB LMB", "32 KiB AXI loader"]
+    },
+    {
+      "id": "fcapz_ela",
+      "label": "fcapz ELA",
+      "domain": "ddr_ui",
+      "row": 3,
+      "col": 4,
+      "lines": ["fcapz ELA", "BSCANE2 USER1", "signal probes"]
     }
   ],
   "edges": [
-    {
-      "from": "clk100",
-      "to": "mig",
-      "kind": "generic",
-      "width": "100 MHz"
-    },
-    {
-      "from": "eth_phy",
-      "to": "emaczero",
-      "kind": "generic",
-      "width": "MII MDIO"
-    },
-    {
-      "from": "emaczero",
-      "to": "axi_dma",
-      "kind": "axi-stream",
-      "width": "TX/RX 8b"
-    },
-    {
-      "from": "axi_dma",
-      "to": "ddr_axi",
-      "kind": "axi-mm",
-      "width": 32
-    },
-    {
-      "from": "ddr_axi",
-      "to": "mig",
-      "kind": "axi-mm",
-      "width": 32
-    },
-    {
-      "from": "mig",
-      "to": "ddr3",
-      "kind": "generic",
-      "width": "DDR3"
-    },
-    {
-      "from": "mbv",
-      "to": "ddr_axi",
-      "kind": "axi-mm",
-      "width": "I/D 32b"
-    },
-    {
-      "from": "mbv",
-      "to": "ctrl_axi",
-      "kind": "axi-lite",
-      "width": 32
-    },
-    {
-      "from": "mbv",
-      "to": "loader_bram",
-      "kind": "generic",
-      "width": "LMB 32b"
-    },
-    {
-      "from": "ctrl_axi",
-      "to": "peripherals",
-      "kind": "axi-lite",
-      "width": 32
-    },
-    {
-      "from": "mig",
-      "to": "ddr_map",
-      "kind": "generic",
-      "width": "addr map"
-    }
+    {"from": "clk100", "to": "mig", "kind": "generic", "width": "100 MHz"},
+    {"from": "eth_phy", "to": "emaczero", "kind": "generic", "width": "MII MDIO"},
+    {"from": "emaczero", "to": "axis_rx_stats", "kind": "axi-stream", "width": "RX 8b"},
+    {"from": "axis_rx_stats", "to": "axi_dma", "kind": "axi-stream", "width": "RX 8b"},
+    {"from": "axi_dma", "to": "ddr_axi", "kind": "axi-mm", "width": 32},
+    {"from": "ddr_axi", "to": "mig", "kind": "axi-mm", "width": 32},
+    {"from": "mig", "to": "ddr3", "kind": "generic", "width": "DDR3"},
+    {"from": "mbv", "to": "ddr_axi", "kind": "axi-mm", "width": "I/D 32b"},
+    {"from": "mbv", "to": "ctrl_axi", "kind": "axi-lite", "width": 32},
+    {"from": "mbv", "to": "loader_bram", "kind": "generic", "width": "LMB 32b"},
+    {"from": "ctrl_axi", "to": "peripherals", "kind": "axi-lite", "width": 32},
+    {"from": "ctrl_axi", "to": "axis_rx_stats", "kind": "axi-lite", "width": 32},
+    {"from": "mig", "to": "ddr_map", "kind": "generic", "width": "addr map"},
+    {"from": "fcapz_ejtagaxi", "to": "ctrl_axi", "kind": "axi-mm", "width": 32},
+    {"from": "fcapz_ejtaguart", "to": "peripherals", "kind": "generic", "width": "UART RX"},
+    {"from": "fcapz_eio", "to": "mbv", "kind": "generic", "width": "reset"}
   ]
 }

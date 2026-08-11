@@ -1,104 +1,140 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="2340" height="718" viewBox="0 0 2340 718" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" style="background:#f8fafc">
+<svg xmlns="http://www.w3.org/2000/svg" width="2692" height="718" viewBox="0 0 2692 718" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" style="background:#000000">
   <defs>
-    <marker id="ah-solid" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#1f2937"/></marker>
-    <marker id="ah-thin" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#374151"/></marker>
-    <marker id="ah-stream" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#5C5C00"/></marker>
-    <marker id="ah-axil" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#0D47A1"/></marker>
-    <marker id="ah-tilelink" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#00796B"/></marker>
-    <marker id="ah-cdc" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#6A1B9A"/></marker>
-    <marker id="ah-open" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0.5,0.5 L0.5,5.5 L8,3 z" fill="#f8fafc" stroke="#1f2937" stroke-width="1"/></marker>
-    <linearGradient id="grad-emaczero" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="50%" stop-color="#DCFCE7"/><stop offset="50%" stop-color="#FEF3C7"/></linearGradient>
+    <marker id="ah-solid" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#e2e8f0"/></marker>
+    <marker id="ah-thin" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#9ca3af"/></marker>
+    <marker id="ah-stream" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d9f99d"/></marker>
+    <marker id="ah-axil" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#93c5fd"/></marker>
+    <marker id="ah-tilelink" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#5eead4"/></marker>
+    <marker id="ah-cdc" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d8b4fe"/></marker>
+    <marker id="ah-open" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0.5,0.5 L0.5,5.5 L8,3 z" fill="#000000" stroke="#e2e8f0" stroke-width="1"/></marker>
+    <linearGradient id="grad-emaczero" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="50%" stop-color="#B45309"/><stop offset="50%" stop-color="#047857"/></linearGradient>
   </defs>
-  <rect width="2340" height="718" fill="#f8fafc" id="_canvas_bg"/>
-  <text x="1034.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#1f2937" letter-spacing="0.2">Arty A7-100T MicroBlaze V DDR Top Level</text>
-  <rect id="clk100" x="1452" y="74" width="220" height="96" fill="#E0E0E0" stroke="#424242" stroke-width="1.4" rx="8"/>
-  <text x="1562" y="112" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">CLK100MHZ</text>
-  <text x="1562" y="127" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">100 MHz</text>
-  <text x="1562" y="142" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">MIG sys_clk_i</text>
-  <rect id="eth_phy" x="44" y="242" width="220" height="96" fill="#E0E0E0" stroke="#424242" stroke-width="1.4" rx="8"/>
-  <text x="154" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">DP83848 PHY</text>
-  <text x="154" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">MII / MDIO</text>
-  <text x="154" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">RX/TX clocks 25 MHz</text>
-  <rect id="emaczero" x="396" y="242" width="220" height="96" fill="url(#grad-emaczero)" stroke="#1f2937" stroke-width="1.4" rx="8"/>
-  <text x="506" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">emacZero MAC</text>
-  <text x="506" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">AXI side 81.247969 MHz</text>
-  <text x="506" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">MII side 25 MHz</text>
-  <rect id="axi_dma" x="748" y="242" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="858" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI DMA</text>
-  <text x="858" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">MM2S / S2MM</text>
-  <text x="858" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">SG descriptors</text>
-  <rect id="ddr_axi" x="1100" y="242" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="1210" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI SmartConnect</text>
-  <text x="1210" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">4 SI / 1 MI</text>
-  <text x="1210" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">81.247969 MHz</text>
-  <rect id="mig" x="1452" y="242" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="1562" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">MIG 7-Series</text>
-  <text x="1562" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">S_AXI on ui_clk</text>
-  <text x="1562" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">ui_addn_clk0 199.692 MHz</text>
-  <rect id="ddr3" x="1804" y="242" width="220" height="96" fill="#E0E0E0" stroke="#424242" stroke-width="1.4" rx="8"/>
-  <text x="1914" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">DDR3 SDRAM</text>
-  <text x="1914" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">0x90000000..0x9fffffff</text>
-  <text x="1914" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">Zephyr + buffers</text>
-  <rect id="mbv" x="1100" y="410" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="1210" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">MicroBlaze V</text>
-  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">RV32IMAC @ 81.247969 MHz</text>
-  <text x="1210" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">I/D cache over DDR</text>
-  <rect id="ctrl_axi" x="748" y="410" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="858" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">AXI-Lite fabric</text>
-  <text x="858" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">81.247969 MHz</text>
-  <text x="858" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">CSR fanout</text>
-  <rect id="loader_bram" x="1100" y="578" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="1210" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">BRAM scratch only</text>
-  <text x="1210" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">32 KiB LMB</text>
-  <text x="1210" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">32 KiB AXI loader</text>
-  <rect id="peripherals" x="748" y="578" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="858" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">UARTLite / Timer</text>
-  <text x="858" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">INTC / GPIO</text>
-  <text x="858" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">MAC + DMA CSRs</text>
-  <rect id="ddr_map" x="1804" y="410" width="220" height="96" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.4" rx="8"/>
-  <text x="1914" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">0x90000000 Zephyr RAM</text>
-  <text x="1914" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">lower 240 MiB</text>
-  <text x="1914" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">0x9f000000 DMA heap</text>
-  <path id="edge_clk100_to_mig" d="M 1562.0,170.0 L 1562.0,206.0 L 1562.0,242.0" stroke="#374151" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
-  <rect x="1530.1" y="176.2" width="63.8" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1562.0" y="191.0" text-anchor="middle" font-size="15" fill="#1f2937">100 MHz</text>
-  <path id="edge_eth_phy_to_emaczero" d="M 264.0,290.0 L 330.0,290.0 L 396.0,290.0" stroke="#374151" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
-  <rect x="267.0" y="271.2" width="72.0" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="303.0" y="286.0" text-anchor="middle" font-size="15" fill="#1f2937">MII MDIO</text>
-  <path id="edge_emaczero_to_axi_dma" d="M 616.0,290.0 L 682.0,290.0 L 748.0,290.0" stroke="#5C5C00" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)"/>
-  <rect x="619.0" y="271.2" width="121.5" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="679.8" y="286.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-S TX/RX 8b</text>
-  <path id="edge_axi_dma_to_ddr_axi" d="M 968.0,290.0 L 1034.0,290.0 L 1100.0,290.0" stroke="#1f2937" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
-  <rect x="971.0" y="271.2" width="88.5" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1015.2" y="286.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-MM 32b</text>
-  <path id="edge_ddr_axi_to_mig" d="M 1320.0,290.0 L 1386.0,290.0 L 1452.0,290.0" stroke="#1f2937" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
-  <rect x="1323.0" y="271.2" width="88.5" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1367.2" y="286.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-MM 32b</text>
-  <path id="edge_mig_to_ddr3" d="M 1672.0,274.0 L 1712.0,274.0 L 1712.0,290.0 L 1804.0,290.0" stroke="#374151" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
-  <rect x="1738.5" y="271.2" width="39.0" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1758.0" y="286.0" text-anchor="middle" font-size="15" fill="#1f2937">DDR3</text>
-  <path id="edge_mbv_to_ddr_axi" d="M 1210.0,410.0 L 1210.0,374.0 L 1210.0,338.0" stroke="#1f2937" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)"/>
-  <rect x="1149.2" y="380.2" width="121.5" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1210.0" y="395.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-MM I/D 32b</text>
-  <path id="edge_mbv_to_ctrl_axi" d="M 1100.0,458.0 L 1034.0,458.0 L 968.0,458.0" stroke="#0D47A1" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)"/>
-  <rect x="1016.8" y="439.2" width="80.2" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1056.9" y="454.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-L 32b</text>
-  <path id="edge_mbv_to_loader_bram" d="M 1210.0,506.0 L 1210.0,542.0 L 1210.0,578.0" stroke="#374151" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
-  <rect x="1178.1" y="512.2" width="63.8" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1210.0" y="527.0" text-anchor="middle" font-size="15" fill="#1f2937">LMB 32b</text>
-  <path id="edge_ctrl_axi_to_peripherals" d="M 858.0,506.0 L 858.0,542.0 L 858.0,578.0" stroke="#0D47A1" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)"/>
-  <rect x="817.9" y="512.2" width="80.2" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="858.0" y="527.0" text-anchor="middle" font-size="15" fill="#1f2937">AXI-L 32b</text>
-  <path id="edge_mig_to_ddr_map" d="M 1672.0,306.0 L 1764.0,306.0 L 1764.0,458.0 L 1804.0,458.0" stroke="#374151" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
-  <rect x="1728.0" y="370.2" width="72.0" height="19.0" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.6" rx="3"/>
-  <text x="1764.0" y="385.0" text-anchor="middle" font-size="15" fill="#1f2937">addr map</text>
-  <rect id="legend_card" x="2084" y="46" width="240" height="116" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" rx="6"/>
-  <text x="2204" y="74" text-anchor="middle" font-size="13" font-weight="700" fill="#1f2937" letter-spacing="0.4">Clock domains</text>
-  <rect x="2098" y="86" width="22" height="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.2" rx="2"/>
-  <text x="2130" y="98" font-size="13" fill="#1f2937">board100  100 MHz</text>
-  <rect x="2098" y="108" width="22" height="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.2" rx="2"/>
-  <text x="2130" y="120" font-size="13" fill="#1f2937">ddr_ui  81.247969 MHz</text>
-  <rect x="2098" y="130" width="22" height="14" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2" rx="2"/>
-  <text x="2130" y="142" font-size="13" fill="#1f2937">eth_mii  25 MHz</text>
+  <rect width="2692" height="718" fill="#000000" id="_canvas_bg"/>
+  <text x="1210.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MicroBlaze V DDR Top Level</text>
+  <rect id="clk100" x="1804" y="74" width="220" height="96" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="1914" y="112" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">CLK100MHZ</text>
+  <text x="1914" y="127" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">100 MHz</text>
+  <text x="1914" y="142" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">MIG sys_clk_i</text>
+  <rect id="eth_phy" x="44" y="242" width="220" height="96" fill="#B45309" stroke="#FCD34D" stroke-width="1.4" rx="8"/>
+  <text x="154" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">DP83848 PHY (off-chip)</text>
+  <text x="154" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MII / MDIO</text>
+  <text x="154" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">RX/TX 25 MHz</text>
+  <rect id="emaczero" x="396" y="242" width="220" height="96" fill="url(#grad-emaczero)" stroke="#4b5563" stroke-width="1.4" rx="8"/>
+  <text x="506" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">emacZero MAC</text>
+  <text x="506" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MII 25 MHz</text>
+  <text x="506" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">AXI 81.25 MHz</text>
+  <rect id="axis_rx_stats" x="748" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="858" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">axis_rx_stream_stats</text>
+  <text x="858" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">CSR @ 0x41F00000</text>
+  <text x="858" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">TLAST/stall probe</text>
+  <rect id="axi_dma" x="1100" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1210" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI DMA @ 0x41E00000</text>
+  <text x="1210" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MM2S / S2MM</text>
+  <text x="1210" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">SG descriptors on DDR</text>
+  <rect id="ddr_axi" x="1452" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1562" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI SmartConnect</text>
+  <text x="1562" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">data fabric</text>
+  <text x="1562" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">81.25 MHz</text>
+  <rect id="mig" x="1804" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1914" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">MIG 7-Series</text>
+  <text x="1914" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">S_AXI on ui_clk</text>
+  <text x="1914" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">ui_addn 199.7 MHz</text>
+  <rect id="ddr3" x="2156" y="242" width="220" height="96" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="2266" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">DDR3 SDRAM</text>
+  <text x="2266" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">0x90000000..0x9FFFFFFF</text>
+  <text x="2266" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">Zephyr + buffers</text>
+  <rect id="fcapz_ejtagaxi" x="396" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="506" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EJTAG-AXI</text>
+  <text x="506" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER3</text>
+  <text x="506" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">AXI master bridge</text>
+  <rect id="ctrl_axi" x="748" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="858" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI-Lite fabric</text>
+  <text x="858" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">81.25 MHz</text>
+  <text x="858" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">CSR fan-out</text>
+  <rect id="mbv" x="1100" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1210" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">MicroBlaze V</text>
+  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">RV32IMAC @ 81.25 MHz</text>
+  <text x="1210" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">I/D cache over DDR</text>
+  <rect id="fcapz_eio" x="1452" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1562" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EIO</text>
+  <text x="1562" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER1 ch1</text>
+  <text x="1562" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MBV reset ctrl</text>
+  <rect id="ddr_map" x="1804" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1914" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">0x90000000 Zephyr RAM</text>
+  <text x="1914" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">lower 240 MiB</text>
+  <text x="1914" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">0x9F000000 DMA heap</text>
+  <rect id="fcapz_ejtaguart" x="396" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="506" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EJTAG-UART</text>
+  <text x="506" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER4</text>
+  <text x="506" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">console into UARTLite</text>
+  <rect id="peripherals" x="748" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="858" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">UARTLite / Timer</text>
+  <text x="858" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">INTC / GPIO</text>
+  <text x="858" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MAC + DMA CSRs</text>
+  <rect id="loader_bram" x="1100" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1210" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">BRAM scratch only</text>
+  <text x="1210" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">32 KiB LMB</text>
+  <text x="1210" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">32 KiB AXI loader</text>
+  <rect id="fcapz_ela" x="1452" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="1562" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz ELA</text>
+  <text x="1562" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER1</text>
+  <text x="1562" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">signal probes</text>
+  <mask id="edge-label-clearance" maskUnits="userSpaceOnUse">
+    <rect width="2692" height="718" fill="#ffffff"/>
+    <rect x="1920.0" y="178.5" width="64.0" height="19.0" fill="#000000"/>
+    <rect x="268.0" y="265.0" width="68.2" height="19.0" fill="#000000"/>
+    <rect x="620.0" y="265.0" width="89.0" height="19.0" fill="#000000"/>
+    <rect x="972.0" y="265.0" width="89.0" height="19.0" fill="#000000"/>
+    <rect x="1360.6" y="249.0" width="87.4" height="19.0" fill="#000000"/>
+    <rect x="1676.0" y="265.0" width="87.4" height="19.0" fill="#000000"/>
+    <rect x="2034.6" y="265.0" width="44.8" height="19.0" fill="#000000"/>
+    <rect x="1337.3" y="364.5" width="110.7" height="19.0" fill="#000000"/>
+    <rect x="1025.3" y="433.0" width="70.7" height="19.0" fill="#000000"/>
+    <rect x="1216.0" y="514.5" width="64.0" height="19.0" fill="#000000"/>
+    <rect x="864.0" y="514.5" width="70.7" height="19.0" fill="#000000"/>
+    <rect x="864.0" y="382.5" width="70.7" height="19.0" fill="#000000"/>
+    <rect x="1920.0" y="346.5" width="67.4" height="19.0" fill="#000000"/>
+    <rect x="620.0" y="433.0" width="87.4" height="19.0" fill="#000000"/>
+    <rect x="620.0" y="601.0" width="69.8" height="19.0" fill="#000000"/>
+    <rect x="1387.3" y="464.0" width="37.3" height="19.0" fill="#000000"/>
+  </mask>
+  <path id="edge_clk100_to_mig" d="M 1914.0,170.0 L 1914.0,206.0 L 1914.0,242.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_eth_phy_to_emaczero" d="M 264.0,290.0 L 330.0,290.0 L 396.0,290.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_emaczero_to_axis_rx_stats" d="M 616.0,290.0 L 682.0,290.0 L 748.0,290.0" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_axis_rx_stats_to_axi_dma" d="M 968.0,290.0 L 1034.0,290.0 L 1100.0,290.0" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_axi_dma_to_ddr_axi" d="M 1320.0,290.0 L 1360.0,290.0 L 1360.0,274.0 L 1452.0,274.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_ddr_axi_to_mig" d="M 1672.0,290.0 L 1738.0,290.0 L 1804.0,290.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_mig_to_ddr3" d="M 2024.0,290.0 L 2090.0,290.0 L 2156.0,290.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_mbv_to_ddr_axi" d="M 1320.0,442.0 L 1412.0,442.0 L 1412.0,306.0 L 1452.0,306.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_mbv_to_ctrl_axi" d="M 1100.0,458.0 L 1034.0,458.0 L 968.0,458.0" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_mbv_to_loader_bram" d="M 1210.0,506.0 L 1210.0,542.0 L 1210.0,578.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_ctrl_axi_to_peripherals" d="M 858.0,506.0 L 858.0,542.0 L 858.0,578.0" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_ctrl_axi_to_axis_rx_stats" d="M 858.0,410.0 L 858.0,374.0 L 858.0,338.0" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_mig_to_ddr_map" d="M 1914.0,338.0 L 1914.0,374.0 L 1914.0,410.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_fcapz_ejtagaxi_to_ctrl_axi" d="M 616.0,458.0 L 682.0,458.0 L 748.0,458.0" stroke="#e2e8f0" stroke-width="2.5" fill="none" marker-end="url(#ah-solid)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_fcapz_ejtaguart_to_peripherals" d="M 616.0,626.0 L 682.0,626.0 L 748.0,626.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <path id="edge_fcapz_eio_to_mbv" d="M 1452.0,458.0 L 1360.0,458.0 L 1360.0,474.0 L 1320.0,474.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)" mask="url(#edge-label-clearance)"/>
+  <text x="1952.0" y="193.2" text-anchor="middle" font-size="15" fill="#e2e8f0">100 MHz</text>
+  <text x="302.1" y="279.8" text-anchor="middle" font-size="15" fill="#e2e8f0">MII MDIO</text>
+  <text x="664.5" y="279.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-S RX 8b</text>
+  <text x="1016.5" y="279.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-S RX 8b</text>
+  <text x="1404.3" y="263.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <text x="1719.7" y="279.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <text x="2057.0" y="279.8" text-anchor="middle" font-size="15" fill="#e2e8f0">DDR3</text>
+  <text x="1392.7" y="379.2" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM I/D 32b</text>
+  <text x="1060.6" y="447.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-L 32b</text>
+  <text x="1248.0" y="529.2" text-anchor="middle" font-size="15" fill="#e2e8f0">LMB 32b</text>
+  <text x="899.4" y="529.2" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-L 32b</text>
+  <text x="899.4" y="397.2" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-L 32b</text>
+  <text x="1953.7" y="361.2" text-anchor="middle" font-size="15" fill="#e2e8f0">addr map</text>
+  <text x="663.7" y="447.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
+  <text x="654.9" y="615.8" text-anchor="middle" font-size="15" fill="#e2e8f0">UART RX</text>
+  <text x="1406.0" y="478.8" text-anchor="middle" font-size="15" fill="#e2e8f0">reset</text>
+  <rect id="legend_card" x="2436" y="46" width="240" height="94" fill="#0f172a" stroke="#475569" stroke-width="1" rx="6"/>
+  <text x="2556" y="74" text-anchor="middle" font-size="13" font-weight="700" fill="#e2e8f0" letter-spacing="0.4">Clock domains</text>
+  <rect x="2450" y="86" width="22" height="14" fill="#047857" stroke="#6EE7B7" stroke-width="1.2" rx="2"/>
+  <text x="2482" y="98" font-size="13" fill="#e2e8f0">ddr_ui  81.247969 MHz</text>
+  <rect x="2450" y="108" width="22" height="14" fill="#B45309" stroke="#FCD34D" stroke-width="1.2" rx="2"/>
+  <text x="2482" y="120" font-size="13" fill="#e2e8f0">eth_mii  25 MHz</text>
 </svg>
