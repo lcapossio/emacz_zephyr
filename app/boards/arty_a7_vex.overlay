@@ -1,0 +1,15 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * App-side overlay for arty_a7_vex. Kept intentionally slim so that per-CPU
+ * peripheral placement lives in boards/bard0/arty_a7_vex/arty_a7_vex.dts.
+ * Address map matches the mbv32 shell (per project decision):
+ *   emacZero      @ 0x44A00000
+ *   AXI DMA       @ 0x41E00000
+ *   axis_rx_stats @ 0x41F00000
+ *   UARTLite      @ 0x40600000
+ *   DDR           @ 0x90000000 (240 MiB Zephyr + 16 MiB DMA at 0x9F000000)
+ *
+ * TODO Step 2: mirror the mbv32.overlay nodes once the base DTS is populated.
+ */

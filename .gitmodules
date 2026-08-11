@@ -5,3 +5,6 @@
 [submodule "fcapz"]
 	path = fcapz
 	url = https://github.com/lcapossio/fpgacapZero
+[submodule "external/VexRiscv"]
+	path = external/VexRiscv
+	url = https://github.com/SpinalHDL/VexRiscv.git

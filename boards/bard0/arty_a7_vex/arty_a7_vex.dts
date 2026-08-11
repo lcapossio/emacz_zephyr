@@ -1,0 +1,37 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * TODO Step 2: populate with the Arty A7-100T VexRiscv-full DTS. Shape mirrors
+ * boards/amd/mbv32/mbv32.dts and app/boards/mbv32.overlay:
+ *   - cpu@0 compatible = "spinalhdl,vexriscv" (or "sifive,e31"-style)
+ *   - chosen zephyr,sram = &ddr3    (@0x90000000, 240 MiB)
+ *   - chosen zephyr,console = &uartlite0  (AXI UARTLite @0x40600000)
+ *   - AXI DMA @0x41E00000, emacZero @0x44A00000, stream stats @0x41F00000
+ *   - riscv,machine-timer, plic (or bare axi-intc)
+ * Address map is IDENTICAL to the MBV shell (per project decision).
+ */
+
+/dts-v1/;
+
+/ {
+	compatible = "bard0,arty-a7-vex";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	chosen {
+		/* TODO Step 2 */
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		ranges;
+	};
+};

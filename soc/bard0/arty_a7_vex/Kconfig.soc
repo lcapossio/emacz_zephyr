@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+config SOC_ARTY_A7_VEX
+	bool
+	select RISCV
+	help
+	  VexRiscv-full soft CPU on Arty A7-100T (bard0 emacz_zephyr).
+
+config SOC
+	default "arty_a7_vex" if SOC_ARTY_A7_VEX

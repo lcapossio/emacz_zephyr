@@ -1,0 +1,9 @@
+identifier: arty_a7_vex
+name: Arty A7-100T VexRiscv-full
+type: mcu
+arch: riscv
+toolchain:
+  - cross-compile
+  - zephyr
+ram: 245760
+flash: 0

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+if SOC_ARTY_A7_VEX
+
+# TODO Step 2: SOC family/series-level defaults.
+
+endif # SOC_ARTY_A7_VEX
