@@ -3,6 +3,7 @@
 
 if BOARD_ARTY_A7_VEX
 
-# Populated by Step 2 — DTS + peripheral wiring.
+config BOARD
+	default "arty_a7_vex"
 
 endif # BOARD_ARTY_A7_VEX

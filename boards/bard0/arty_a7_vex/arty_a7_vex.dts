@@ -1,31 +1,65 @@
-/*
- * SPDX-License-Identifier: Apache-2.0
- * Copyright (c) 2026 Leonardo Capossio - bard0 design
- *
- * TODO Step 2: populate with the Arty A7-100T VexRiscv-full DTS. Shape mirrors
- * boards/amd/mbv32/mbv32.dts and app/boards/mbv32.overlay:
- *   - cpu@0 compatible = "spinalhdl,vexriscv" (or "sifive,e31"-style)
- *   - chosen zephyr,sram = &ddr3    (@0x90000000, 240 MiB)
- *   - chosen zephyr,console = &uartlite0  (AXI UARTLite @0x40600000)
- *   - AXI DMA @0x41E00000, emacZero @0x44A00000, stream stats @0x41F00000
- *   - riscv,machine-timer, plic (or bare axi-intc)
- * Address map is IDENTICAL to the MBV shell (per project decision).
- */
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Leonardo Capossio - bard0 design
+//
+// Zephyr DTS for the Arty A7-100T VexRiscv-full shell (hardware built by
+// hardware/scripts/build_arty_a7_vex.py). Address map matches the MicroBlaze
+// V shell where possible; the differences are the CPU node (VexRiscv, not
+// AMD MicroBlaze V) and the timer (riscv,machine-timer instead of AMD
+// xps-timer). The AXI INTC is omitted for now — all peripheral IRQs are
+// OR-reduced into VexRiscv's externalInterrupt bit in hardware, so this
+// step 2 boot runs polled UART only. A PLIC-style dispatch is a later
+// hardware/DTS change.
 
 /dts-v1/;
 
 / {
-	compatible = "bard0,arty-a7-vex";
 	#address-cells = <1>;
 	#size-cells = <1>;
-
-	chosen {
-		/* TODO Step 2 */
-	};
+	model = "Arty A7-100T VexRiscv-full (bard0)";
+	compatible = "bard0,arty-a7-vex";
 
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
+		timebase-frequency = <100000000>;
+
+		cpu_0: cpu@0 {
+			compatible = "bard0,vexriscv", "riscv";
+			device_type = "cpu";
+			reg = <0>;
+			riscv,isa = "rv32imac_zicsr_zifencei";
+			clock-frequency = <100000000>;
+
+			cpu0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+			};
+		};
+	};
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &ram0;
+	};
+
+	// DDR3 backing store, 240 MiB usable (0x9000_0000 .. 0x9EFF_FFFF, same
+	// as the MBV shell so images bake the same load address). fcapz stages
+	// the Zephyr image here; the boot ROM at 0x0 jumps in.
+	ram0: memory@90000000 {
+		device_type = "memory";
+		reg = <0x90000000 0x0F000000>;
+	};
+
+	clk100: clk100 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
 	};
 
 	soc {
@@ -33,5 +67,25 @@
 		#size-cells = <1>;
 		compatible = "simple-bus";
 		ranges;
+
+		// riscv_mtimer.v — mtime.lo @ +0, mtime.hi @ +4,
+		// mtimecmp.lo @ +8, mtimecmp.hi @ +12. Zephyr's binding takes
+		// two ranges (mtime + mtimecmp) so name them separately.
+		mtimer: timer@2000000 {
+			compatible = "riscv,machine-timer";
+			reg = <0x02000000 0x8 0x02000008 0x8>;
+			reg-names = "mtime", "mtimecmp";
+			interrupts-extended = <&cpu0_intc 7>;   // M-mode timer
+		};
+
+		// Xilinx AXI UARTLite @ 0x40600000. Polled at this stage —
+		// no interrupts child so the driver stays out of the IRQ path.
+		uart0: serial@40600000 {
+			compatible = "xlnx,xps-uartlite-1.00.a";
+			reg = <0x40600000 0x1000>;
+			clocks = <&clk100>;
+			current-speed = <115200>;
+			status = "okay";
+		};
 	};
 };

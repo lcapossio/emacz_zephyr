@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-# TODO Step 2: pull in the RISC-V arch selects that VexRiscv-full needs
-# (RV32IMA + Zicsr + Zifencei, PLIC or bare AXI-INTC, machine timer).
+config SOC_ARTY_A7_VEX
+	select ATOMIC_OPERATIONS_C
+	select INCLUDE_RESET_VECTOR
+	select RISCV_ISA_RV32I
+	select RISCV_ISA_EXT_M
+	select RISCV_ISA_EXT_A
+	select RISCV_ISA_EXT_C
+	select RISCV_ISA_EXT_ZICSR
+	select RISCV_ISA_EXT_ZIFENCEI
+	select RISCV_PRIVILEGED
+	select RISCV_HAS_CPU_IDLE

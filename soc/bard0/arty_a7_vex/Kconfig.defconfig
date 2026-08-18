@@ -3,6 +3,20 @@
 
 if SOC_ARTY_A7_VEX
 
-# TODO Step 2: SOC family/series-level defaults.
+# Zephyr XIP-less — the image is DMAed to DDR and .text runs from there.
+config XIP
+	default n
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 100000000
+
+config RISCV_MACHINE_TIMER
+	default y
+
+# No AXI-INTC / PLIC yet — CPU-INTC only. The RISC-V machine-mode standard
+# defines IRQ lines 0..15; reserve those. When a PLIC is added, this rises
+# to include the level-2 space.
+config NUM_IRQS
+	default 16
 
 endif # SOC_ARTY_A7_VEX
