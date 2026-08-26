@@ -124,4 +124,17 @@ config ETH_EMACZERO_R7_INSTRUMENTATION
 	  "PRF2" magic word so host tools can locate them by scan. Cost is a
 	  handful of k_cycle_get_32() reads per packet — off by default.
 
+config ETH_EMACZERO_DCACHE_MAINT
+	bool "Emit RISC-V fence + Zicbom cbo.clean/inval for DMA coherency"
+	default y
+	help
+	  Emit fence + cbo.clean/cbo.inval instructions in the DMA cache
+	  maintenance helpers so descriptor and buffer memory stays coherent
+	  between the CPU D-cache and the AXI DMA engine. Disable this on
+	  RISC-V cores whose decoder does not accept the standard fence /
+	  Zicbom encodings (e.g., the VexRiscv-full demo config used by the
+	  bard0 arty_a7_vex shell); the maintenance calls then become no-ops
+	  and DMA coherency must be ensured by placing descriptor rings and
+	  DMA buffers in an uncached memory region.
+
 endif

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
 zephyr_sources(
+    soc.c
     ${ZEPHYR_BASE}/soc/common/riscv-privileged/soc_irq.S
     ${ZEPHYR_BASE}/soc/common/riscv-privileged/vector.S
 )

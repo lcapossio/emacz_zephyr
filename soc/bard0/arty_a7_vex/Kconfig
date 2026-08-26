@@ -7,8 +7,29 @@ config SOC_ARTY_A7_VEX
 	select RISCV_ISA_RV32I
 	select RISCV_ISA_EXT_M
 	select RISCV_ISA_EXT_A
-	select RISCV_ISA_EXT_C
+	# bard0: disable C — VexRiscv-full has a csrrw+c.j pipeline hazard
 	select RISCV_ISA_EXT_ZICSR
 	select RISCV_ISA_EXT_ZIFENCEI
-	select RISCV_PRIVILEGED
+	# NOTE: intentionally NOT selecting RISCV_PRIVILEGED. That would pull
+	# in soc/common/riscv-privileged/soc_common_irq.c whose arch_irq_enable
+	# hard-wires straight-into-mie writes and collides with our own
+	# multi-level-aware override in soc.c. mbv32 avoids the same collision
+	# by not selecting RISCV_PRIVILEGED either — we still consume soc_irq.S
+	# and vector.S from that dir via explicit paths in CMakeLists.txt.
 	select RISCV_HAS_CPU_IDLE
+	# Peripheral IRQs go through the AXI INTC (M-mode external IRQ = 11 on
+	# cpu0_intc). Enable multi-level dispatch so IRQ_CONNECT() sees per-line
+	# indices instead of a single "external" line.
+	select MULTI_LEVEL_INTERRUPTS
+	select 2ND_LEVEL_INTERRUPTS
+	# soc.c provides arch_irq_enable/disable/pending overrides that route
+	# level-2 (AXI INTC) IRQs through the xlnx_intc driver instead of the
+	# default straight-into-mie helper (which drops them silently). Also
+	# gives us a matching custom cpu_idle for symmetry with mbv32.
+	select ARCH_HAS_CUSTOM_CPU_IDLE
+	select ARCH_HAS_CUSTOM_CPU_ATOMIC_IDLE
+	imply XLNX_INTC if DT_HAS_XLNX_XPS_INTC_1_00_A_ENABLED
+	select XLNX_INTC_USE_IPR if XLNX_INTC
+	select XLNX_INTC_USE_SIE if XLNX_INTC
+	select XLNX_INTC_USE_CIE if XLNX_INTC
+	select XLNX_INTC_USE_IVR if XLNX_INTC

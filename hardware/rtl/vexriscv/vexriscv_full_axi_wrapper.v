@@ -81,10 +81,34 @@ module vexriscv_full_axi_wrapper (
     input  wire [31:0] m_axi_dbus_rdata,
     input  wire [0:0]  m_axi_dbus_rid,
     input  wire [1:0]  m_axi_dbus_rresp,
-    input  wire        m_axi_dbus_rlast
+    input  wire        m_axi_dbus_rlast,
+
+    // Debug taps for cpu_liveness_probe — separate ports, do NOT belong to
+    // any AXI interface, so wiring them in BD cannot hijack interface pins.
+    output wire        dbg_ibus_arvalid,
+    output wire        dbg_ibus_arready,
+    output wire        dbg_ibus_rvalid,
+    output wire        dbg_dbus_arvalid,
+    output wire        dbg_dbus_awvalid,
+    output wire        dbg_dbus_wvalid,
+    output wire        dbg_dbus_bvalid,
+    output wire [31:0] dbg_ibus_araddr,
+    output wire [31:0] dbg_dbus_awaddr,
+    output wire        dbg_reset_i
 );
 
     wire reset_i = ~aresetn;
+
+    assign dbg_ibus_arvalid = m_axi_ibus_arvalid;
+    assign dbg_ibus_arready = m_axi_ibus_arready;
+    assign dbg_ibus_rvalid  = m_axi_ibus_rvalid;
+    assign dbg_dbus_arvalid = m_axi_dbus_arvalid;
+    assign dbg_dbus_awvalid = m_axi_dbus_awvalid;
+    assign dbg_dbus_wvalid  = m_axi_dbus_wvalid;
+    assign dbg_dbus_bvalid  = m_axi_dbus_bvalid;
+    assign dbg_ibus_araddr  = m_axi_ibus_araddr;
+    assign dbg_dbus_awaddr  = m_axi_dbus_awaddr;
+    assign dbg_reset_i      = reset_i;
 
     VexRiscvAxi4 u_cpu (
         .clk                        (aclk),

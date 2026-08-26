@@ -17,7 +17,17 @@
 #include <zephyr/sys/crc.h>
 
 #include "eth_emaczero.h"
+#include "eth_emaczero_profile.h"
 #include "provision.h"
+
+/* Mailbox is uncached DDR (see DBusCached I/O predicate in the vex build).
+ * A plain volatile pointer therefore observes host writes with no fence,
+ * and vice-versa. Do NOT add cache maintenance here — the region is I/O by
+ * construction; a stray flush against uncached memory is a nop on this CPU
+ * but signals confusion about the mapping.
+ */
+#define emacz_jtag_mailbox \
+	(*(volatile struct emacz_jtag_mailbox *)EMACZERO_JTAG_MAILBOX_ADDR)
 
 #define PROV_MAGIC 0x455a4346u /* "EZCF" */
 #define PROV_VERSION 1u
@@ -229,6 +239,57 @@ static int apply_config(const struct prov_message *request)
 	return 0;
 }
 
+static void poll_jtag_mailbox(void)
+{
+	static uint32_t last_applied_epoch;
+	static bool armed;
+	uint32_t magic = emacz_jtag_mailbox.magic;
+	uint32_t epoch;
+	struct prov_message request = {0};
+	int ret;
+
+	if (magic != EMACZ_JTAG_MAILBOX_MAGIC) {
+		/* Host hasn't populated the block yet (or wrote a stale zero).
+		 * Once armed, a magic drop-out clears armed so a fresh
+		 * host writer restarts the epoch-diff logic cleanly.
+		 */
+		armed = false;
+		return;
+	}
+	epoch = emacz_jtag_mailbox.epoch;
+	if (!armed) {
+		/* First time we see valid magic: latch the current epoch so
+		 * we do not re-apply the value already in effect on cold boot
+		 * (e.g. persistent DDR contents from a prior board run).
+		 */
+		last_applied_epoch = epoch;
+		emacz_jtag_mailbox.ack_epoch = epoch;
+		emacz_jtag_mailbox.status = 0;
+		armed = true;
+		return;
+	}
+	if (epoch == last_applied_epoch) {
+		return;
+	}
+
+	sys_put_be32(emacz_jtag_mailbox.ip, request.ip.s4_addr);
+	sys_put_be32(emacz_jtag_mailbox.gateway, request.gateway.s4_addr);
+	request.prefix = (uint8_t)emacz_jtag_mailbox.prefix;
+	memcpy(request.mac, prov_mac, sizeof(request.mac));
+
+	if (!addr_is_usable(&request.ip, request.prefix, &request.gateway)) {
+		emacz_jtag_mailbox.status = -EINVAL;
+		emacz_jtag_mailbox.ack_epoch = epoch;
+		last_applied_epoch = epoch;
+		return;
+	}
+
+	ret = apply_config(&request);
+	emacz_jtag_mailbox.status = ret;
+	emacz_jtag_mailbox.ack_epoch = epoch;
+	last_applied_epoch = epoch;
+}
+
 static void provision_thread_fn(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
@@ -238,8 +299,18 @@ static void provision_thread_fn(void *arg1, void *arg2, void *arg3)
 	while (true) {
 		uint8_t buf[PROV_PACKET_SIZE];
 		struct prov_message request;
+		int rc = k_msgq_get(&prov_rx_queue, buf, K_MSEC(100));
 
-		k_msgq_get(&prov_rx_queue, buf, K_FOREVER);
+		if (rc == -EAGAIN) {
+			/* Idle tick: fold in the JTAG mailbox so bring-up
+			 * doesn't need any network reachability to change IP.
+			 */
+			poll_jtag_mailbox();
+			continue;
+		}
+		if (rc != 0) {
+			continue;
+		}
 		if (!decode_message(buf, sizeof(buf), &request)) {
 			continue;
 		}

@@ -5,10 +5,9 @@
 // hardware/scripts/build_arty_a7_vex.py). Address map matches the MicroBlaze
 // V shell where possible; the differences are the CPU node (VexRiscv, not
 // AMD MicroBlaze V) and the timer (riscv,machine-timer instead of AMD
-// xps-timer). The AXI INTC is omitted for now — all peripheral IRQs are
-// OR-reduced into VexRiscv's externalInterrupt bit in hardware, so this
-// step 2 boot runs polled UART only. A PLIC-style dispatch is a later
-// hardware/DTS change.
+// xps-timer). Peripheral IRQs run through an axi_intc @ 0x41200000; its
+// output drives VexRiscv's externalInterrupt bit, and Zephyr dispatches
+// per-line via the xlnx,xps-intc-1.00.a driver (same as the MBV shell).
 
 /dts-v1/;
 
@@ -27,7 +26,7 @@
 			compatible = "bard0,vexriscv", "riscv";
 			device_type = "cpu";
 			reg = <0>;
-			riscv,isa = "rv32imac_zicsr_zifencei";
+			riscv,isa = "rv32ima_zicsr_zifencei";
 			clock-frequency = <100000000>;
 
 			cpu0_intc: interrupt-controller {
@@ -78,14 +77,34 @@
 			interrupts-extended = <&cpu0_intc 7>;   // M-mode timer
 		};
 
-		// Xilinx AXI UARTLite @ 0x40600000. Polled at this stage —
-		// no interrupts child so the driver stays out of the IRQ path.
+		// Xilinx AXI UARTLite @ 0x40600000. IRQ 0 on the axi_intc.
 		uart0: serial@40600000 {
 			compatible = "xlnx,xps-uartlite-1.00.a";
 			reg = <0x40600000 0x1000>;
 			clocks = <&clk100>;
 			current-speed = <115200>;
+			interrupt-parent = <&intc0>;
+			interrupts = <0 2>;
 			status = "okay";
+		};
+
+		// Xilinx AXI INTC @ 0x41200000. Same peripheral as the MBV
+		// shell, dispatching to VexRiscv's externalInterrupt (M-mode
+		// external IRQ = riscv,cpu-intc line 11). IRQ input map:
+		//   In0 = uart0
+		//   In1 = gpio0 (unused by Zephyr; wired for parity)
+		//   In2 = axi_dma mm2s
+		//   In3 = axi_dma s2mm
+		//   In4 = emaczero
+		intc0: interrupt-controller@41200000 {
+			compatible = "xlnx,xps-intc-1.00.a";
+			reg = <0x41200000 0x1000>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			xlnx,kind-of-intr = <0x0>;
+			xlnx,num-intr-inputs = <5>;
+			interrupt-parent = <&cpu0_intc>;
+			interrupts-extended = <&cpu0_intc 11>;
 		};
 	};
 };

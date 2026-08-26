@@ -12,7 +12,8 @@
 
 #define EMACZERO_PERF_STATS_MAGIC 0x45505a53u
 #define EMACZERO_PERF_STATS_VERSION 17u
-#define EMACZERO_PERF_STATS_DMA_RESERVED 0x1000u
+/* Perf-stats block (4 KiB) + JTAG mailbox (4 KiB) at the top of DMA memory. */
+#define EMACZERO_PERF_STATS_DMA_RESERVED 0x2000u
 
 struct emaczero_perf_stats {
 	uint32_t magic;
@@ -259,9 +260,20 @@ struct emaczero_perf_stats {
 };
 
 #if defined(CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE) && CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0
+/* Layout of the reserved tail of the DMA memory region (top-down):
+ *   +0x1000 (0x9FFFF000): emaczero_perf_stats (4 KiB) - address kept stable so
+ *                         existing scripts (read_perf_stats.py, run_*.py) keep
+ *                         hitting the right spot with no flag changes.
+ *   +0x2000 (0x9FFFE000): emacz_jtag_mailbox (4 KiB) - host-writable control
+ *                         block reached via fcapz JTAG-AXI when the network
+ *                         path is not yet reachable. See emacz_provision.h.
+ * EMACZERO_PERF_STATS_DMA_RESERVED covers BOTH regions so the DMA allocator
+ * stops below them.
+ */
 #define EMACZERO_PERF_STATS_ADDR \
-	(CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE + CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE - \
-	 EMACZERO_PERF_STATS_DMA_RESERVED)
+	(CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE + CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE - 0x1000u)
+#define EMACZERO_JTAG_MAILBOX_ADDR \
+	(CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE + CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE - 0x2000u)
 #define emaczero_perf_stats (*(volatile struct emaczero_perf_stats *)EMACZERO_PERF_STATS_ADDR)
 #else
 extern volatile struct emaczero_perf_stats emaczero_perf_stats;

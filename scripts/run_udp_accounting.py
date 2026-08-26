@@ -116,6 +116,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--addr", type=lambda s: int(s, 0), default=0x9FFFF000)
     parser.add_argument("--tap", default="xc7a100t")
+    parser.add_argument("--chain", type=int, default=3,
+                        help="JTAG-AXI chain (3=mbv shell, 4=vex shell)")
     parser.add_argument("--target", default="192.168.137.200")
     parser.add_argument("--bind", default="192.168.137.1")
     parser.add_argument("--port", type=int, default=5001)
@@ -137,12 +139,12 @@ def main() -> int:
             return 2
         print(f"profile_check=ok reply_from={reply}")
 
-    before = read_stats(args.addr, args.tap)
+    before = read_stats(args.addr, args.tap, args.chain)
     started = time.time()
     sender_returncode = send_fast_sink(args)
     elapsed = time.time() - started
     time.sleep(1.0)
-    after = read_stats(args.addr, args.tap)
+    after = read_stats(args.addr, args.tap, args.chain)
 
     print("sender=udp-sink")
     print(f"sender_returncode={sender_returncode}")

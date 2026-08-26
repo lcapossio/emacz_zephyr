@@ -248,9 +248,12 @@ def read_stats(addr: int = 0x9FFFF000, tap: str = "xc7a100t", chain: int = 3):
     axi = EjtagAxiController(transport, chain=chain)
     axi.connect()
     try:
+        # vex's JTAG-AXI bridge rejects a 16-beat burst with SLVERR (mbv is OK);
+        # 15 works on both. Chunk accordingly.
+        BURST = 15
         chunks = []
-        for offset in range(0, words, 16):
-            chunks.extend(axi.burst_read(addr + offset * 4, min(16, words - offset)))
+        for offset in range(0, words, BURST):
+            chunks.extend(axi.burst_read(addr + offset * 4, min(BURST, words - offset)))
         data = b"".join(w.to_bytes(4, "little") for w in chunks)
     finally:
         axi.close()

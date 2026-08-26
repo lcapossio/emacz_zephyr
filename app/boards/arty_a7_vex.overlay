@@ -2,14 +2,51 @@
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Leonardo Capossio - bard0 design
  *
- * App-side overlay for arty_a7_vex. Kept intentionally slim so that per-CPU
- * peripheral placement lives in boards/bard0/arty_a7_vex/arty_a7_vex.dts.
- * Address map matches the mbv32 shell (per project decision):
- *   emacZero      @ 0x44A00000
- *   AXI DMA       @ 0x41E00000
- *   axis_rx_stats @ 0x41F00000
- *   UARTLite      @ 0x40600000
- *   DDR           @ 0x90000000 (240 MiB Zephyr + 16 MiB DMA at 0x9F000000)
+ * App-side overlay for arty_a7_vex. Mirrors mbv32.overlay's emacZero/DMA
+ * layout with two differences:
+ *   - IRQ index order matches hardware/scripts/build_arty_a7_vex.py's
+ *     xlconcat (uart=0, gpio=1, mm2s=2, s2mm=3, emaczero=4), NOT the mbv
+ *     shell's numbering.
+ *   - There is only one AXI bus root in the DTS (soc/simple-bus), so we
+ *     add nodes directly to the base DTS's root (no &axi label needed).
  *
- * TODO Step 2: mirror the mbv32.overlay nodes once the base DTS is populated.
+ * Address map (verified against build_arty_a7_vex.py):
+ *   emacZero        @ 0x44A00000
+ *   AXI DMA         @ 0x41E00000
+ *   axis_rx_stats   @ 0x41F00000
+ *   AXI INTC        @ 0x41200000
+ *   UARTLite        @ 0x40600000
+ *   DDR             @ 0x90000000 (240 MiB Zephyr + 16 MiB DMA at 0x9F000000)
  */
+
+/ {
+	aliases {
+		ethernet0 = &emaczero0;
+	};
+
+	soc {
+		emaczero0: ethernet@44a00000 {
+			compatible = "bard0,emaczero";
+			status = "okay";
+			reg = <0x44a00000 0x100>;
+			interrupt-parent = <&intc0>;
+			interrupts = <4 2>;
+			axistream-connected = <&axi_dma0>;
+			local-mac-address = [02 00 00 00 00 01];
+			phy-connection-type = "mii";
+			link-speed = <100>;
+		};
+
+		axi_dma0: dma@41e00000 {
+			compatible = "xlnx,axi-dma-1.00.a";
+			status = "okay";
+			reg = <0x41e00000 0x10000>;
+			interrupt-parent = <&intc0>;
+			interrupts = <2 2 3 2>;
+			interrupt-names = "mm2s_introut", "s2mm_introut";
+			#dma-cells = <0>;
+			dma-channels = <2>;
+			xlnx,addrwidth = <32>;
+		};
+	};
+};

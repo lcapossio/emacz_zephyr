@@ -2596,7 +2596,7 @@ module VexRiscvAxi4 (
   wire [1:0] CsrPlugin_misa_base;
   wire [25:0] CsrPlugin_misa_extensions;
   wire [1:0] CsrPlugin_mtvec_mode;
-  wire [29:0] CsrPlugin_mtvec_base;
+  reg  [29:0] CsrPlugin_mtvec_base = 30'h00000008;   // bard0: made writable (was wire); power-on init = 0x20 via base<<2
   reg [31:0] CsrPlugin_mepc;
   reg  CsrPlugin_mstatus_MIE;
   reg  CsrPlugin_mstatus_MPIE;
@@ -3895,7 +3895,7 @@ module VexRiscvAxi4 (
   assign _zz_261_ = execute_INSTRUCTION[30];
   assign _zz_90_ = _zz_257_[1 : 0];
   assign _zz_262_ = (memory_arbitration_isValid && memory_MEMORY_ENABLE);
-  assign _zz_263_ = (_zz_109_[31 : 28] == (4'b1111));
+  assign _zz_263_ = (_zz_109_[31 : 27] != (5'b10010));   // bard0: data cached ONLY in 0x90000000-0x97FFFFFF (matches mbv D-cache range); DMA memory at 0x9F000000 stays uncached so BD writes reach DDR
   assign _zz_264_ = 1'b1;
   assign _zz_265_ = 1'b1;
   assign _zz_266_ = 1'b1;
@@ -4597,7 +4597,7 @@ module VexRiscvAxi4 (
   assign CsrPlugin_misa_base = (2'b01);
   assign CsrPlugin_misa_extensions = (26'b00000000000000000001000010);
   assign CsrPlugin_mtvec_mode = (2'b00);
-  assign CsrPlugin_mtvec_base = (30'b000000000000000000000000001000);
+  // bard0: CsrPlugin_mtvec_base is now a reg — driven by reset init and CSR write case
   assign CsrPlugin_medeleg = (32'b00000000000000000000000000000000);
   assign CsrPlugin_mideleg = (32'b00000000000000000000000000000000);
   assign _zz_207_ = (CsrPlugin_mip_MTIP && CsrPlugin_mie_MTIE);
@@ -4731,6 +4731,36 @@ module VexRiscvAxi4 (
         end
         execute_CsrPlugin_readData[31 : 31] = CsrPlugin_mcause_interrupt;
         execute_CsrPlugin_readData[3 : 0] = CsrPlugin_mcause_exceptionCode;
+      end
+      12'b001100000101 : begin   // bard0: mtvec (0x305) — read/write
+        execute_CsrPlugin_illegalAccess = 1'b0;
+        execute_CsrPlugin_readData[31 : 2] = CsrPlugin_mtvec_base;
+        execute_CsrPlugin_readData[1 : 0]  = CsrPlugin_mtvec_mode;
+      end
+      12'b111100010100 : begin   // bard0: mhartid (0xf14) — read-only zero
+        if(execute_CSR_READ_OPCODE)begin
+          execute_CsrPlugin_illegalAccess = 1'b0;
+        end
+      end
+      12'b111100010001 : begin   // bard0: mvendorid (0xf11) — read-only zero
+        if(execute_CSR_READ_OPCODE)begin
+          execute_CsrPlugin_illegalAccess = 1'b0;
+        end
+      end
+      12'b111100010010 : begin   // bard0: marchid (0xf12) — read-only zero
+        if(execute_CSR_READ_OPCODE)begin
+          execute_CsrPlugin_illegalAccess = 1'b0;
+        end
+      end
+      12'b111100010011 : begin   // bard0: mimpid (0xf13) — read-only zero
+        if(execute_CSR_READ_OPCODE)begin
+          execute_CsrPlugin_illegalAccess = 1'b0;
+        end
+      end
+      12'b001100000001 : begin   // bard0: misa (0x301) — read-only zero (Zephyr may probe)
+        if(execute_CSR_READ_OPCODE)begin
+          execute_CsrPlugin_illegalAccess = 1'b0;
+        end
       end
       default : begin
       end
@@ -4937,7 +4967,8 @@ module VexRiscvAxi4 (
   always @ (posedge clk or posedge reset) begin
     if (reset) begin
       CsrPlugin_privilege <= (2'b11);
-      IBusCachedPlugin_fetchPc_pcReg <= (32'b10000000000000000000000000000000);
+      // bard0: mtvec_base init lives at its declaration to keep a single driver in the write always block
+      IBusCachedPlugin_fetchPc_pcReg <= (32'b10010000000000000000000000000000);   // bard0: resetVector -> 0x9000_0000 (DDR direct; CPU held in reset until DDR loaded)
       IBusCachedPlugin_fetchPc_inc <= 1'b0;
       _zz_124_ <= 1'b0;
       _zz_130_ <= 1'b0;
@@ -5444,6 +5475,11 @@ module VexRiscvAxi4 (
       12'b001100000100 : begin
       end
       12'b001101000010 : begin
+      end
+      12'b001100000101 : begin   // bard0: mtvec (0x305) write
+        if(execute_CsrPlugin_writeEnable)begin
+          CsrPlugin_mtvec_base <= execute_CsrPlugin_writeData[31 : 2];
+        end
       end
       default : begin
       end

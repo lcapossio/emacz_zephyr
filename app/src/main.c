@@ -85,6 +85,7 @@ extern struct net_stats net_stats;
 #define TX_BENCH_DEFAULT_PAYLOAD 1472u
 
 volatile uint32_t emacz_scratch_heartbeat[2];
+volatile uint32_t emacz_boot_marker;
 #if !defined(CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE) || CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE == 0
 volatile struct emaczero_perf_stats emaczero_perf_stats;
 #endif
@@ -430,13 +431,19 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 static void dump_profile_delta(void)
 {
 	static struct emaczero_profile_snapshot prev;
+	static uint64_t prev_irq;
 	struct emaczero_profile_snapshot now;
 	uint64_t dma_count;
 	uint64_t worker_count;
 	uint64_t net_recv_count;
 	uint64_t lifetime_count;
+	uint64_t irq_now;
+	uint64_t irq_count;
 
 	emaczero_profile_snapshot(&now);
+	irq_now = emaczero_perf_stats.rx_irq_count;
+	irq_count = u64_delta(irq_now, prev_irq);
+	prev_irq = irq_now;
 	dma_count = u64_delta(now.dma_callbacks, prev.dma_callbacks);
 	worker_count = u64_delta(now.rx_worker_packets, prev.rx_worker_packets);
 	net_recv_count = u64_delta(now.rx_zero_copy_submit + now.rx_copy_submit +
@@ -447,6 +454,7 @@ static void dump_profile_delta(void)
 
 	raw_uart_puts("PROF ");
 	raw_uart_kv32("mode", now.mode);
+	raw_uart_kv64("irq", irq_count);
 	raw_uart_kv64("dma", dma_count);
 	raw_uart_kv64("work", worker_count);
 	raw_uart_kv64("zc", u64_delta(now.rx_zero_copy_submit, prev.rx_zero_copy_submit));
@@ -802,10 +810,18 @@ int main(void)
 	uint32_t last_cycle;
 	int64_t last_uptime;
 
+	/* bard0 vex bring-up: writable boot progress marker in .bss (read via
+	 * JTAG-AXI at the emacz_boot_marker symbol address).
+	 */
+	emacz_boot_marker = 0xB0071111u;
+
 	init_perf_stats_metadata();
+	emacz_boot_marker = 0xB0072222u;
 	start_cycle = k_cycle_get_32();
+	emacz_boot_marker = 0xB0073333u;
 	last_cycle = start_cycle;
 	last_uptime = k_uptime_get();
+	emacz_boot_marker = 0xB0074444u;
 	emacz_scratch_heartbeat[0] = SCRATCH_MAGIC;
 	sys_write32(UARTLITE_CONTROL_RST_RX | UARTLITE_CONTROL_RST_TX,
 		    UARTLITE_BASE + UARTLITE_CONTROL);

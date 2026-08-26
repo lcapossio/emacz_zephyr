@@ -13,10 +13,25 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 config RISCV_MACHINE_TIMER
 	default y
 
-# No AXI-INTC / PLIC yet — CPU-INTC only. The RISC-V machine-mode standard
-# defines IRQ lines 0..15; reserve those. When a PLIC is added, this rises
-# to include the level-2 space.
+# CPU-INTC (16 M-mode lines) + 2nd-level AXI-INTC (5 lines this shell).
+# Zephyr's multi-level encoder needs room for both spaces; 44 matches
+# what the upstream mbv32 SoC uses so per-line indices decode cleanly.
 config NUM_IRQS
-	default 16
+	default 44
+
+# 2nd-level (AXI INTC) aggregator hangs off cpu0_intc IRQ 11 (M-mode
+# external). ISR-table slot for its first line starts at 12 — right
+# after the 12 M-mode lines the 1st level owns.
+config 2ND_LVL_ISR_TBL_OFFSET
+	default 12
+
+config 2ND_LVL_INTR_00_OFFSET
+	default 11
+
+# Multi-level IRQ encoder uses this to size per-aggregator address space.
+# 32 matches mbv32 and gives comfortable headroom over the 5 lines we
+# actually wire up (uart, gpio, mm2s, s2mm, emaczero).
+config MAX_IRQ_PER_AGGREGATOR
+	default 32
 
 endif # SOC_ARTY_A7_VEX

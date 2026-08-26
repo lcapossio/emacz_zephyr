@@ -237,11 +237,14 @@ static int emz_refill_dma_rx(const struct device *dev);
 
 static void emz_dma_cache_fence(void)
 {
+#ifdef CONFIG_ETH_EMACZERO_DCACHE_MAINT
 	__asm__ volatile("fence iorw, iorw" ::: "memory");
+#endif
 }
 
 static void emz_dma_cache_clean_line(uintptr_t addr)
 {
+#ifdef CONFIG_ETH_EMACZERO_DCACHE_MAINT
 	__asm__ volatile(
 		".option push\n"
 		".option arch, +zicbom\n"
@@ -250,10 +253,14 @@ static void emz_dma_cache_clean_line(uintptr_t addr)
 		:
 		: "r"(addr)
 		: "memory");
+#else
+	ARG_UNUSED(addr);
+#endif
 }
 
 static void emz_dma_cache_invd_line(uintptr_t addr)
 {
+#ifdef CONFIG_ETH_EMACZERO_DCACHE_MAINT
 	__asm__ volatile(
 		".option push\n"
 		".option arch, +zicbom\n"
@@ -262,6 +269,9 @@ static void emz_dma_cache_invd_line(uintptr_t addr)
 		:
 		: "r"(addr)
 		: "memory");
+#else
+	ARG_UNUSED(addr);
+#endif
 }
 
 static void emz_dma_cache_range(const void *addr, size_t size,
@@ -1170,6 +1180,7 @@ static void emz_rx_direct_poll(const struct device *dev)
 		    data->rx_interceptor(rx->bytes, rx->len, data->rx_interceptor_user_data)) {
 			emz_release_rx_buffer(dev, rx);
 			emaczero_perf_stats.dma_callbacks++;
+			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
 			emaczero_perf_stats.rx_bd_hw_completed++;
 			completed++;
 			continue;
@@ -1183,6 +1194,7 @@ static void emz_rx_direct_poll(const struct device *dev)
 			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_DROP_AFTER_DMA);
 			emz_release_rx_buffer(dev, rx);
 			emaczero_perf_stats.dma_callbacks++;
+			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
 			emaczero_perf_stats.rx_bd_hw_completed++;
 			if (rx_error) {
 				emaczero_perf_stats.dma_errors++;
@@ -1202,6 +1214,7 @@ static void emz_rx_direct_poll(const struct device *dev)
 		emz_perf_update_pool_inflight(data);
 
 		emaczero_perf_stats.dma_callbacks++;
+		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
 		emaczero_perf_stats.rx_bd_hw_completed++;
 		if (rx->status < 0) {
 			emaczero_perf_stats.dma_errors++;
