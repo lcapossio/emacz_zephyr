@@ -210,6 +210,16 @@ set_property -dict [list CONFIG.NUM_SI 1 CONFIG.NUM_MI 2 CONFIG.NUM_CLKS 1] [get
 # is held in reset.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 ctrl_axi_ic
 set_property -dict [list CONFIG.NUM_SI 2 CONFIG.NUM_MI 13] [get_bd_cells ctrl_axi_ic]
+# dbus_r_slice: register slice on the R channel of CPU DBUS -> ctrl_axi_ic.
+# Breaks a 12-level combinational path (xbar R-mux -> CPU d-cache rresp ->
+# IBusCachedPlugin_injector -> I-cache tag BRAM ADDRARDADDR) that was
+# failing setup by -0.571 ns on sys_clk. REG_R=1 fully registers only the
+# R channel; AR/AW/W/B pass through (REG_*=0), so the memory-read latency
+# penalty is exactly +1 cycle and writes / addresses are untouched.
+create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 dbus_r_slice
+set_property -dict [list \\
+    CONFIG.REG_AW {{0}} CONFIG.REG_AR {{0}} CONFIG.REG_W {{0}} \\
+    CONFIG.REG_R  {{1}} CONFIG.REG_B  {{0}}] [get_bd_cells dbus_r_slice]
 # dma_axi_ic: three DMA masters -> DDR.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 dma_axi_ic
 set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1] [get_bd_cells dma_axi_ic]
@@ -365,6 +375,7 @@ connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins s2mm_stream_stats/cl
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins emac_irq_sync/clk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins fcapz_axi/axi_clk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins fcapz_axi_slice/aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins dbus_r_slice/aclk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins cpu_reset_gpio/s_axi_aclk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins cpu_liveness_gpio/s_axi_aclk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins cpu_last_ibus_gpio/s_axi_aclk]
@@ -423,6 +434,7 @@ connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins emac_irq_sync/r
 # fcapz_axi uses active-HIGH reset; slice takes the usual aresetn.
 connect_bd_net [get_bd_pins rst/peripheral_reset]   [get_bd_pins fcapz_axi/axi_rst]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins fcapz_axi_slice/aresetn]
+connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins dbus_r_slice/aresetn]
 
 # -------- AXI plumbing --------
 # IBUS: CPU instruction fetch -> boot ROM @ 0x0 + DDR @ 0x9000_0000
@@ -430,8 +442,11 @@ connect_bd_intf_net [get_bd_intf_pins cpu/M_AXI_IBUS] [get_bd_intf_pins ibus_ic/
 connect_bd_intf_net [get_bd_intf_pins ibus_ic/M00_AXI] [get_bd_intf_pins bootrom/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ibus_ic/M01_AXI] [get_bd_intf_pins ddr_axi_ic/S02_AXI]
 
-# DBUS: CPU data -> ctrl_axi_ic (peripherals + DDR alias)
-connect_bd_intf_net [get_bd_intf_pins cpu/M_AXI_DBUS] [get_bd_intf_pins ctrl_axi_ic/S00_AXI]
+# DBUS: CPU data -> R-slice -> ctrl_axi_ic (peripherals + DDR alias). The
+# R-slice registers only the R channel; see dbus_r_slice creation above for
+# the timing rationale (breaks a 12-level xbar-R-mux -> I-cache-tag path).
+connect_bd_intf_net [get_bd_intf_pins cpu/M_AXI_DBUS]        [get_bd_intf_pins dbus_r_slice/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins dbus_r_slice/M_AXI]    [get_bd_intf_pins ctrl_axi_ic/S00_AXI]
 
 # fcapz JTAG-AXI (host loader) -> slice -> ctrl_axi_ic S01_AXI
 connect_bd_intf_net [get_bd_intf_pins fcapz_axi/M_AXI]      [get_bd_intf_pins fcapz_axi_slice/S_AXI]

@@ -1,1 +1,6 @@
 *.patch -whitespace
+
+# Auto-generated Verilog from SpinalHDL sbt + gen_vexriscv.py post-patch.
+# Force LF so a Windows checkout doesn't rewrite line endings and produce
+# a spurious diff against the deterministic regenerator output.
+hardware/rtl/vexriscv/VexRiscvAxi4.v text eol=lf

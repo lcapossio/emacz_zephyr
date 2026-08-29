@@ -59,6 +59,13 @@ set_false_path -quiet -to [get_pins -quiet -hierarchical -filter {NAME =~ */xpm_
 set_false_path -quiet -to [get_pins -quiet -hierarchical -filter {NAME =~ */debug/inst/eth_ref_clk_sync_reg*/D}]
 set_false_path -quiet -to [get_pins -quiet -hierarchical -filter {NAME =~ */debug/inst/eth_rstn_sync_reg*/D}]
 
+# proc_sys_reset internal LPF: dcm_locked -> lpf_int_reg. The MIG's
+# init_calib_complete (~200 MHz clk_pll_i domain) feeds rst/dcm_locked and
+# is by design asynchronous — proc_sys_reset's EXT_LPF already contains
+# its own synchronizer/filter. Without this constraint the tool reports a
+# spurious -2.8 ns setup violation on this single-endpoint CDC path.
+set_false_path -quiet -to [get_pins -quiet -hierarchical -filter {NAME =~ */EXT_LPF/lpf_int_reg/D}]
+
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property BITSTREAM.CONFIG.CONFIGRATE 33 [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]

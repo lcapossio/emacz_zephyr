@@ -1,0 +1,28 @@
+diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+index 9f339fb4..78d50bd4 100644
+--- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
++++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+@@ -107,6 +107,14 @@ object VexRiscvAxi4WithIntegratedJtag{
+           ),
+           new CsrPlugin(
+             config = CsrPluginConfig(
++              // bard0: only mtvec is genuinely required by Zephyr's boot
++              // path — it installs its own trap vector on entry. The RISC-V
++              // identity CSRs (mhartid / mvendorid / marchid / mimpid /
++              // misa) are left uninstalled: with catchIllegalAccess=false,
++              // unknown CSR reads return 0, which is exactly the value
++              // Zephyr expects for a single-hart minimum-info build. Making
++              // them explicit widened the CSR read mux enough to push
++              // placer congestion past the 100 MHz sys_clk timing budget.
+               catchIllegalAccess = false,
+               mvendorid      = null,
+               marchid        = null,
+@@ -114,7 +122,7 @@ object VexRiscvAxi4WithIntegratedJtag{
+               mhartid        = null,
+               misaExtensionsInit = 66,
+               misaAccess     = CsrAccess.NONE,
+-              mtvecAccess    = CsrAccess.NONE,
++              mtvecAccess    = CsrAccess.READ_WRITE,
+               mtvecInit      = 0x00000020l,
+               mepcAccess     = CsrAccess.READ_WRITE,
+               mscratchGen    = false,
