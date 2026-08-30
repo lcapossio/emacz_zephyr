@@ -1,8 +1,46 @@
 diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-index 9f339fb4..78d50bd4 100644
+index 9f339fb4..4353c8b6 100644
 --- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
 +++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-@@ -107,6 +107,14 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -35,9 +35,16 @@ object VexRiscvAxi4WithIntegratedJtag{
+ //            catchAccessFault = false
+ //          ),
+           new IBusCachedPlugin(
+-            prediction = STATIC,
++            // bard0: DYNAMIC_TARGET + 16 KiB I$ (was STATIC + 4 KiB). Under
++            // Zephyr's RX poll path the demo defaults cost ~17.6k cyc/pkt
++            // and cap RX at ~66 Mbps; widening the cache and using a target
++            // predictor with a small 256-entry history table brings the CPU
++            // to parity with the mbv shell and lifts RX to line-rate 95 Mbps
++            // (see no_commit/BUGS.md bug #48). Mirrors GenFullNoMmuMaxPerf.
++            prediction = DYNAMIC_TARGET,
++            historyRamSizeLog2 = 8,
+             config = InstructionCacheConfig(
+-              cacheSize = 4096,
++              cacheSize = 16384,
+               bytePerLine =32,
+               wayCount = 1,
+               addressWidth = 32,
+@@ -56,8 +63,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+             //            )
+           ),
+           new DBusCachedPlugin(
++            // bard0: 16 KiB D$ (was 4 KiB) — pairs with widened I$ above.
+             config = new DataCacheConfig(
+-              cacheSize         = 4096,
++              cacheSize         = 16384,
+               bytePerLine       = 32,
+               wayCount          = 1,
+               addressWidth      = 32,
+@@ -102,11 +110,21 @@ object VexRiscvAxi4WithIntegratedJtag{
+           ),
+           new DebugPlugin(ClockDomain.current.clone(reset = Bool().setName("debugReset"))),
+           new BranchPlugin(
+-            earlyBranch = false,
++            // bard0: earlyBranch true resolves mispredicts one stage earlier,
++            // pairing with DYNAMIC_TARGET on IBusCachedPlugin above.
++            earlyBranch = true,
+             catchAddressMisaligned = true
            ),
            new CsrPlugin(
              config = CsrPluginConfig(
@@ -17,7 +55,7 @@ index 9f339fb4..78d50bd4 100644
                catchIllegalAccess = false,
                mvendorid      = null,
                marchid        = null,
-@@ -114,7 +122,7 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -114,7 +132,7 @@ object VexRiscvAxi4WithIntegratedJtag{
                mhartid        = null,
                misaExtensionsInit = 66,
                misaAccess     = CsrAccess.NONE,
