@@ -40,7 +40,7 @@ struct emacz_jtag_mailbox {
 	uint32_t prefix;
 	uint32_t reserved;
 	uint32_t ack_epoch;
-	int32_t  status;
+	int32_t status;
 };
 
 int emacz_provision_start(struct net_if *iface);

@@ -26,8 +26,7 @@
  * construction; a stray flush against uncached memory is a nop on this CPU
  * but signals confusion about the mapping.
  */
-#define emacz_jtag_mailbox \
-	(*(volatile struct emacz_jtag_mailbox *)EMACZERO_JTAG_MAILBOX_ADDR)
+#define emacz_jtag_mailbox (*(volatile struct emacz_jtag_mailbox *)EMACZERO_JTAG_MAILBOX_ADDR)
 
 #define PROV_MAGIC 0x455a4346u /* "EZCF" */
 #define PROV_VERSION 1u
