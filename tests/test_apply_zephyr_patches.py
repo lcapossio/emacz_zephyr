@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "apply_zephyr_patches", ROOT / "scripts" / "apply_zephyr_patches.py"
@@ -66,8 +65,7 @@ def test_all_zephyr_patches_have_valid_git_syntax():
             ["git", "apply", "--numstat", str(patch)],
             cwd=ROOT,
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
         )
         assert result.returncode == 0, f"{patch.name}: {result.stderr}"

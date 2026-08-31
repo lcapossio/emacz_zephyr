@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 import emacz_config as config
 
-
 ERROR_COUNTERS = (
     "sink_err",
     "mac_err",

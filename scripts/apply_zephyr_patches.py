@@ -11,7 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PATCH_DIR = ROOT / "patches" / "zephyr"
 
@@ -22,8 +21,7 @@ def west_zephyr_dir() -> Path | None:
             ["west", "list", "zephyr", "-f", "{abspath}"],
             cwd=ROOT,
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
         )
     except FileNotFoundError:
@@ -60,8 +58,7 @@ def git_apply(
     return subprocess.run(
         ["git", "-C", str(zephyr_dir), "apply", *args, str(patch)],
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
 
