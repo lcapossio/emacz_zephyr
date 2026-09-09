@@ -1,22 +1,28 @@
 # emacz_zephyr
 
 emacz_zephyr integrates [emacZero](https://github.com/lcapossio/emacZero) with
-the AMD/Xilinx Zephyr tree for an Arty A7-100T MicroBlaze V example.
+the AMD/Xilinx Zephyr tree for the Arty A7-100T, with two interchangeable
+CPU options: AMD MicroBlaze V (`mbv32`) and SpinalHDL VexRiscv-full. Both
+run the same Zephyr app and driver over the same emacZero MAC at 100 MHz.
 
 - [Features](#features)
 - [Repository Layout](#repository-layout)
 - [Setup](#setup)
 - [Build](#build)
 - [Host-configured IPv4](#host-configured-ipv4)
-- [Arty A7-100T MicroBlaze V System](#arty-a7-100t-microblaze-v-system)
+- [Arty A7-100T SoC](#arty-a7-100t-soc)
 - [Resource Usage and Frequency](#resource-usage-and-frequency)
+- [MBV vs Vex comparison](#mbv-vs-vex-comparison)
 - [Verification](#verification)
 - [Author and License](#author-and-license)
 
 ## Features
 
 - Out-of-tree Zephyr Ethernet driver and DT binding for `bard0,emaczero`.
-- Arty A7-100T MicroBlaze V example overlay for AMD Zephyr `mbv32`.
+- Arty A7-100T shells for two CPUs: AMD MicroBlaze V (`mbv32` board) and
+  SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
+  earlyBranch, R-slice on DBUS). Same emacZero MAC + Zephyr fast-path on
+  both.
 - Direct AXI DMA S2MM RX ring with zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
 - Optional per-region cycle instrumentation
@@ -78,17 +84,31 @@ automatically.
 Hardware (Vivado):
 
 ```sh
-python hardware/scripts/build_arty_a7_mbv.py                # BD only
-python hardware/scripts/build_arty_a7_mbv.py --synth --jobs 2   # bitstream + XSA
+# MicroBlaze V shell:
+python hardware/scripts/build_arty_a7_mbv.py                     # BD only
+python hardware/scripts/build_arty_a7_mbv.py --synth --jobs 2    # bitstream + XSA
+
+# VexRiscv-full shell (regenerates VexRiscvAxi4.v via sbt on WSL):
+python hardware/scripts/build_arty_a7_vex.py                     # BD only
+python hardware/scripts/build_arty_a7_vex.py --synth --jobs 2    # bitstream + XSA
 ```
 
 The bring-up flow avoids repeated bitstream rebuilds — load a flat
-`zephyr.bin` into DDR over fcapz USER3 and release MBV through USER1 EIO:
+`zephyr.bin` into DDR over fcapz JTAG-AXI and release the CPU through EIO.
+
+MicroBlaze V (fcapz USER3, chain 3):
 
 ```sh
 python scripts/load_zephyr_bram.py \
-  --file build-wsl-zephyr-ddr/zephyr/zephyr.bin \
+  --file build-mbv-emac/zephyr/zephyr.bin \
   --addr 0x90000000
+```
+
+VexRiscv-full (fcapz USER3, chain 4):
+
+```sh
+python no_commit/vex_boot_zephyr.py \
+  --file build-vex-emac/zephyr/zephyr.bin
 ```
 
 ## Host-configured IPv4
@@ -117,12 +137,14 @@ for unicast UDP port 5001 that returns each DMA buffer immediately after
 accounting. ARP, ICMP, port-5004 provisioning, and every other UDP port
 continue through the normal Zephyr network stack.
 
-## Arty A7-100T MicroBlaze V System
+## Arty A7-100T SoC
 
-The Zephyr board target is `mbv32`; this repo supplies the Arty overlay and
-Vivado shell.
+Two shells, one SoC. The peripheral map is identical between them; only the
+CPU macro and its AXI plumbing change.
 
-- MicroBlaze V RV32IMAC at 81.25 MHz with Zicsr/Zifencei and I/D caches.
+Shared SoC:
+
+- 100 MHz `sys_clk`.
 - 256 MiB DDR3 at `0x90000000` (Arty MIG). Zephyr code/data in the lower
   240 MiB; emacZero DMA buffers and SG descriptors in the upper 16 MiB at
   `0x9f000000`.
@@ -132,8 +154,31 @@ Vivado shell.
 - `axis_rx_stream_stats` at `0x41f00000` — AXI-Stream pass-through with
   AXI-Lite CSRs for observing TLAST/handshake stalls between the MII SAF and
   AXI DMA S2MM.
+- Split-fabric AXI: CPU, fcapz/debug, and AXI-Lite peripherals live on a
+  control interconnect; DMA SG/MM2S/S2MM reach DDR through a separate data
+  interconnect and only bridge into the control fabric when SW/debug needs
+  packet-buffer access.
+
+MicroBlaze V shell (`hardware/scripts/build_arty_a7_mbv.py`, Zephyr board
+target `mbv32`):
+
+- MicroBlaze V RV32IMAC with Zicsr/Zifencei and I/D caches.
 - fcapz EJTAG-AXI on BSCANE2 USER3 (chain 3), EJTAG-UART on USER4, ELA on
   USER1, EIO reset on USER1 chain 1.
+
+VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, same Zephyr
+board target `mbv32`):
+
+- SpinalHDL VexRiscv-full RV32IMA with `IBusCachedPlugin` (16 KiB I$,
+  DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
+  `DBusCachedPlugin` (16 KiB D$), `BranchPlugin(earlyBranch=true)`,
+  `CsrPlugin` with `mtvecAccess=READ_WRITE`.
+- AXI register slice on the CPU DBUS R-channel to break the CPU→xbar→I$
+  combinational path — required for 100 MHz timing on Artix-7.
+- fcapz EJTAG-AXI is one chain higher than MBV (chain 4 instead of 3)
+  because Vex's own JTAG debug port sits ahead of it in the BSCAN chain.
+  Host tools: `no_commit/vex_boot_zephyr.py` for boot,
+  `no_commit/vex_set_ip.py` for provisioning.
 
 Split-fabric AXI: MBV, fcapz/debug, and AXI-Lite peripherals live on a
 control interconnect; DMA SG/MM2S/S2MM reach DDR through a separate data
@@ -150,13 +195,42 @@ Editable source: [docs/architecture.json](docs/architecture.json).
 
 ## Resource Usage and Frequency
 
-Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, timing met at
-81.25 MHz (`WNS = 0.022 ns`, `TNS = 0.000 ns`).
+Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, both shells timing
+MET at 100 MHz `sys_clk`.
 
-- Slice LUTs: 28342 / 63400 (44.7%)
-- Slice registers: 42725 / 126800 (33.7%)
-- Block RAM tiles: 135 / 135 (100.0%)
-- DSPs: 4 / 240 (1.7%)
+| Resource | MBV | Vex | Δ (vex − mbv) |
+|---|---|---|---|
+| Slice LUTs | 34,688 (54.71%) | 28,909 (45.60%) | −5,779 (−16.7%) |
+| Slice Registers | 46,199 (36.43%) | 29,460 (23.23%) | −16,739 (−36.2%) |
+| BRAM Tiles | 44 (32.59%) | 36 (26.67%) | −8 (−18.2%) |
+| DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
+| Setup WNS | +0.630 ns | +0.369 ns | — |
+
+Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
+I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including
+LUT-as-memory and F7/F8 wide-mux counts, is in
+[docs/cpu_comparison.md](docs/cpu_comparison.md).
+
+## MBV vs Vex comparison
+
+Both CPUs saturate the 100 Mbps MII in both directions with zero drops.
+Numbers below are delivered rate — the delta in Zephyr's `sink_packets`
+from `emaczero_perf_stats` across the bench window, not iperf's offered
+rate. Sender is `iperf.exe -c <board> -u -b <rate>M -t 5 -l 1472`.
+
+| Test | MBV | Vex |
+|---|---|---|
+| RX single-direction | 96.0 Mbps, 0 drops | 94.5 Mbps, 0 drops |
+| TX single-direction | 91.4 Mbps | 92.3 Mbps |
+| RX+TX concurrent | 187.2 Mbps aggregate | 186.1 Mbps aggregate |
+| % of 200 Mbps full-duplex | 93.6% | 93.1% |
+
+At the network layer the two CPUs are indistinguishable on this SoC —
+the workload is network-bound, not CPU-bound. Pick MBV for a
+Vivado-native toolchain end-to-end, or Vex for the FPGA-area savings
+above and a rebuild pipeline that uses SpinalHDL/sbt. See
+[docs/cpu_comparison.md](docs/cpu_comparison.md) for the full
+methodology, reproduction steps, and when-to-pick-which.
 
 ## Verification
 
@@ -187,26 +261,23 @@ python scripts/run_arty_stress.py --interface "Ethernet 2" \
 Defaults are 600 s at 95 Mbit/s with 1472 B payloads and 100% delivery
 required. Exits non-zero on any monitored MAC/gate/DMA/driver error delta.
 
-### Measured throughput (arty_a7_100t + MicroBlaze V @ 81.25 MHz)
+### Throughput paths
 
-| Path | Offered | Delivered | Notes |
-|------|---------|-----------|-------|
-| Application sink-bypass (UDP :5001) | 95 Mbit/s | 95.0 Mbit/s | 600 s, 4,840,355/4,840,355 packets, 100% |
-| Application sink-bypass (UDP :5001) | 100 Mbit/s | ~95.9 Mbit/s | host sender tops out at wire |
-| Zephyr socket path (arbitrary UDP port) | 20/40/60 Mbit/s | ~11.9 Mbit/s (flat) | ceiling is stack CPU, not driver |
+The application registers a driver-level RX interceptor for unicast UDP
+port 5001 (the "sink-bypass" fast path) and lets everything else go
+through the normal Zephyr net stack. These two paths behave very
+differently:
 
-The application sink-bypass path is line-rate on 100BASE-TX with zero MAC,
-RX-gate, S2MM `tready`-low, DMA/BD, allocation, or refill error deltas.
-
-The Zephyr socket path saturates at ~11.9 Mbit/s: driver overhead is only
-~10.9% of the wall (measured via the gated R7 per-region counters); the
-remainder is Zephyr net-stack work on an 81.25 MHz single-core. Reaching
-25-30 Mbit/s through arbitrary sockets would require a stack rewrite, a
-faster CPU, or SMP. See `no_commit/BUGS.md` #33 for the analysis.
-
-Full-duplex was verified simultaneously: 95 Mbit/s host->board RX
-(48,401/48,401 packets, 94.993 Mbit/s payload) while the board sent
-unthrottled TX back at ~92.5 Mbit/s, zero errors on either direction.
+- **Sink-bypass (UDP :5001)**: line-rate on 100BASE-TX with zero MAC,
+  RX-gate, S2MM `tready`-low, DMA/BD, allocation, or refill error
+  deltas. Head-to-head numbers for MBV and Vex are in
+  [MBV vs Vex comparison](#mbv-vs-vex-comparison).
+- **Zephyr socket path (any other UDP port)**: saturates around
+  ~12 Mbit/s. Driver overhead is only ~10.9% of the wall (measured via
+  the gated R7 per-region counters); the remainder is Zephyr net-stack
+  work on a single 100 MHz core. Reaching 25-30 Mbit/s through
+  arbitrary sockets would require a stack rewrite or SMP. See
+  `no_commit/BUGS.md` #33 for the analysis.
 
 ## Author and License
 
