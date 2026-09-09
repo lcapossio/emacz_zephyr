@@ -1,5 +1,5 @@
 {
-  "title": "Arty A7-100T MicroBlaze V DDR Top Level",
+  "title": "Arty A7-100T MicroBlaze V SoC (81.25 MHz)",
   "top": "arty_a7_100t_mbv",
   "theme": "dark",
   "legend": "compact",

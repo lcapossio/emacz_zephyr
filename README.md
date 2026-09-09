@@ -3,7 +3,10 @@
 emacz_zephyr integrates [emacZero](https://github.com/lcapossio/emacZero) with
 the AMD/Xilinx Zephyr tree for the Arty A7-100T, with two interchangeable
 CPU options: AMD MicroBlaze V (`mbv32`) and SpinalHDL VexRiscv-full. Both
-run the same Zephyr app and driver over the same emacZero MAC at 100 MHz.
+run the same Zephyr app, driver, and emacZero MAC — the MBV shell clocks
+CPU and peripherals from MIG's 81.25 MHz `ui_clk`, while the Vex shell runs
+its SoC at 100 MHz `sys_clk` and treats `ui_clk` as a downstream DDR-only
+domain.
 
 - [Features](#features)
 - [Repository Layout](#repository-layout)
@@ -144,7 +147,8 @@ CPU macro and its AXI plumbing change.
 
 Shared SoC:
 
-- 100 MHz `sys_clk`.
+- Board oscillator `CLK100MHZ` (100 MHz) drives the MIG; each shell picks
+  its own SoC clock from there (see per-shell bullets below).
 - 256 MiB DDR3 at `0x90000000` (Arty MIG). Zephyr code/data in the lower
   240 MiB; emacZero DMA buffers and SG descriptors in the upper 16 MiB at
   `0x9f000000`.
@@ -163,6 +167,8 @@ MicroBlaze V shell (`hardware/scripts/build_arty_a7_mbv.py`, Zephyr board
 target `mbv32`):
 
 - MicroBlaze V RV32IMAC with Zicsr/Zifencei and I/D caches.
+- CPU and every AXI/AXI-Lite fabric run on `mig_ddr/ui_clk` at **81.25 MHz**
+  (MIG PHY ratio 4:1, 325 MHz DDR). No separate SoC clock.
 - fcapz EJTAG-AXI on BSCANE2 USER3 (chain 3), EJTAG-UART on USER4, ELA on
   USER1, EIO reset on USER1 chain 1.
 
@@ -173,6 +179,9 @@ board target `mbv32`):
   DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
   `DBusCachedPlugin` (16 KiB D$), `BranchPlugin(earlyBranch=true)`,
   `CsrPlugin` with `mtvecAccess=READ_WRITE`.
+- CPU and SoC-side AXI/AXI-Lite fabrics run on `sys_clk` at **100 MHz**;
+  MIG's 81.25 MHz `ui_clk` is a private domain behind a CDC in the DDR
+  SmartConnect.
 - AXI register slice on the CPU DBUS R-channel to break the CPU→xbar→I$
   combinational path — required for 100 MHz timing on Artix-7.
 - fcapz EJTAG-AXI is one chain higher than MBV (chain 4 instead of 3)
@@ -180,23 +189,28 @@ board target `mbv32`):
   Host tools: `no_commit/vex_boot_zephyr.py` for boot,
   `no_commit/vex_set_ip.py` for provisioning.
 
-Split-fabric AXI: MBV, fcapz/debug, and AXI-Lite peripherals live on a
-control interconnect; DMA SG/MM2S/S2MM reach DDR through a separate data
-interconnect and only bridge into the control fabric when SW/debug needs
-packet-buffer access.
+Top-level RTL diagrams (click for full-size SVG):
 
-Standalone Arty A7-100T top-level RTL diagram:
+**MicroBlaze V shell (81.25 MHz single domain):**
 
-<a href="docs/architecture.svg">
-  <img src="docs/architecture.svg" alt="emacZero Arty A7-100T top-level RTL">
+<a href="docs/architecture_mbv.svg">
+  <img src="docs/architecture_mbv.svg" alt="Arty A7-100T MicroBlaze V SoC">
 </a>
 
-Editable source: [docs/architecture.json](docs/architecture.json).
+**VexRiscv-full shell (100 MHz SoC + 81.25 MHz DDR UI):**
+
+<a href="docs/architecture_vex.svg">
+  <img src="docs/architecture_vex.svg" alt="Arty A7-100T VexRiscv-full SoC">
+</a>
+
+Editable sources: [docs/architecture_mbv.json](docs/architecture_mbv.json),
+[docs/architecture_vex.json](docs/architecture_vex.json).
 
 ## Resource Usage and Frequency
 
 Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, both shells timing
-MET at 100 MHz `sys_clk`.
+MET at their target frequencies (MBV: 81.25 MHz `ui_clk`; Vex: 100 MHz
+`sys_clk` + 81.25 MHz `ui_clk` behind CDC).
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
@@ -275,7 +289,8 @@ differently:
 - **Zephyr socket path (any other UDP port)**: saturates around
   ~12 Mbit/s. Driver overhead is only ~10.9% of the wall (measured via
   the gated R7 per-region counters); the remainder is Zephyr net-stack
-  work on a single 100 MHz core. Reaching 25-30 Mbit/s through
+  work on a single core (81.25 MHz on MBV, 100 MHz on Vex). Reaching
+  25-30 Mbit/s through
   arbitrary sockets would require a stack rewrite or SMP. See
   `no_commit/BUGS.md` #33 for the analysis.
 

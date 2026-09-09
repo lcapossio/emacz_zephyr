@@ -11,7 +11,7 @@
     <linearGradient id="grad-emaczero" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="50%" stop-color="#B45309"/><stop offset="50%" stop-color="#047857"/></linearGradient>
   </defs>
   <rect width="2692" height="718" fill="#000000" id="_canvas_bg"/>
-  <text x="1210.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MicroBlaze V DDR Top Level</text>
+  <text x="1210.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MicroBlaze V SoC (81.25 MHz)</text>
   <rect id="clk100" x="1804" y="74" width="220" height="96" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
   <text x="1914" y="112" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">CLK100MHZ</text>
   <text x="1914" y="127" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">100 MHz</text>
