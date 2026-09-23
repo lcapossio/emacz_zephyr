@@ -65,7 +65,10 @@ struct emaczero_perf_stats {
 	uint32_t rx_bd_available_min;
 	uint32_t rx_poll_completed_max;
 	uint32_t rx_bd_errors;
-	uint32_t _reserved_v11;
+	/* Completed S2MM resets after a halting DMA/SG error. Non-zero means
+	 * the RX ring was rebuilt at least once; pair with rx_bd_errors.
+	 */
+	uint32_t rx_dma_recoveries;
 	uint64_t rx_worker_packets;
 	uint64_t rx_invalid;
 	uint64_t rx_alloc_pkt_fail;

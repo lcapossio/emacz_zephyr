@@ -116,6 +116,10 @@ enum emz_r7_region {
 
 #define EMZ_AXI_DMA_DMASR_IRQ_ALL (BIT(14) | BIT(13) | BIT(12))
 #define EMZ_AXI_DMA_DMASR_ERROR_MASK (BIT(10) | BIT(9) | BIT(8) | BIT(6) | BIT(5) | BIT(4))
+/* DMASR.Halted: the engine clears RS and stops on any DMA/SG error. Nothing
+ * restarts it except a full RESET + CURDESC + RS sequence.
+ */
+#define EMZ_AXI_DMA_DMASR_HALTED BIT(0)
 
 #define EMZ_AXI_DMA_BD_CTRL_SOF BIT(27)
 #define EMZ_AXI_DMA_BD_CTRL_EOF BIT(26)
@@ -211,6 +215,8 @@ struct emaczero_data {
 	bool rx_direct_ring_started;
 	struct k_spinlock rx_direct_lock;
 	struct k_work_delayable rx_direct_poll_work;
+	struct k_work rx_direct_recover_work;
+	atomic_t rx_direct_recover_pending;
 	atomic_t rx_free_count;
 	atomic_t rx_dma_fifo_count;
 	atomic_t rx_ready_fifo_count;
@@ -1021,21 +1027,37 @@ static void emz_rx_direct_program_bd(struct emaczero_data *data, size_t index,
 			    sizeof(data->rx_bd_ring[index]));
 }
 
-static void emz_rx_direct_update_tail(const struct device *dev, size_t index)
+/* Publish the current refill position to S2MM TAILDESC.
+ *
+ * The index read and the register write must both happen under
+ * rx_direct_lock. S2MM stops only when CURDESC reaches TAILDESC, so a
+ * TAILDESC write that lands *behind* the engine re-opens BDs the driver has
+ * already consumed and whose buffers now belong to the net stack or the free
+ * FIFO — the engine would DMA over live data. Reading the index outside the
+ * lock allows exactly that: a preempted thread can overwrite a newer tail
+ * published by the ISR.
+ */
+static void emz_rx_direct_update_tail(const struct device *dev)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
+	k_spinlock_key_t key;
 	uint32_t r7_tail_start;
+	size_t index;
 
-	data->rx_bd_tail_index = index;
+	key = k_spin_lock(&data->rx_direct_lock);
 	if (!data->rx_direct_ring_started) {
+		k_spin_unlock(&data->rx_direct_lock, key);
 		return;
 	}
+	index = data->rx_bd_tail_index;
 
 	r7_tail_start = k_cycle_get_32();
 	barrier_dmem_fence_full();
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
 		      (uint32_t)(uintptr_t)&data->rx_bd_ring[index]);
+	k_spin_unlock(&data->rx_direct_lock, key);
+
 	emz_r7_add(EMZ_R7_TAIL_CSR, emz_r7_elapsed(r7_tail_start, k_cycle_get_32()));
 	emaczero_perf_stats.rx_bd_tail_updates++;
 }
@@ -1115,7 +1137,7 @@ static int emz_rx_direct_refill(const struct device *dev)
 	}
 
 	if (queued > 0) {
-		emz_rx_direct_update_tail(dev, data->rx_bd_tail_index);
+		emz_rx_direct_update_tail(dev);
 	}
 
 	return queued;
@@ -1152,11 +1174,27 @@ static void emz_rx_direct_poll(const struct device *dev)
 		}
 
 		if (rx == NULL) {
+			/* Completed BD with no buffer recorded: a stale Cmplt bit
+			 * from this slot's previous completion. Retire it here --
+			 * clearing status and advancing the consume index -- so the
+			 * ring keeps moving. Breaking without doing so leaves the
+			 * same index permanently COMPLETE+NULL, and every later ISR
+			 * and poll tick lands on it and returns: RX stops forever
+			 * while the IRQ keeps firing.
+			 */
+			bd->status = 0u;
+			emz_dma_cache_flush((const void *)&data->rx_bd_ring[index],
+					    sizeof(data->rx_bd_ring[index]));
+			data->rx_bd_consume_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_RX;
+			if (data->rx_bd_posted > 0u) {
+				data->rx_bd_posted--;
+			}
+			emz_perf_set_bd_available(data);
 			k_spin_unlock(&data->rx_direct_lock, key);
 			emz_r7_add(EMZ_R7_LOCK_CONSUME,
 				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
 			emaczero_perf_stats.rx_bd_errors++;
-			break;
+			continue;
 		}
 
 		data->rx_bd_buffer[index] = NULL;
@@ -1174,8 +1212,18 @@ static void emz_rx_direct_poll(const struct device *dev)
 
 		rx->status = (status & EMZ_AXI_DMA_BD_STATUS_ERROR_MASK) != 0u ? -EFAULT :
 			     DMA_STATUS_COMPLETE;
+		/* The transferred-length field is 26 bits, so a corrupt or stale
+		 * status word can claim megabytes. Clamp before anyone sees it:
+		 * the interceptor below runs in ISR context against a
+		 * 1518-byte buffer and does no bounds check of its own.
+		 */
 		rx->len = status & EMZ_AXI_DMA_BD_STATUS_LEN_MASK;
-		emz_dma_cache_invd(rx->bytes, MIN(rx->len, EMZ_ETH_BUFFER_SIZE));
+		if (rx->len > EMZ_ETH_BUFFER_SIZE) {
+			rx->len = EMZ_ETH_BUFFER_SIZE;
+			rx->status = -EFAULT;
+			emaczero_perf_stats.rx_bd_errors++;
+		}
+		emz_dma_cache_invd(rx->bytes, rx->len);
 		if (rx->status == DMA_STATUS_COMPLETE && data->rx_interceptor != NULL &&
 		    data->rx_interceptor(rx->bytes, rx->len, data->rx_interceptor_user_data)) {
 			emz_release_rx_buffer(dev, rx);
@@ -1242,6 +1290,120 @@ static void emz_rx_direct_poll_work_handler(struct k_work *work)
 	(void)k_work_reschedule(&data->rx_direct_poll_work, K_MSEC(1));
 }
 
+/* Reset S2MM and (re)start it on the current ring. Callers own
+ * irq_disable/irq_enable and must have the ring populated first: the engine
+ * begins fetching at CURDESC the moment RS is set.
+ */
+static void emz_rx_direct_arm(const struct device *dev)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+	uint32_t dmacr;
+
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
+	k_busy_wait(10);
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_CURDESC,
+		      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_consume_index]);
+	barrier_dmem_fence_full();
+	/* Coalesce IOC interrupts across up to 32 completions to amortise ISR
+	 * cost. Enable Dly_IrqEn with a short delay so bursts smaller than the
+	 * threshold still get serviced quickly. IRQDelay unit = 125 SG cycles;
+	 * at 81.25 MHz that is ~1.54 us, so 32 = ~50 us of idle before wakeup.
+	 */
+	dmacr = EMZ_AXI_DMA_DMACR_RS | EMZ_AXI_DMA_DMACR_IOC_IRQEN |
+		EMZ_AXI_DMA_DMACR_DLY_IRQEN | EMZ_AXI_DMA_DMACR_ERR_IRQEN |
+		(32u << EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT) |
+		(32u << EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, dmacr);
+	barrier_dmem_fence_full();
+	data->rx_direct_ring_started = true;
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
+		      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_tail_index]);
+	emaczero_perf_stats.rx_bd_tail_updates++;
+}
+
+/* Rebuild the RX ring after S2MM halted on a DMA/SG error.
+ *
+ * A halted engine never restarts on its own, so without this the first
+ * DMADecErr/DMASlvErr takes RX down until reboot. Runs from the system work
+ * queue, not the ISR: the reset sequence busy-waits.
+ */
+static void emz_rx_direct_recover(const struct device *dev)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+	struct emaczero_rx_buffer *orphans[EMZ_DMA_BUFFER_COUNT_RX];
+	size_t orphan_count = 0u;
+	k_spinlock_key_t key;
+
+	irq_disable(cfg->dma_rx_irq);
+
+	/* Stop the engine before touching the ring: a halted S2MM may still be
+	 * mid-writeback on the BD it faulted on.
+	 */
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
+	k_busy_wait(10);
+	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
+	barrier_dmem_fence_full();
+
+	key = k_spin_lock(&data->rx_direct_lock);
+	data->rx_direct_ring_started = false;
+	for (size_t i = 0; i < EMZ_DMA_BUFFER_COUNT_RX; i++) {
+		if (data->rx_bd_buffer[i] != NULL) {
+			orphans[orphan_count] = data->rx_bd_buffer[i];
+			orphan_count++;
+			data->rx_bd_buffer[i] = NULL;
+		}
+		data->rx_bd_ring[i].status = 0u;
+		data->rx_bd_ring[i].control = 0u;
+	}
+	data->rx_bd_consume_index = 0u;
+	data->rx_bd_refill_index = 0u;
+	data->rx_bd_tail_index = 0u;
+	data->rx_bd_posted = 0u;
+	data->rx_dma_inflight = 0u;
+	emz_perf_set_bd_available(data);
+	k_spin_unlock(&data->rx_direct_lock, key);
+
+	emz_dma_cache_flush((const void *)data->rx_bd_ring,
+			    sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_RX);
+
+	/* Return every buffer the engine still owned to the free pool. Done
+	 * outside the lock and without emz_release_rx_buffer(), which would
+	 * re-enter the refill path mid-rebuild.
+	 */
+	atomic_set(&data->rx_dma_fifo_count, 0);
+	for (size_t i = 0; i < orphan_count; i++) {
+		atomic_inc(&data->rx_free_count);
+		k_fifo_put(&data->rx_free_fifo, orphans[i]);
+	}
+	emz_perf_update_pool_inflight(data);
+
+	/* Repopulate before arming. If the pool is momentarily empty the ring
+	 * comes up bare; the next buffer release refills and republishes the
+	 * tail through the normal path.
+	 */
+	(void)emz_rx_direct_refill(dev);
+	emz_rx_direct_arm(dev);
+	irq_enable(cfg->dma_rx_irq);
+
+	emaczero_perf_stats.rx_dma_recoveries++;
+	atomic_clear(&data->rx_direct_recover_pending);
+}
+
+static void emz_rx_direct_recover_work_handler(struct k_work *work)
+{
+	struct emaczero_data *data =
+		CONTAINER_OF(work, struct emaczero_data, rx_direct_recover_work);
+
+	if (data->dev != NULL) {
+		emz_rx_direct_recover(data->dev);
+	} else {
+		atomic_clear(&data->rx_direct_recover_pending);
+	}
+}
+
 static void emz_rx_direct_isr(const void *arg)
 {
 	const struct device *dev = arg;
@@ -1256,6 +1418,16 @@ static void emz_rx_direct_isr(const void *arg)
 	if ((dmasr & EMZ_AXI_DMA_DMASR_ERROR_MASK) != 0u) {
 		emaczero_perf_stats.dma_errors++;
 		emaczero_perf_stats.rx_bd_errors++;
+
+		/* An error halts S2MM (RS clears). Clearing the status bits does
+		 * not restart it, so hand off to the work queue for a full ring
+		 * rebuild. The flag collapses the interrupt storm a halted
+		 * engine produces into a single recovery pass.
+		 */
+		if ((dmasr & EMZ_AXI_DMA_DMASR_HALTED) != 0u &&
+		    atomic_cas(&data->rx_direct_recover_pending, 0, 1)) {
+			(void)k_work_submit(&data->rx_direct_recover_work);
+		}
 	}
 
 	/* Acknowledge the edge-causing IRQ before walking completed BDs. At
@@ -1276,7 +1448,6 @@ static int emz_rx_direct_start(const struct device *dev)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
-	uint32_t dmacr;
 	int queued;
 
 	data->rx_bd_ring = emz_sg_mem_alloc(64u,
@@ -1306,26 +1477,7 @@ static int emz_rx_direct_start(const struct device *dev)
 	}
 
 	irq_disable(cfg->dma_rx_irq);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
-	k_busy_wait(10);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_CURDESC, (uint32_t)(uintptr_t)data->rx_bd_ring);
-	barrier_dmem_fence_full();
-	/* Coalesce IOC interrupts across up to 32 completions to amortise ISR
-	 * cost. Enable Dly_IrqEn with a short delay so bursts smaller than the
-	 * threshold still get serviced quickly. IRQDelay unit = 125 SG cycles;
-	 * at 81.25 MHz that is ~1.54 us, so 32 = ~50 us of idle before wakeup.
-	 */
-	dmacr = EMZ_AXI_DMA_DMACR_RS | EMZ_AXI_DMA_DMACR_IOC_IRQEN |
-		EMZ_AXI_DMA_DMACR_DLY_IRQEN | EMZ_AXI_DMA_DMACR_ERR_IRQEN |
-		(32u << EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT) |
-		(32u << EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, dmacr);
-	barrier_dmem_fence_full();
-	data->rx_direct_ring_started = true;
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
-		      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_tail_index]);
-	emaczero_perf_stats.rx_bd_tail_updates++;
+	emz_rx_direct_arm(dev);
 	irq_enable(cfg->dma_rx_irq);
 	(void)k_work_schedule(&data->rx_direct_poll_work, K_MSEC(1));
 	return queued;
@@ -2270,6 +2422,7 @@ static int emz_init(const struct device *dev)
 	emaczero_perf_stats.tx_ext_magic = 0x54584542u; // "TXEB"
 #if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
 	k_work_init_delayable(&data->rx_direct_poll_work, emz_rx_direct_poll_work_handler);
+	k_work_init(&data->rx_direct_recover_work, emz_rx_direct_recover_work_handler);
 #endif
 	k_fifo_init(&data->rx_free_fifo);
 	k_fifo_init(&data->rx_dma_fifo);

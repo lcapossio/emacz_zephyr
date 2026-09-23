@@ -66,7 +66,7 @@ FIELDS = (
     ("rx_bd_available_min", "u32"),
     ("rx_poll_completed_max", "u32"),
     ("rx_bd_errors", "u32"),
-    ("_reserved_v11", "u32"),
+    ("rx_dma_recoveries", "u32"),
     ("rx_worker_packets", "u64"),
     ("rx_invalid", "u64"),
     ("rx_alloc_pkt_fail", "u64"),
