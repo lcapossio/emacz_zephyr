@@ -69,26 +69,36 @@ difference, so the deltas below reflect CPU cost.
 **Vex is the cheaper CPU on this Artix-7 target.** Despite carrying
 16 KiB I$/D$ and a DYNAMIC_TARGET branch predictor, it uses ~17% fewer
 LUTs, ~36% fewer FFs, ~18% fewer BRAM tiles, and dramatically fewer
-F7/F8 wide-mux resources than MicroBlaze V, all at the same 100 MHz sys_clk.
+F7/F8 wide-mux resources than MicroBlaze V — while also running its SoC
+20% faster (see Timing below).
 The BRAM saving is possible because vex's cache tag/data arrays pack
 into RAMB36E1 primitives more efficiently than MicroBlaze V's LMB BRAM
 controllers, which allocate per-word.
 
 ## Timing
 
-Both bitstreams meet all user-specified timing constraints at 100 MHz
-sys_clk.
+Both bitstreams meet all user-specified timing constraints, but **they do
+not run the CPU at the same frequency** — this matters when reading the
+resource table above.
 
 | | MBV | Vex |
 |---|---|---|
-| Setup WNS (sys_clk) | +0.630 ns | +0.369 ns |
-| Hold WHS (sys_clk) | +0.056 ns | +0.019 ns |
+| CPU + SoC fabric clock | `mig_ddr/ui_clk` **81.25 MHz** | `sys_clk` **100 MHz** |
+| DDR UI clock | same 81.25 MHz domain (no CDC) | 81.25 MHz, isolated behind ddr_smartconnect CDC |
+| Setup WNS | +0.630 ns | +0.369 ns |
+| Hold WHS | +0.056 ns | +0.019 ns |
 | Failing endpoints | 0 | 0 |
 | Total endpoints | ~similar | 114,839 |
 
-MBV has slightly more setup headroom; vex is tighter but still MET. The
-vex margin is thinner because widened caches + predictor + R-slice push
-routing harder on the CPU core.
+The MBV shell clocks the CPU and every AXI/AXI-Lite fabric directly from
+MIG's `ui_clk`. With the shared MIG config (`hardware/mig/arty_a7_100t_mig.prj`,
+PHY ratio 4:1 at 325 MHz DDR) that is 81.25 MHz. The Vex shell instead runs
+a 100 MHz `sys_clk` from the MMCM and treats `ui_clk` as a private
+downstream domain, crossing into it inside the DDR SmartConnect.
+
+So Vex delivers the smaller footprint *and* a 23% higher core clock. Its
+thinner setup margin is expected: widened caches + predictor + R-slice at
+a shorter target period push routing harder on the CPU core.
 
 ## Reproducing these numbers
 

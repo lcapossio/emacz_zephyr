@@ -72,13 +72,24 @@ export CROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 
 ## Build
 
-Firmware (AMD Zephyr `mbv32` board):
+Firmware — pick the board that matches the bitstream you will program:
 
 ```sh
-west build -b mbv32 app -- \
+# MicroBlaze V shell (AMD Zephyr in-tree board):
+west build -b mbv32 -d build-mbv-emac app -- \
+  -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
+  -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
+
+# VexRiscv-full shell (board defined in this repo):
+west build -b arty_a7_vex -d build-vex-emac app -- \
   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
+
+The two boards are not interchangeable: `arty_a7_vex` sets a 100 MHz timer
+base and disables D-cache maintenance ops the VexRiscv-full demo config
+cannot decode. Booting an `mbv32` image on the Vex bitstream gives a ~23%
+timer error; the reverse traps on `fence`.
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
 a Zephyr extra module, so the local driver/binding/Kconfig are picked up
@@ -172,8 +183,9 @@ target `mbv32`):
 - fcapz EJTAG-AXI on BSCANE2 USER3 (chain 3), EJTAG-UART on USER4, ELA on
   USER1, EIO reset on USER1 chain 1.
 
-VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, same Zephyr
-board target `mbv32`):
+VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, Zephyr board
+target `arty_a7_vex` — defined in-tree under `boards/bard0/arty_a7_vex/`
+and `soc/bard0/arty_a7_vex/`):
 
 - SpinalHDL VexRiscv-full RV32IMA with `IBusCachedPlugin` (16 KiB I$,
   DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
@@ -256,9 +268,11 @@ python -m pytest tests/test_apply_zephyr_patches.py \
   tests/test_emacz_config.py tests/test_run_arty_stress.py -q -p no:cacheprovider
 python scripts/check_env.py
 python hardware/sim/run.py
-west build -b mbv32 app -- \
-  -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
-  -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
+for board in mbv32 arty_a7_vex; do
+  west build -b "$board" -d "build-check-$board" app -- \
+    -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
+    -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
+done
 ```
 
 `scripts/lint.py` resolves `ruff` and `clang-format` from `PATH`. Local
