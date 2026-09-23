@@ -66,6 +66,11 @@ struct prov_message {
 
 static struct net_if *prov_iface;
 static struct in_addr prov_addr;
+/* Whether prov_addr is actually attached to prov_iface. False when the
+ * bootstrap add failed at startup, in which case there is nothing to remove
+ * before installing the first host-supplied address.
+ */
+static bool prov_addr_installed;
 static struct in_addr prov_gateway;
 static uint8_t prov_prefix;
 static uint32_t prov_token;
@@ -211,27 +216,33 @@ static int apply_config(const struct prov_message *request)
 		return -EINVAL;
 	}
 
-	if (!net_if_ipv4_addr_rm(prov_iface, &old_addr)) {
+	if (prov_addr_installed && !net_if_ipv4_addr_rm(prov_iface, &old_addr)) {
 		return -EIO;
 	}
+	prov_addr_installed = false;
 
 	if (net_if_ipv4_addr_add(prov_iface, &request->ip, NET_ADDR_MANUAL, 0) == NULL) {
-		(void)net_if_ipv4_addr_add(prov_iface, &old_addr, NET_ADDR_MANUAL, 0);
-		prefix_to_mask(prov_prefix, &old_mask);
-		(void)net_if_ipv4_set_netmask_by_addr(prov_iface, &old_addr, &old_mask);
+		if (net_if_ipv4_addr_add(prov_iface, &old_addr, NET_ADDR_MANUAL, 0) != NULL) {
+			prefix_to_mask(prov_prefix, &old_mask);
+			(void)net_if_ipv4_set_netmask_by_addr(prov_iface, &old_addr, &old_mask);
+			prov_addr_installed = true;
+		}
 		return -ENOMEM;
 	}
 
 	prefix_to_mask(request->prefix, &mask);
 	if (!net_if_ipv4_set_netmask_by_addr(prov_iface, &request->ip, &mask)) {
 		(void)net_if_ipv4_addr_rm(prov_iface, &request->ip);
-		(void)net_if_ipv4_addr_add(prov_iface, &old_addr, NET_ADDR_MANUAL, 0);
-		prefix_to_mask(prov_prefix, &old_mask);
-		(void)net_if_ipv4_set_netmask_by_addr(prov_iface, &old_addr, &old_mask);
+		if (net_if_ipv4_addr_add(prov_iface, &old_addr, NET_ADDR_MANUAL, 0) != NULL) {
+			prefix_to_mask(prov_prefix, &old_mask);
+			(void)net_if_ipv4_set_netmask_by_addr(prov_iface, &old_addr, &old_mask);
+			prov_addr_installed = true;
+		}
 		return -EIO;
 	}
 
 	net_if_ipv4_set_gw(prov_iface, &request->gateway);
+	prov_addr_installed = true;
 	prov_addr = request->ip;
 	prov_gateway = request->gateway;
 	prov_prefix = request->prefix;
@@ -257,17 +268,25 @@ static void poll_jtag_mailbox(void)
 	}
 	epoch = emacz_jtag_mailbox.epoch;
 	if (!armed) {
-		/* First time we see valid magic: latch the current epoch so
-		 * we do not re-apply the value already in effect on cold boot
-		 * (e.g. persistent DDR contents from a prior board run).
+		/* First poll after boot, or after a magic drop-out.
+		 *
+		 * Do not blanket-skip here. The host stages the mailbox over
+		 * JTAG-AXI, and in the normal bring-up flow it can land before
+		 * the CPU is released -- so an unconditional skip drops a live
+		 * request while still writing ack_epoch, i.e. reports success
+		 * for an address that was never applied.
+		 *
+		 * Discriminate on the mailbox's own ack field instead. Anything
+		 * already serviced -- including contents persisted in DDR from a
+		 * previous board run, which is what this guard exists for --
+		 * carries ack_epoch == epoch. Everything else is pending work.
 		 */
-		last_applied_epoch = epoch;
-		emacz_jtag_mailbox.ack_epoch = epoch;
-		emacz_jtag_mailbox.status = 0;
 		armed = true;
-		return;
-	}
-	if (epoch == last_applied_epoch) {
+		if (emacz_jtag_mailbox.ack_epoch == epoch) {
+			last_applied_epoch = epoch;
+			return;
+		}
+	} else if (epoch == last_applied_epoch) {
 		return;
 	}
 
@@ -300,13 +319,14 @@ static void provision_thread_fn(void *arg1, void *arg2, void *arg3)
 		struct prov_message request;
 		int rc = k_msgq_get(&prov_rx_queue, buf, K_MSEC(100));
 
-		if (rc == -EAGAIN) {
-			/* Idle tick: fold in the JTAG mailbox so bring-up
-			 * doesn't need any network reachability to change IP.
-			 */
-			poll_jtag_mailbox();
-			continue;
-		}
+		/* Poll the JTAG mailbox every iteration, not just on the idle
+		 * tick. It is the fallback path for when the network is
+		 * unusable, so it must not be starved by the very traffic that
+		 * would make someone reach for it: a steady stream of broadcast
+		 * frames to port 5004 keeps the queue non-empty indefinitely.
+		 */
+		poll_jtag_mailbox();
+
 		if (rc != 0) {
 			continue;
 		}
@@ -364,7 +384,8 @@ int emacz_provision_start(struct net_if *iface)
 {
 	const struct net_linkaddr *link_addr;
 	struct in_addr mask;
-	int ret;
+	int ret = 0;
+	int up;
 
 	if (iface == NULL) {
 		return -EINVAL;
@@ -389,23 +410,36 @@ int emacz_provision_start(struct net_if *iface)
 	memset(&prov_gateway, 0, sizeof(prov_gateway));
 	prov_prefix = 16u;
 
+	/* Bring up the link-local bootstrap, but do not abort on failure.
+	 *
+	 * The provisioning thread also carries the JTAG mailbox poller, which
+	 * is the only way to reach a board whose network side is unusable --
+	 * exactly the situation these failures describe. Returning early left
+	 * no listener, no mailbox poll, and no retry: a PHY that has no
+	 * carrier yet at boot bricked provisioning for the whole run.
+	 *
+	 * Report the first error to the caller for logging, then start the
+	 * thread regardless.
+	 */
 	if (net_if_ipv4_addr_add(iface, &prov_addr, NET_ADDR_MANUAL, 0) == NULL) {
-		return -ENOMEM;
-	}
-	prefix_to_mask(prov_prefix, &mask);
-	if (!net_if_ipv4_set_netmask_by_addr(iface, &prov_addr, &mask)) {
-		return -EIO;
+		ret = -ENOMEM;
+	} else {
+		prov_addr_installed = true;
+		prefix_to_mask(prov_prefix, &mask);
+		if (!net_if_ipv4_set_netmask_by_addr(iface, &prov_addr, &mask)) {
+			ret = -EIO;
+		}
 	}
 
-	ret = net_if_up(iface);
-	if (ret != 0 && ret != -EALREADY) {
-		return ret;
+	up = net_if_up(iface);
+	if (up != 0 && up != -EALREADY && ret == 0) {
+		ret = up;
 	}
 
 	k_thread_create(&prov_thread, prov_thread_stack, K_THREAD_STACK_SIZEOF(prov_thread_stack),
 			provision_thread_fn, NULL, NULL, NULL, PROV_THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(&prov_thread, "emacz_provision");
-	return 0;
+	return ret;
 }
 
 bool emacz_provision_get_ipv4(struct in_addr *addr)
