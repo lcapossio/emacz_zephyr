@@ -117,7 +117,12 @@ struct emaczero_perf_stats {
 	uint32_t net_pkt_filter_rx_drop;
 	uint32_t net_pkt_filter_rx_ipv4_drop;
 	uint32_t net_pkt_filter_rx_local_drop;
-	uint32_t _reserved_v13;
+	/* Seqlock over the sink_* block below: odd while the CPU is mid-update.
+	 * The JTAG host reads the block as separate 32-bit beats while the CPU
+	 * runs, so it must re-read this word afterwards and retry if it was odd
+	 * or has changed.
+	 */
+	uint32_t sink_seq;
 	uint64_t sink_packets;
 	uint64_t sink_bytes;
 	uint64_t sink_recv_errors;

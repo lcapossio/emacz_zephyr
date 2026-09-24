@@ -82,6 +82,10 @@ extern struct net_stats net_stats;
 #define TX_BENCH_FRAME_MAX (14u + 20u + 8u + TX_BENCH_MAX_PAYLOAD)
 #define TX_BENCH_BURST_COUNT 32u
 #define TX_BENCH_DEFAULT_DURATION_MS 5000u
+/* Keeps the 32-bit cycle window below its wrap at 100 MHz (~42.9 s). */
+#define TX_BENCH_MAX_DURATION_MS 30000u
+/* Slowest pacing: one packet per second, so delay * burst fits 32 bits. */
+#define TX_BENCH_MAX_DELAY_US 1000000u
 #define TX_BENCH_DEFAULT_PAYLOAD 1472u
 
 volatile uint32_t emacz_scratch_heartbeat[2];
@@ -113,8 +117,12 @@ static void raw_uart_hex32(uint32_t value)
 #if defined(CONFIG_EMACZ_APP_RAW_UART)
 	for (int shift = 28; shift >= 0; shift -= 4) {
 		uint8_t nibble = (value >> shift) & 0xfu;
+		uint32_t timeout = 1000000u;
 
 		while ((sys_read32(UARTLITE_BASE + UARTLITE_STATUS) & UARTLITE_STATUS_TX_FULL) != 0u) {
+			if (timeout-- == 0u) {
+				return;
+			}
 		}
 		sys_write32(nibble < 10u ? '0' + nibble : 'A' + nibble - 10u,
 			    UARTLITE_BASE + UARTLITE_TX_FIFO);
@@ -342,6 +350,7 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 	uint32_t port = TX_BENCH_PORT;
 	size_t frame_len;
 	uint32_t start_cycle;
+	uint32_t duration_cycles;
 	uint32_t elapsed_cycles;
 	uint32_t elapsed_ms;
 	uint32_t cycles_per_sec = sys_clock_hw_cycles_per_sec();
@@ -375,6 +384,8 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 
 	if (duration_ms == 0u) {
 		duration_ms = TX_BENCH_DEFAULT_DURATION_MS;
+	} else if (duration_ms > TX_BENCH_MAX_DURATION_MS) {
+		duration_ms = TX_BENCH_MAX_DURATION_MS;
 	}
 	if (payload_len == 0u || payload_len > TX_BENCH_MAX_PAYLOAD) {
 		payload_len = TX_BENCH_DEFAULT_PAYLOAD;
@@ -385,8 +396,9 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 	if (rate_mbps_x1000 != 0u) {
 		uint64_t bits_per_packet = (uint64_t)payload_len * 8u;
 		uint64_t bits_per_sec = (uint64_t)rate_mbps_x1000 * 1000u;
+		uint64_t delay = (bits_per_packet * 1000000u) / bits_per_sec;
 
-		delay_us = (uint32_t)((bits_per_packet * 1000000u) / bits_per_sec);
+		delay_us = (uint32_t)MIN(delay, (uint64_t)TX_BENCH_MAX_DELAY_US);
 		if (delay_us == 0u) {
 			delay_us = 1u;
 		}
@@ -398,9 +410,9 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 		return (size_t)snprintk(reply, reply_len, "tx error=no_peer_arp\r\n");
 	}
 
+	duration_cycles = (uint32_t)(((uint64_t)duration_ms * cycles_per_sec) / 1000u);
 	start_cycle = k_cycle_get_32();
-	while ((uint32_t)(k_cycle_get_32() - start_cycle) <
-	       (uint32_t)(((uint64_t)duration_ms * cycles_per_sec) / 1000u)) {
+	while ((uint32_t)(k_cycle_get_32() - start_cycle) < duration_cycles) {
 		int ret = emaczero_profile_send_raw_frame_burst(tx_bench_frame, frame_len,
 								TX_BENCH_BURST_COUNT);
 
@@ -649,6 +661,57 @@ K_THREAD_STACK_DEFINE(udp_sink_thread_stack, UDP_SINK_THREAD_STACK_SIZE);
 static struct k_thread udp_sink_thread;
 static uint8_t udp_sink_buf[UDP_SINK_BUFFER_SIZE];
 
+/* The sink counters are written from the RX ISR (interceptor via the direct
+ * poll), from thread context (the RX worker and poll work item also run the
+ * interceptor, plus the socket sink below), and each 64-bit RMW is two 32-bit
+ * ops on RV32. Serialize every writer, and bracket each update with sink_seq
+ * so the JTAG host can detect a read that straddled one.
+ */
+static struct k_spinlock sink_stats_lock;
+
+static inline k_spinlock_key_t sink_stats_begin(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&sink_stats_lock);
+
+	emaczero_perf_stats.sink_seq++;
+	compiler_barrier();
+	return key;
+}
+
+static inline void sink_stats_end(k_spinlock_key_t key)
+{
+	compiler_barrier();
+	emaczero_perf_stats.sink_seq++;
+	k_spin_unlock(&sink_stats_lock, key);
+}
+
+static void sink_account_packet(uint32_t payload_len)
+{
+	k_spinlock_key_t key = sink_stats_begin();
+	uint32_t now = k_cycle_get_32();
+
+	if (emaczero_perf_stats.sink_packets == 0u) {
+		emaczero_perf_stats.sink_first_cycle = now;
+	}
+	emaczero_perf_stats.sink_packets++;
+	emaczero_perf_stats.sink_bytes += (uint64_t)payload_len;
+	emaczero_perf_stats.sink_last_len = payload_len;
+	emaczero_perf_stats.sink_last_cycle = now;
+	sink_stats_end(key);
+}
+
+static void sink_account_error(uint32_t err)
+{
+	k_spinlock_key_t key = sink_stats_begin();
+
+	emaczero_perf_stats.sink_recv_errors++;
+	emaczero_perf_stats.sink_last_errno = err;
+	if (err == EAGAIN || err == EWOULDBLOCK) {
+		emaczero_perf_stats.sink_eagain++;
+	}
+	sink_stats_end(key);
+}
+
 static uint16_t read_be16(const uint8_t *data)
 {
 	return ((uint16_t)data[0] << 8) | data[1];
@@ -661,7 +724,6 @@ static bool udp_sink_intercept(const uint8_t *frame, size_t len, void *user_data
 	size_t udp_offset;
 	uint16_t ip_total_len;
 	uint16_t udp_len;
-	uint32_t now;
 
 	if (len < 42u || mac == NULL || read_be16(frame + 12u) != 0x0800u ||
 	    (frame[14] >> 4) != 4u ||
@@ -693,14 +755,7 @@ static bool udp_sink_intercept(const uint8_t *frame, size_t len, void *user_data
 		return false;
 	}
 
-	now = k_cycle_get_32();
-	if (emaczero_perf_stats.sink_packets == 0u) {
-		emaczero_perf_stats.sink_first_cycle = now;
-	}
-	emaczero_perf_stats.sink_packets++;
-	emaczero_perf_stats.sink_bytes += (uint64_t)(udp_len - 8u);
-	emaczero_perf_stats.sink_last_len = (uint32_t)(udp_len - 8u);
-	emaczero_perf_stats.sink_last_cycle = now;
+	sink_account_packet((uint32_t)(udp_len - 8u));
 	return true;
 }
 
@@ -719,14 +774,12 @@ static void udp_sink_thread_fn(void *arg1, void *arg2, void *arg3)
 
 	sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock < 0) {
-		emaczero_perf_stats.sink_recv_errors++;
-		emaczero_perf_stats.sink_last_errno = (uint32_t)errno;
+		sink_account_error((uint32_t)errno);
 		return;
 	}
 
 	if (zsock_bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		emaczero_perf_stats.sink_recv_errors++;
-		emaczero_perf_stats.sink_last_errno = (uint32_t)errno;
+		sink_account_error((uint32_t)errno);
 		(void)zsock_close(sock);
 		return;
 	}
@@ -736,31 +789,20 @@ static void udp_sink_thread_fn(void *arg1, void *arg2, void *arg3)
 		ssize_t got = zsock_recvfrom(sock, udp_sink_buf, sizeof(udp_sink_buf), 0,
 					     NULL, NULL);
 		uint32_t recv_cycles = k_cycle_get_32() - recv_start;
+		k_spinlock_key_t key = sink_stats_begin();
 
 		emaczero_perf_stats.sink_recvfrom_calls++;
 		emaczero_perf_stats.sink_recvfrom_cycles_total += recv_cycles;
 		if (recv_cycles > emaczero_perf_stats.sink_recvfrom_cycles_max) {
 			emaczero_perf_stats.sink_recvfrom_cycles_max = recv_cycles;
 		}
+		sink_stats_end(key);
 
 		if (got < 0) {
-			uint32_t err = (uint32_t)errno;
-
-			emaczero_perf_stats.sink_recv_errors++;
-			emaczero_perf_stats.sink_last_errno = err;
-			if (err == EAGAIN || err == EWOULDBLOCK) {
-				emaczero_perf_stats.sink_eagain++;
-			}
+			sink_account_error((uint32_t)errno);
 			continue;
 		}
-
-		if (emaczero_perf_stats.sink_packets == 0u) {
-			emaczero_perf_stats.sink_first_cycle = k_cycle_get_32();
-		}
-		emaczero_perf_stats.sink_packets++;
-		emaczero_perf_stats.sink_bytes += (uint64_t)got;
-		emaczero_perf_stats.sink_last_len = (uint32_t)got;
-		emaczero_perf_stats.sink_last_cycle = k_cycle_get_32();
+		sink_account_packet((uint32_t)got);
 	}
 }
 

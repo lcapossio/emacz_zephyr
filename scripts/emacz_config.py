@@ -133,34 +133,33 @@ def open_endpoints(interface: str | None = None, bind: str | None = None) -> lis
     if not interfaces:
         raise RuntimeError("no active non-loopback IPv4 interfaces found")
     receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    receiver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    receiver.bind(("", PORT))
-    joined: list[tuple[str, str]] = []
-    failures: list[str] = []
-    for name, address in interfaces:
-        membership = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton(address)
-        try:
-            receiver.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
-            joined.append((name, address))
-        except OSError as exc:
-            failures.append(f"{name} ({address}): {exc}")
-    if not joined:
-        receiver.close()
-        detail = "; ".join(failures)
-        raise RuntimeError(f"no active interface supports provisioning multicast ({detail})")
-    receiver.setblocking(False)
     endpoints: list[Endpoint] = [Endpoint("all", "0.0.0.0", receiver)]
-    for name, address in joined:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        try:
+    try:
+        receiver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        receiver.bind(("", PORT))
+        joined: list[tuple[str, str]] = []
+        failures: list[str] = []
+        for name, address in interfaces:
+            membership = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton(address)
+            try:
+                receiver.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+                joined.append((name, address))
+            except OSError as exc:
+                failures.append(f"{name} ({address}): {exc}")
+        if not joined:
+            detail = "; ".join(failures)
+            raise RuntimeError(f"no active interface supports provisioning multicast ({detail})")
+        receiver.setblocking(False)
+        for name, address in joined:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            endpoints.append(Endpoint(name, address, sock))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.bind((address, 0))
             sock.setblocking(False)
-            endpoints.append(Endpoint(name, address, sock))
-        except Exception:
-            sock.close()
-            raise
+    except BaseException:
+        close_endpoints(endpoints)
+        raise
     return endpoints
 
 

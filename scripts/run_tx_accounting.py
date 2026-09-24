@@ -54,12 +54,15 @@ PERF_KEEP = [
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
     transport = XilinxHwServerTransport(fpga_name=tap)
     transport.connect()
-    axi = EjtagAxiController(transport, chain=chain)
-    axi.attach()
     try:
-        return {name: axi.axi_read(base + off) for name, off in REGS.items()}
+        axi = EjtagAxiController(transport, chain=chain)
+        axi.attach()
+        try:
+            return {name: axi.axi_read(base + off) for name, off in REGS.items()}
+        finally:
+            axi.close()
     finally:
-        axi.close()
+        transport.close()
 
 
 def parse_reply(text: str) -> dict[str, int]:

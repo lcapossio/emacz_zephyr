@@ -70,7 +70,12 @@ def run(args: argparse.Namespace) -> int:
     interval = (args.packet_size * 8.0) / rate_bps if rate_bps > 0 else 0.0
     target = (args.host, args.port)
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        return _run(args, sock, interval, target, rate_bps)
+
+
+def _run(args: argparse.Namespace, sock: socket.socket, interval: float,
+         target: tuple[str, int], rate_bps: float) -> int:
     if args.host.endswith(".255"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     if args.bind:
@@ -95,6 +100,10 @@ def run(args: argparse.Namespace) -> int:
         seq += 1
         next_send += interval
 
+    if seq == 0:
+        # The receiver recognises the FIN by a negative sequence; -0 is not.
+        raise SystemExit("no datagrams sent; increase --duration")
+
     elapsed_us = int((time.perf_counter() - start) * 1_000_000)
     fin = make_packet(-seq, elapsed_us, args.packet_size, args.port, rate_bps)
 
@@ -105,6 +114,9 @@ def run(args: argparse.Namespace) -> int:
             stats = parse_stats(sock.recv(2048))
             break
         except socket.timeout:
+            continue
+        except ValueError as exc:
+            print(f"ignoring malformed stats reply: {exc}")
             continue
 
     elapsed = time.perf_counter() - start

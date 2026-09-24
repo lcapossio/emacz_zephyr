@@ -115,7 +115,7 @@ FIELDS = (
     ("net_pkt_filter_rx_drop", "u32"),
     ("net_pkt_filter_rx_ipv4_drop", "u32"),
     ("net_pkt_filter_rx_local_drop", "u32"),
-    ("_reserved_v13", "u32"),
+    ("sink_seq", "u32"),
     ("sink_packets", "u64"),
     ("sink_bytes", "u64"),
     ("sink_recv_errors", "u64"),
@@ -235,39 +235,60 @@ FIELDS = (
     ("tx_ext_word15", "u32"),
 )
 
-def read_stats(addr: int = 0x9FFFF000, tap: str = "xc7a100t", chain: int = 3):
-    total_bytes = 0
-    for _, kind in FIELDS:
+def field_offsets() -> tuple[dict[str, int], int]:
+    """Byte offset of every field under C natural alignment, plus total size."""
+    offsets = {}
+    offset = 0
+    for name, kind in FIELDS:
         if kind == "u64":
-            total_bytes = (total_bytes + 7) & ~7
-            total_bytes += 8
+            offset = (offset + 7) & ~7
+            offsets[name] = offset
+            offset += 8
         else:
-            total_bytes += 4
+            offsets[name] = offset
+            offset += 4
+    return offsets, offset
+
+
+# vex's JTAG-AXI bridge rejects a 16-beat burst with SLVERR (mbv is OK);
+# 15 works on both.
+BURST = 15
+SEQ_RETRIES = 8
+
+
+def read_stats(addr: int = 0x9FFFF000, tap: str = "xc7a100t", chain: int = 3):
+    offsets, total_bytes = field_offsets()
     words = (total_bytes + 3) // 4
+    seq_addr = addr + offsets["sink_seq"]
     transport = XilinxHwServerTransport(fpga_name=tap)
     axi = EjtagAxiController(transport, chain=chain)
     axi.connect()
     try:
-        # vex's JTAG-AXI bridge rejects a 16-beat burst with SLVERR (mbv is OK);
-        # 15 works on both. Chunk accordingly.
-        BURST = 15
-        chunks = []
-        for offset in range(0, words, BURST):
-            chunks.extend(axi.burst_read(addr + offset * 4, min(BURST, words - offset)))
-        data = b"".join(w.to_bytes(4, "little") for w in chunks)
+        # The firmware updates the sink_* block under a seqlock while we read
+        # it beat by beat. Bursts walk ascending addresses and sink_seq sits
+        # below the block, so the copy inside `data` was read first; re-read
+        # it afterwards and retry if an update was in flight or completed
+        # mid-read (a torn 64-bit counter is off by 2**32).
+        for _ in range(SEQ_RETRIES):
+            chunks = []
+            for offset in range(0, words, BURST):
+                chunks.extend(axi.burst_read(addr + offset * 4, min(BURST, words - offset)))
+            data = b"".join(w.to_bytes(4, "little") for w in chunks)
+            seq_before = struct.unpack_from("<I", data, offsets["sink_seq"])[0]
+            seq_after = axi.burst_read(seq_addr, 1)[0]
+            if seq_before % 2 == 0 and seq_before == seq_after:
+                break
+        else:
+            raise RuntimeError(
+                f"sink_* block never read consistently in {SEQ_RETRIES} attempts"
+            )
     finally:
         axi.close()
 
-    offset = 0
     values = {}
     for name, kind in FIELDS:
-        if kind == "u64":
-            offset = (offset + 7) & ~7
-            values[name] = struct.unpack_from("<Q", data, offset)[0]
-            offset += 8
-        else:
-            values[name] = struct.unpack_from("<I", data, offset)[0]
-            offset += 4
+        fmt = "<Q" if kind == "u64" else "<I"
+        values[name] = struct.unpack_from(fmt, data, offsets[name])[0]
 
     return SimpleNamespace(**values)
 

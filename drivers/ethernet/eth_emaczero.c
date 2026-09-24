@@ -64,13 +64,27 @@ LOG_MODULE_REGISTER(eth_emaczero, CONFIG_ETHERNET_LOG_LEVEL);
 #define EMZ_DMA_BUFFER_COUNT_TX 32u
 #define EMZ_DMA_BUFFER_COUNT_RX CONFIG_ETH_EMACZERO_RX_BUFFER_COUNT
 #define EMZ_DMA_CACHE_LINE_SIZE 16u
-/* MicroBlaze V D-cache aperture (see build_arty_a7_mbv.py C_DCACHE_*ADDR).
- * DMA buffers live in DDR at 0x9F000000 and SG BDs in BRAM at 0xC0000000,
- * both outside this range. Cache maintenance on addresses outside the
- * aperture is dead overhead (~285 CBOs/frame for a 1514-byte payload).
+/* D-cache aperture shared by both CPU shells: MicroBlaze V via
+ * C_DCACHE_*ADDR in build_arty_a7_mbv.py, VexRiscv via the I/O predicate
+ * patched in gen_vexriscv.py. DMA buffers live in DDR at 0x9F000000 and SG
+ * BDs in BRAM at 0xC0000000, both outside this range. Cache maintenance on
+ * addresses outside the aperture is dead overhead (~285 CBOs/frame for a
+ * 1514-byte payload).
  */
 #define EMZ_DMA_DCACHE_BASE 0x90000000u
 #define EMZ_DMA_DCACHE_HIGH 0x97FFFFFFu
+
+#if CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE != 0
+/* The DMA window also holds the perf-stats block and the JTAG mailbox, which
+ * are shared with the JTAG-AXI bridge and get no cache maintenance at all.
+ * Their coherency rests entirely on this window being uncached.
+ */
+BUILD_ASSERT((uint64_t)CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE > EMZ_DMA_DCACHE_HIGH ||
+		     (uint64_t)CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE +
+				     CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE <=
+			     EMZ_DMA_DCACHE_BASE,
+	     "emacZero DMA memory window overlaps the CPU D-cache aperture");
+#endif
 
 /* Sol r7 instrumentation regions. Slot indices are wire-format for host tools;
  * do not reorder without bumping EMACZERO_PERF_STATS_VERSION and updating readers.
