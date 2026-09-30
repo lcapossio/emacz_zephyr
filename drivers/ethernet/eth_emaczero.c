@@ -1157,6 +1157,16 @@ static int emz_rx_direct_refill(const struct device *dev)
 	return queued;
 }
 
+/* Queue one ring rebuild; collapses repeated requests (e.g. the interrupt
+ * storm from a halted engine) into a single pass.
+ */
+static void emz_rx_direct_request_recover(struct emaczero_data *data)
+{
+	if (atomic_cas(&data->rx_direct_recover_pending, 0, 1)) {
+		(void)k_work_submit(&data->rx_direct_recover_work);
+	}
+}
+
 static void emz_rx_direct_poll(const struct device *dev)
 {
 	struct emaczero_data *data = dev->data;
@@ -1188,29 +1198,29 @@ static void emz_rx_direct_poll(const struct device *dev)
 		}
 
 		if (rx == NULL) {
-			/* Completed BD with no buffer recorded: a stale Cmplt bit
-			 * from this slot's previous completion. Retire it here --
-			 * clearing status and advancing the consume index -- so the
-			 * ring keeps moving. Breaking without doing so leaves the
-			 * same index permanently COMPLETE+NULL, and every later ISR
-			 * and poll tick lands on it and returns: RX stops forever
-			 * while the IRQ keeps firing.
+			/* Consumed BDs are retired with status cleared (below), and
+			 * program_bd records the buffer before TAILDESC can expose
+			 * the slot, so Cmplt on a slot with no buffer means S2MM
+			 * wrote a BD it never owned. The ring's ownership state is
+			 * no longer trustworthy: skipping the slot would move the
+			 * consume index past refill and strand in-flight buffers.
+			 * Stop here and let the recovery pass rebuild the ring.
 			 */
-			bd->status = 0u;
-			emz_dma_cache_flush((const void *)&data->rx_bd_ring[index],
-					    sizeof(data->rx_bd_ring[index]));
-			data->rx_bd_consume_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_RX;
-			if (data->rx_bd_posted > 0u) {
-				data->rx_bd_posted--;
-			}
-			emz_perf_set_bd_available(data);
 			k_spin_unlock(&data->rx_direct_lock, key);
 			emz_r7_add(EMZ_R7_LOCK_CONSUME,
 				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
 			emaczero_perf_stats.rx_bd_errors++;
-			continue;
+			emz_rx_direct_request_recover(data);
+			break;
 		}
 
+		/* Retire the slot: clear Cmplt so a drained ring (consume ==
+		 * refill) reads as idle rather than as a stale completion. The
+		 * slot sits behind CURDESC, so the engine no longer owns it.
+		 */
+		bd->status = 0u;
+		emz_dma_cache_flush((const void *)&data->rx_bd_ring[index],
+				    sizeof(data->rx_bd_ring[index]));
 		data->rx_bd_buffer[index] = NULL;
 		data->rx_bd_posted--;
 		emz_perf_set_bd_available(data);
@@ -1305,13 +1315,14 @@ static void emz_rx_direct_poll_work_handler(struct k_work *work)
 }
 
 /* Reset S2MM and (re)start it on the current ring. Callers own
- * irq_disable/irq_enable and must have the ring populated first: the engine
- * begins fetching at CURDESC the moment RS is set.
+ * irq_disable/irq_enable. RS alone does not fetch in SG mode; the TAILDESC
+ * write does, so it is only issued when at least one BD is posted.
  */
 static void emz_rx_direct_arm(const struct device *dev)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
+	k_spinlock_key_t key;
 	uint32_t dmacr;
 
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
@@ -1331,10 +1342,22 @@ static void emz_rx_direct_arm(const struct device *dev)
 		(32u << EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
 	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, dmacr);
 	barrier_dmem_fence_full();
+
+	/* An empty ring leaves tail_index on an unprogrammed BD, and CURDESC ==
+	 * TAILDESC still processes that one BD: the engine would fetch an
+	 * invalid descriptor, halt, and re-trigger recovery until a buffer
+	 * came back. Arm without a tail instead; the first refill publishes it
+	 * through emz_rx_direct_update_tail(). Checking posted under the lock
+	 * also catches a refill that ran while ring_started was still false.
+	 */
+	key = k_spin_lock(&data->rx_direct_lock);
 	data->rx_direct_ring_started = true;
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
-		      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_tail_index]);
-	emaczero_perf_stats.rx_bd_tail_updates++;
+	if (data->rx_bd_posted > 0u) {
+		emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
+			      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_tail_index]);
+		emaczero_perf_stats.rx_bd_tail_updates++;
+	}
+	k_spin_unlock(&data->rx_direct_lock, key);
 }
 
 /* Rebuild the RX ring after S2MM halted on a DMA/SG error.
@@ -1387,7 +1410,7 @@ static void emz_rx_direct_recover(const struct device *dev)
 	 * outside the lock and without emz_release_rx_buffer(), which would
 	 * re-enter the refill path mid-rebuild.
 	 */
-	atomic_set(&data->rx_dma_fifo_count, 0);
+	atomic_sub(&data->rx_dma_fifo_count, (atomic_val_t)orphan_count);
 	for (size_t i = 0; i < orphan_count; i++) {
 		atomic_inc(&data->rx_free_count);
 		k_fifo_put(&data->rx_free_fifo, orphans[i]);
@@ -1395,8 +1418,8 @@ static void emz_rx_direct_recover(const struct device *dev)
 	emz_perf_update_pool_inflight(data);
 
 	/* Repopulate before arming. If the pool is momentarily empty the ring
-	 * comes up bare; the next buffer release refills and republishes the
-	 * tail through the normal path.
+	 * comes up bare and untailed; the next buffer release refills and
+	 * publishes the tail through the normal path.
 	 */
 	(void)emz_rx_direct_refill(dev);
 	emz_rx_direct_arm(dev);
@@ -1438,9 +1461,8 @@ static void emz_rx_direct_isr(const void *arg)
 		 * rebuild. The flag collapses the interrupt storm a halted
 		 * engine produces into a single recovery pass.
 		 */
-		if ((dmasr & EMZ_AXI_DMA_DMASR_HALTED) != 0u &&
-		    atomic_cas(&data->rx_direct_recover_pending, 0, 1)) {
-			(void)k_work_submit(&data->rx_direct_recover_work);
+		if ((dmasr & EMZ_AXI_DMA_DMASR_HALTED) != 0u) {
+			emz_rx_direct_request_recover(data);
 		}
 	}
 
