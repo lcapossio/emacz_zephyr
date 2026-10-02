@@ -18,7 +18,7 @@ Bitstream provenance:
 Sender: `iperf.exe -c 192.168.237.200 -B 192.168.237.1 -u -b <rate>M -t 5 -l 1472 -p 5001`.
 RX "delivered" is the delta in `sink_packets` from Zephyr's `emaczero_perf_stats`
 across the bench window — NOT iperf's offered rate. TX is
-`no_commit/run_tx_accounting.py --rate-mbps 0 --duration 5 --packet-size 1472`
+`scripts/run_tx_accounting.py --rate-mbps 0 --duration 5 --packet-size 1472`
 (unthrottled). Concurrent runs iperf + tx bench simultaneously.
 
 | Test | MBV | Vex (fixed, 088ac8f) |
@@ -106,19 +106,17 @@ Hardware:
 - `python hardware/scripts/build_arty_a7_mbv.py --synth --jobs 2`
 - `python hardware/scripts/build_arty_a7_vex.py --synth --jobs 2`
 
-Program + boot:
-- **MBV**: `vivado -mode batch -source no_commit/program_current_mbv_simple.tcl`,
-  then `python no_commit/load_zephyr_bram.py --file build-mbv-emac/zephyr/zephyr.bin --addr 0x90000000 --chain 3`
-- **Vex**: `vivado -mode batch -source no_commit/program_current_vex_simple.tcl`,
-  then `python no_commit/vex_boot_zephyr.py --file build-vex-emac/zephyr/zephyr.bin`
+Program + boot (`<shell>` is `mbv` or `vex`; `<N>` is 3 for mbv, 4 for vex):
+- `python scripts/program_fpga.py --shell <shell>`
+- `python scripts/load_zephyr_bram.py --shell <shell>`
 
 Provision IP (both, once booted):
-- `python no_commit/vex_set_ip.py 192.168.237.200 --prefix 24 --chain <3-for-mbv|4-for-vex>`
+- `python scripts/emacz_config.py --bind <host-ip> configure --ip 192.168.237.200 --prefix 24`
 
-Bench:
-- RX: `no_commit/tools/iperf2/iperf.exe -c 192.168.237.200 -B <host-ip> -u -b 95M -t 5 -l 1472 -p 5001`,
-  then diff `sink_packets` from `python no_commit/read_perf_stats.py --chain <N> --all`
-- TX: `python no_commit/run_tx_accounting.py --board 192.168.237.200 --bind <host-ip> --chain <N> --rate-mbps 0 --duration 5 --packet-size 1472 --skip-profile-check`
+Bench (iperf 2 on the host):
+- RX: `iperf -c 192.168.237.200 -B <host-ip> -u -b 95M -t 5 -l 1472 -p 5001`,
+  then diff `sink_packets` from `python scripts/read_perf_stats.py --chain <N> --all`
+- TX: `python scripts/run_tx_accounting.py --board 192.168.237.200 --bind <host-ip> --chain <N> --rate-mbps 0 --duration 5 --packet-size 1472 --skip-profile-check`
 
 ## When to pick which
 

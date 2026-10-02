@@ -113,23 +113,20 @@ python hardware/scripts/build_arty_a7_vex.py                     # BD only
 python hardware/scripts/build_arty_a7_vex.py --synth --jobs 2    # bitstream + XSA
 ```
 
-The bring-up flow avoids repeated bitstream rebuilds — load a flat
-`zephyr.bin` into DDR over fcapz JTAG-AXI and release the CPU through EIO.
-
-MicroBlaze V (fcapz USER3, chain 3):
-
-```sh
-python scripts/load_zephyr_bram.py \
-  --file build-mbv-emac/zephyr/zephyr.bin \
-  --addr 0x90000000
-```
-
-VexRiscv-full (fcapz USER3, chain 4):
+The bring-up flow avoids repeated bitstream rebuilds. Program the shell's
+bitstream once (Vivado on PATH), then load a flat `zephyr.bin` into DDR over
+fcapz JTAG-AXI. The loader holds the CPU in reset while it writes and
+verifies the image, then releases it. MicroBlaze V's reset is an fcapz EIO
+output; VexRiscv's is an AXI GPIO behind the bridge.
 
 ```sh
-python no_commit/vex_boot_zephyr.py \
-  --file build-vex-emac/zephyr/zephyr.bin
+python scripts/program_fpga.py --shell mbv       # or --shell vex
+python scripts/load_zephyr_bram.py --shell mbv   # build-mbv-emac/zephyr/zephyr.bin, chain 3
+python scripts/load_zephyr_bram.py --shell vex   # build-vex-emac/zephyr/zephyr.bin, chain 4
 ```
+
+`program_fpga.py --bit` and `load_zephyr_bram.py --file`, `--addr` and `--chain`
+override the per-shell defaults.
 
 ## Host-configured IPv4
 
@@ -206,8 +203,8 @@ and `soc/bard0/arty_a7_vex/`):
   combinational path — required for 100 MHz timing on Artix-7.
 - fcapz EJTAG-AXI is one chain higher than MBV (chain 4 instead of 3)
   because Vex's own JTAG debug port sits ahead of it in the BSCAN chain.
-  Host tools: `no_commit/vex_boot_zephyr.py` for boot,
-  `no_commit/vex_set_ip.py` for provisioning.
+  `scripts/load_zephyr_bram.py --shell vex` and the perf readers'
+  `--chain 4` account for this.
 
 Top-level RTL diagrams (click for full-size SVG):
 
