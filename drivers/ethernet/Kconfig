@@ -82,19 +82,20 @@ config ETH_EMACZERO_DMA_MEMORY_BASE
 	hex "emacZero DMA-visible memory base"
 	default 0x0
 	help
-	  Base address of a memory window visible to both MicroBlaze V data
-	  AXI and the AXI DMA masters. When non-zero, emacZero RX/TX packet
-	  buffers and Xilinx AXI DMA SG descriptors are allocated from this
-	  window instead of normal kernel RAM. Use this when kernel code/data
-	  live in CPU-local LMB that the DMA cannot access.
+	  Base address of a memory window visible to both the CPU data bus
+	  and the AXI DMA masters. When non-zero, emacZero RX/TX packet
+	  buffers are allocated from this window instead of normal kernel RAM.
+	  Point it at uncached memory on CPUs without data-cache maintenance
+	  instructions. The Xilinx AXI DMA driver places its own SG
+	  descriptors through the DMA node's memory-region property; keep the
+	  two ranges disjoint.
 
 config ETH_EMACZERO_DMA_MEMORY_SIZE
 	hex "emacZero DMA-visible memory size"
 	default 0x0
 	help
 	  Size in bytes of the DMA-visible memory window. A zero size keeps
-	  the legacy in-kernel static packet buffers and the Zephyr DMA
-	  driver's normal SG descriptor allocation.
+	  the packet buffers in kernel RAM.
 
 config ETH_EMACZERO_SG_MEMORY_BASE
 	hex "emacZero AXI DMA scatter-gather descriptor memory base"

@@ -256,7 +256,19 @@ BURST = 15
 SEQ_RETRIES = 8
 
 
-def read_stats(addr: int = 0x9FFFF000, tap: str = "xc7a100t", chain: int = 3):
+def read_stats(
+    addr: int = 0x9FFFF000,
+    tap: str = "xc7a100t",
+    chain: int = 3,
+    *,
+    sink_consistent: bool = True,
+):
+    """Read the perf-stats block over JTAG-AXI.
+
+    With sink_consistent=False the sink_* fields may be torn. Use it only when
+    the caller ignores them: under sustained sink traffic the block changes
+    faster than a JTAG read completes, so a consistent copy may never come.
+    """
     offsets, total_bytes = field_offsets()
     words = (total_bytes + 3) // 4
     seq_addr = addr + offsets["sink_seq"]
@@ -274,6 +286,8 @@ def read_stats(addr: int = 0x9FFFF000, tap: str = "xc7a100t", chain: int = 3):
             for offset in range(0, words, BURST):
                 chunks.extend(axi.burst_read(addr + offset * 4, min(BURST, words - offset)))
             data = b"".join(w.to_bytes(4, "little") for w in chunks)
+            if not sink_consistent:
+                break
             seq_before = struct.unpack_from("<I", data, offsets["sink_seq"])[0]
             seq_after = axi.burst_read(seq_addr, 1)[0]
             if seq_before % 2 == 0 and seq_before == seq_after:

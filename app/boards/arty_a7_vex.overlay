@@ -16,10 +16,21 @@
  *   axis_rx_stats   @ 0x41F00000
  *   AXI INTC        @ 0x41200000
  *   UARTLite        @ 0x40600000
- *   DDR             @ 0x90000000 (240 MiB Zephyr + 16 MiB DMA at 0x9F000000)
+ *   DDR             @ 0x90000000 (240 MiB Zephyr + 16 MiB uncached DMA window
+ *                     at 0x9F000000: 64 KiB SG descriptors, then frame buffers)
  */
 
 / {
+	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
+	 * scatter-gather descriptor rings. The emacZero frame buffers use the
+	 * rest of the DMA window (CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE).
+	 */
+	dma_desc: memory@9f000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f000000 0x10000>;
+		zephyr,memory-region = "DMA_DESC";
+	};
+
 	aliases {
 		ethernet0 = &emaczero0;
 	};
@@ -47,6 +58,7 @@
 			#dma-cells = <0>;
 			dma-channels = <2>;
 			xlnx,addrwidth = <32>;
+			memory-region = <&dma_desc>;
 		};
 	};
 };

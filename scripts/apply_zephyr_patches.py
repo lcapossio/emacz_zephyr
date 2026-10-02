@@ -9,6 +9,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,15 +53,53 @@ def find_zephyr_dir(explicit: Path | None = None) -> Path | None:
     return None
 
 
-def git_apply(
-    zephyr_dir: Path, args: list[str], patch: Path
+def git(
+    zephyr_dir: Path, args: list[str], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(zephyr_dir), "apply", *args, str(patch)],
+        ["git", "-C", str(zephyr_dir), *args],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
+
+
+def patch_paths(patches: list[Path]) -> list[str]:
+    """Every repository path a patch series reads or writes."""
+    paths: set[str] = set()
+    for patch in patches:
+        for line in patch.read_text(encoding="utf-8").splitlines():
+            if line.startswith("--- a/") or line.startswith("+++ b/"):
+                paths.add(line[6:])
+    return sorted(paths)
+
+
+def series_state(zephyr_dir: Path, patches: list[Path]) -> int | None:
+    """Return how many leading patches the checkout already carries.
+
+    The series is stacked: later patches may edit the same files as earlier
+    ones, so a patch cannot be checked against the work tree in isolation.
+    Instead, rebuild HEAD plus each prefix of the series in a throwaway index
+    and compare the touched paths in the work tree against it. Returns None
+    when the work tree matches no prefix (local edits or a moved Zephyr).
+    """
+    paths = patch_paths(patches)
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        if git(zephyr_dir, ["read-tree", "HEAD"], env).returncode != 0:
+            return None
+        for applied in range(len(patches) + 1):
+            if applied:
+                patch = str(patches[applied - 1].resolve())
+                if git(zephyr_dir, ["apply", "--cached", patch], env).returncode:
+                    return None
+            tracked = set(git(zephyr_dir, ["ls-files", "--", *paths], env).stdout.split())
+            if any((zephyr_dir / p).exists() for p in paths if p not in tracked):
+                continue
+            if git(zephyr_dir, ["diff", "--quiet", "--", *paths], env).returncode == 0:
+                return applied
+    return None
 
 
 def main() -> int:
@@ -86,24 +125,27 @@ def main() -> int:
         print("no Zephyr patches found", file=sys.stderr)
         return 1
 
-    for patch in patches:
-        check = git_apply(zephyr_dir, ["--check"], patch)
-        if check.returncode == 0:
-            apply = git_apply(zephyr_dir, [], patch)
-            if apply.returncode != 0:
-                print(apply.stderr, file=sys.stderr)
-                return apply.returncode
-            print(f"applied {patch.relative_to(ROOT)}")
-            continue
+    applied = series_state(zephyr_dir, patches)
+    if applied is None:
+        print(
+            f"files touched by {PATCH_DIR.relative_to(ROOT)} match neither the "
+            "Zephyr revision west checked out nor any prefix of the patch "
+            f"series; restore them with 'git -C {zephyr_dir} checkout -- "
+            + " ".join(patch_paths(patches))
+            + "' and rerun",
+            file=sys.stderr,
+        )
+        return 1
 
-        reverse_check = git_apply(zephyr_dir, ["--reverse", "--check"], patch)
-        if reverse_check.returncode == 0:
-            print(f"already applied {patch.relative_to(ROOT)}")
-            continue
-
-        print(f"cannot apply {patch.relative_to(ROOT)}", file=sys.stderr)
-        print(check.stderr, file=sys.stderr)
-        return check.returncode or 1
+    for patch in patches[:applied]:
+        print(f"already applied {patch.relative_to(ROOT)}")
+    for patch in patches[applied:]:
+        result = git(zephyr_dir, ["apply", str(patch.resolve())])
+        if result.returncode != 0:
+            print(f"cannot apply {patch.relative_to(ROOT)}", file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
+            return result.returncode
+        print(f"applied {patch.relative_to(ROOT)}")
 
     return 0
 

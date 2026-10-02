@@ -6,6 +6,16 @@
 / {
 	/delete-node/ memory@80000000;
 
+	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
+	 * scatter-gather descriptor rings. The emacZero frame buffers use the
+	 * rest of the DMA window (CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE).
+	 */
+	dma_desc: memory@9f000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f000000 0x10000>;
+		zephyr,memory-region = "DMA_DESC";
+	};
+
 	ram0: memory@90000000 {
 		device_type = "memory";
 		reg = <0x90000000 0x0f000000>;
@@ -85,5 +95,6 @@
 		#dma-cells = <0>;
 		dma-channels = <2>;
 		xlnx,addrwidth = <32>;
+		memory-region = <&dma_desc>;
 	};
 };

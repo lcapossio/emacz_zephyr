@@ -159,7 +159,8 @@ def main() -> int:
     rx.start()
     time.sleep(0.2)
 
-    before_perf = read_stats(args.addr, args.tap, args.chain)
+    # Only tx_* fields are used, and RX may be running concurrently.
+    before_perf = read_stats(args.addr, args.tap, args.chain, sink_consistent=False)
     before_regs = read_regs(args.csr_base, args.tap, args.chain)
     started = time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -172,7 +173,7 @@ def main() -> int:
     rx.stop.set()
     rx.join(timeout=2.0)
 
-    after_perf = read_stats(args.addr, args.tap, args.chain)
+    after_perf = read_stats(args.addr, args.tap, args.chain, sink_consistent=False)
     after_regs = read_regs(args.csr_base, args.tap, args.chain)
 
     reply_text = data.decode("ascii", errors="replace").strip()

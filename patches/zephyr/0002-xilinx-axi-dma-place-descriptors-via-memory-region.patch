@@ -1,0 +1,97 @@
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+index 6d6130d9258..6115101ddd3 100644
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -15,6 +15,7 @@
+ #include <zephyr/sys/sys_io.h>
+ #include <zephyr/sys/util.h>
+ #include <zephyr/cache.h>
++#include <zephyr/linker/devicetree_regions.h>
+ 
+ #include "dma_xilinx_axi_dma.h"
+ 
+@@ -233,10 +234,8 @@ struct dma_xilinx_axi_dma_data {
+ 	/* Set by dma_stop(); dma_configure() performs a DMA soft-reset then clears it. */
+ 	bool needs_dma_soft_reset;
+ 
+-	__aligned(64) struct dma_xilinx_axi_dma_sg_descriptor
+-		descriptors_tx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX];
+-	__aligned(64) struct dma_xilinx_axi_dma_sg_descriptor
+-		descriptors_rx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX];
++	struct dma_xilinx_axi_dma_sg_descriptor *descriptors_tx;
++	struct dma_xilinx_axi_dma_sg_descriptor *descriptors_rx;
+ };
+ 
+ /*
+@@ -1013,14 +1012,14 @@ static int dma_xilinx_axi_dma_init(const struct device *dev)
+ 
+ 	data->channels[XILINX_AXI_DMA_TX_CHANNEL_NUM].descriptors = data->descriptors_tx;
+ 	data->channels[XILINX_AXI_DMA_TX_CHANNEL_NUM].num_descriptors =
+-		ARRAY_SIZE(data->descriptors_tx);
++		CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX;
+ 	data->channels[XILINX_AXI_DMA_TX_CHANNEL_NUM].channel_regs =
+ 		cfg->reg + XILINX_AXI_DMA_MM2S_REG_OFFSET;
+ 	data->channels[XILINX_AXI_DMA_TX_CHANNEL_NUM].direction = MEMORY_TO_PERIPHERAL;
+ 
+ 	data->channels[XILINX_AXI_DMA_RX_CHANNEL_NUM].descriptors = data->descriptors_rx;
+ 	data->channels[XILINX_AXI_DMA_RX_CHANNEL_NUM].num_descriptors =
+-		ARRAY_SIZE(data->descriptors_rx);
++		CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX;
+ 	data->channels[XILINX_AXI_DMA_RX_CHANNEL_NUM].channel_regs =
+ 		cfg->reg + XILINX_AXI_DMA_S2MM_REG_OFFSET;
+ 	data->channels[XILINX_AXI_DMA_RX_CHANNEL_NUM].direction = PERIPHERAL_TO_MEMORY;
+@@ -1045,6 +1044,19 @@ static int dma_xilinx_axi_dma_init(const struct device *dev)
+ 	return 0;
+ }
+ 
++/*
++ * Descriptor rings are read and written by the DMA engine. When the instance
++ * has a memory-region phandle, place them in that region's linker section,
++ * e.g. an uncached window on targets without CONFIG_NOCACHE_MEMORY support.
++ * The section is NOLOAD; dma_xilinx_axi_dma_configure() zeroes a ring before
++ * first use.
++ */
++#define XILINX_AXI_DMA_DESC_SECTION(inst)                                                          \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, memory_region),                                    \
++		    (Z_GENERIC_SECTION(                                                            \
++			    LINKER_DT_NODE_REGION_NAME(DT_INST_PHANDLE(inst, memory_region)))),    \
++		    ())
++
+ #define XILINX_AXI_DMA_INIT(inst)                                                                  \
+ 	static void dma_xilinx_axi_dma##inst##_irq_configure(struct dma_xilinx_axi_dma_data *data) \
+ 	{                                                                                          \
+@@ -1064,9 +1076,17 @@ static int dma_xilinx_axi_dma_init(const struct device *dev)
+ 	};                                                                                         \
+ 	static struct dma_xilinx_axi_dma_channel                                                   \
+ 		dma_xilinx_axi_dma##inst##_channels[DT_INST_PROP(inst, dma_channels)];             \
++	static struct dma_xilinx_axi_dma_sg_descriptor                                             \
++		dma_xilinx_axi_dma##inst##_desc_tx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX] \
++		XILINX_AXI_DMA_DESC_SECTION(inst) __aligned(64);                                   \
++	static struct dma_xilinx_axi_dma_sg_descriptor                                             \
++		dma_xilinx_axi_dma##inst##_desc_rx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX] \
++		XILINX_AXI_DMA_DESC_SECTION(inst) __aligned(64);                                   \
+ 	static struct dma_xilinx_axi_dma_data dma_xilinx_axi_dma##inst##_data = {                  \
+ 		.ctx = {.magic = DMA_MAGIC, .atomic = NULL},                                       \
+ 		.channels = dma_xilinx_axi_dma##inst##_channels,                                   \
++		.descriptors_tx = dma_xilinx_axi_dma##inst##_desc_tx,                              \
++		.descriptors_rx = dma_xilinx_axi_dma##inst##_desc_rx,                              \
+ 	};                                                                                         \
+                                                                                                    \
+ 	DEVICE_DT_INST_DEFINE(inst, dma_xilinx_axi_dma_init, NULL,                                 \
+diff --git a/dts/bindings/dma/xlnx,axi-dma-base.yaml b/dts/bindings/dma/xlnx,axi-dma-base.yaml
+index 41e7ee1dcbb..8fff3455fd8 100644
+--- a/dts/bindings/dma/xlnx,axi-dma-base.yaml
++++ b/dts/bindings/dma/xlnx,axi-dma-base.yaml
+@@ -56,3 +56,12 @@ properties:
+   xlnx,num-queues:
+     type: int
+     description: Number of queues per channel.
++
++  memory-region:
++    type: phandle
++    description: |
++      Optional "zephyr,memory-region" node whose linker section holds the
++      scatter-gather descriptor rings. The DMA engine reads and writes the
++      descriptors directly, so on targets with a data cache and no
++      CONFIG_NOCACHE_MEMORY support, point this at an uncached memory window
++      to keep them coherent without cache maintenance.

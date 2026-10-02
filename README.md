@@ -58,8 +58,12 @@ west zephyr-export
 ```
 
 The patch step asks west for the Zephyr checkout path (falls back to
-`ZEPHYR_BASE`) and applies patches required by the direct AXI DMA RX-ring
-path. Re-run after every `west update`.
+`ZEPHYR_BASE`) and applies the Xilinx AXI DMA driver patches in
+`patches/zephyr/`: 0001 brings the driver up to upstream Zephyr
+`ac03a4a9085`, 0002 adds an optional `memory-region` property that places
+the scatter-gather descriptor rings in a given linker region. Re-run after
+every `west update`; it skips patches that are already applied and refuses
+to touch locally modified driver files.
 
 A RISC-V cross compiler (`riscv64-unknown-elf-gcc` or the Zephyr SDK RISC-V
 toolchain) must be on `PATH`. On Windows, WSL is the recommended build shell:
@@ -161,8 +165,10 @@ Shared SoC:
 - Board oscillator `CLK100MHZ` (100 MHz) drives the MIG; each shell picks
   its own SoC clock from there (see per-shell bullets below).
 - 256 MiB DDR3 at `0x90000000` (Arty MIG). Zephyr code/data in the lower
-  240 MiB; emacZero DMA buffers and SG descriptors in the upper 16 MiB at
-  `0x9f000000`.
+  240 MiB. The upper 16 MiB at `0x9f000000` lies outside both CPUs' D-cache
+  aperture: its first 64 KiB is the `dma_desc` memory region holding the
+  AXI DMA SG descriptor rings, and emacZero frame buffers follow from
+  `0x9f010000`.
 - AXI INTC `0x41200000`, AXI Timer `0x41c00000`, AXI UARTLite `0x40600000`.
 - emacZero CSRs at `0x44a00000`, Xilinx AXI DMA at `0x41e00000`. MM2S feeds
   emacZero TX, S2MM receives RX.

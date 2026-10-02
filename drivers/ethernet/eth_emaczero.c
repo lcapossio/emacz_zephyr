@@ -62,14 +62,21 @@ LOG_MODULE_REGISTER(eth_emaczero, CONFIG_ETHERNET_LOG_LEVEL);
 #define EMZ_DMA_RX_CHANNEL 1u
 #define EMZ_DMA_LINKED_CHANNEL_NO_CSUM_OFFLOAD 0u
 #define EMZ_DMA_BUFFER_COUNT_TX 32u
+/* One slot stays unused so a full ring is distinguishable from an empty one. */
+#define EMZ_TX_SLOTS (EMZ_DMA_BUFFER_COUNT_TX - 1u)
+/* Longest a sender waits for a TX slot: a full ring at 10 Mbit/s drains in
+ * about 40 ms.
+ */
+#define EMZ_TX_SLOT_TIMEOUT K_MSEC(100)
 #define EMZ_DMA_BUFFER_COUNT_RX CONFIG_ETH_EMACZERO_RX_BUFFER_COUNT
 #define EMZ_DMA_CACHE_LINE_SIZE 16u
 /* D-cache aperture shared by both CPU shells: MicroBlaze V via
  * C_DCACHE_*ADDR in build_arty_a7_mbv.py, VexRiscv via the I/O predicate
- * patched in gen_vexriscv.py. DMA buffers live in DDR at 0x9F000000 and SG
- * BDs in BRAM at 0xC0000000, both outside this range. Cache maintenance on
- * addresses outside the aperture is dead overhead (~285 CBOs/frame for a
- * 1514-byte payload).
+ * patched in gen_vexriscv.py. DMA buffers live in the DDR window at
+ * CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE and the AXI DMA places its SG
+ * descriptors through its memory-region property, both outside this range.
+ * Cache maintenance on addresses outside the aperture is dead overhead
+ * (~285 CBOs/frame for a 1514-byte payload).
  */
 #define EMZ_DMA_DCACHE_BASE 0x90000000u
 #define EMZ_DMA_DCACHE_HIGH 0x97FFFFFFu
@@ -216,6 +223,8 @@ struct emaczero_data {
 	bool dma_is_configured_tx;
 	size_t tx_populated_buffer_index;
 	size_t tx_completed_buffer_index;
+	/* Free TX slots on the DMA-API path; given by the MM2S callback. */
+	struct k_sem tx_slot_sem;
 	uint32_t tx_bd_inflight;
 	unsigned int rx_dma_inflight;
 	uint32_t last_dma_callback_cycle;
@@ -244,9 +253,16 @@ struct emaczero_data {
 	struct k_thread rx_thread;
 	struct emaczero_rx_buffer rx_buffer[EMZ_DMA_BUFFER_COUNT_RX];
 	struct emaczero_tx_buffer tx_buffer[EMZ_DMA_BUFFER_COUNT_TX];
+#if defined(CONFIG_ETH_EMACZERO_PROFILE)
+	/* Shared by every descriptor of a TX benchmark burst. */
+	uint8_t *tx_burst_bytes;
+#endif
 #if CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE == 0
 	uint8_t rx_storage[EMZ_DMA_BUFFER_COUNT_RX][EMZ_ETH_BUFFER_SIZE] __aligned(4);
 	uint8_t tx_storage[EMZ_DMA_BUFFER_COUNT_TX][EMZ_ETH_BUFFER_SIZE] __aligned(4);
+#if defined(CONFIG_ETH_EMACZERO_PROFILE)
+	uint8_t tx_burst_storage[EMZ_ETH_BUFFER_SIZE] __aligned(4);
+#endif
 #endif
 #if defined(CONFIG_NET_STATISTICS_ETHERNET)
 	struct net_stats_eth stats;
@@ -762,18 +778,27 @@ static void emz_dma_rx_callback(const struct device *dma, void *user_data, uint3
 	struct emaczero_rx_buffer *rx;
 	k_spinlock_key_t key;
 	uint32_t now_cycle = k_cycle_get_32();
-#if defined(CONFIG_ETH_EMACZERO_PROFILE)
 	uint32_t start_cycle = now_cycle;
-#endif
 
 	ARG_UNUSED(channel);
 	emz_perf_note_dma_callback_gap(data, now_cycle);
 	emaczero_perf_stats.dma_callbacks++;
 	EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
 
+	/* The DMA driver completes S2MM descriptors in ring order, and
+	 * emz_refill_dma_rx() queues each buffer on rx_dma_fifo under rx_lock
+	 * together with the dma_reload() that posts it, so the fifo head is the
+	 * buffer this descriptor filled.
+	 */
+	key = k_spin_lock(&data->rx_lock);
 	rx = k_fifo_get(&data->rx_dma_fifo, K_NO_WAIT);
+	if (rx != NULL && data->rx_dma_inflight > 0u) {
+		data->rx_dma_inflight--;
+	}
+	k_spin_unlock(&data->rx_lock, key);
 	if (rx == NULL) {
 		LOG_ERR("DMA RX completion without queued buffer");
+		emaczero_perf_stats.dma_errors++;
 		return;
 	}
 	atomic_dec(&data->rx_dma_fifo_count);
@@ -791,16 +816,31 @@ static void emz_dma_rx_callback(const struct device *dma, void *user_data, uint3
 	ARG_UNUSED(dma);
 	rx->len = 0u;
 #endif
-	emz_dma_cache_invd(rx->bytes, MIN(rx->len, EMZ_ETH_BUFFER_SIZE));
+	/* The transferred-length field is 26 bits, so an errored or stale
+	 * descriptor can claim megabytes. Clamp before anyone sees it: the
+	 * interceptor below runs in ISR context against a buffer of
+	 * EMZ_ETH_BUFFER_SIZE bytes and does no bounds check of its own.
+	 */
+	if (rx->len == 0u || rx->len > EMZ_ETH_BUFFER_SIZE) {
+		rx->len = MIN(rx->len, EMZ_ETH_BUFFER_SIZE);
+		rx->status = -EFAULT;
+		emaczero_perf_stats.rx_bd_errors++;
+	}
+	emz_dma_cache_invd(rx->bytes, rx->len);
 #if defined(CONFIG_ETH_EMACZERO_PROFILE)
 	rx->dma_done_cycle = k_cycle_get_32();
 #endif
 
-	key = k_spin_lock(&data->rx_lock);
-	if (data->rx_dma_inflight > 0u) {
-		data->rx_dma_inflight--;
+	/* Frames the interceptor consumes never leave ISR context: the buffer
+	 * goes straight back to S2MM without a trip through the RX thread.
+	 */
+	if (rx->status == DMA_STATUS_COMPLETE && data->rx_interceptor != NULL &&
+	    data->rx_interceptor(rx->bytes, rx->len, data->rx_interceptor_user_data)) {
+		emz_release_rx_buffer(dev, rx);
+		EMZ_PROFILE_ADD_CYCLES(EMACZERO_PROFILE_CYCLES_DMA_CB,
+				       emaczero_profile_elapsed(start_cycle, k_cycle_get_32()));
+		return;
 	}
-	k_spin_unlock(&data->rx_lock, key);
 
 #if defined(CONFIG_ETH_EMACZERO_PROFILE)
 	if (emaczero_profile_get_mode() == EMACZERO_PROFILE_MODE_DROP_AFTER_DMA &&
@@ -831,6 +871,7 @@ static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint3
 	data->tx_completed_buffer_index =
 		(data->tx_completed_buffer_index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
 	emaczero_perf_stats.tx_dma_completed++;
+	k_sem_give(&data->tx_slot_sem);
 
 	if (status < 0) {
 		LOG_ERR("DMA TX error: %d", status);
@@ -1540,15 +1581,16 @@ static int emz_tx_direct_reserve(const struct device *dev, size_t *descriptor)
 }
 #endif
 
-static int emz_queue_dma_rx_buffer(const struct device *dev, struct emaczero_rx_buffer *rx)
+/* Post one buffer to S2MM without publishing it: the descriptor only becomes
+ * visible to the engine at the next dma_start() (TAILDESC write). Caller holds
+ * rx_lock so the descriptor and the rx_dma_fifo entry naming its buffer appear
+ * together to the completion callback.
+ */
+static int emz_post_dma_rx_buffer(const struct device *dev, struct emaczero_rx_buffer *rx)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 	int ret;
-
-	if (cfg->dma == NULL) {
-		return -ENODEV;
-	}
 
 	if (!data->dma_is_configured_rx) {
 		struct dma_block_config block = {
@@ -1564,7 +1606,6 @@ static int emz_queue_dma_rx_buffer(const struct device *dev, struct emaczero_rx_
 			.complete_callback_en = 1,
 			.error_callback_dis = 0,
 			.block_count = 1,
-			.num_sg_descriptors = EMZ_DMA_BUFFER_COUNT_RX,
 			.head_block = &block,
 			.user_data = (void *)dev,
 			.dma_callback = emz_dma_rx_callback,
@@ -1594,74 +1635,78 @@ static int emz_queue_dma_rx_buffer(const struct device *dev, struct emaczero_rx_
 	k_fifo_put(&data->rx_dma_fifo, rx);
 	atomic_inc(&data->rx_dma_fifo_count);
 	emz_perf_update_pool_inflight(data);
-	emaczero_perf_stats.rx_dma_start_calls++;
-	ret = dma_start(cfg->dma, EMZ_DMA_RX_CHANNEL);
-	if (ret != 0) {
-		emaczero_perf_stats.rx_dma_start_fail++;
-	}
-	return ret;
+	return 0;
 }
 
 static int emz_refill_dma_rx(const struct device *dev)
 {
+	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 	uint32_t start_cycle = k_cycle_get_32();
+	k_spinlock_key_t key;
 	int queued = 0;
+	int err = 0;
 
 	EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_CALLS);
 	emaczero_perf_stats.rx_refill_calls++;
 #if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-	const struct emaczero_config *cfg = dev->config;
-
 	if (emz_rx_direct_enabled(cfg)) {
 		queued = emz_rx_direct_refill(dev);
 		goto out;
 	}
 #endif
-	while (true) {
-		struct emaczero_rx_buffer *rx;
-		k_spinlock_key_t key;
-		int ret;
+	if (cfg->dma == NULL) {
+		return -ENODEV;
+	}
 
-		key = k_spin_lock(&data->rx_lock);
-		if (data->rx_dma_inflight >= EMZ_DMA_RX_MAX_INFLIGHT) {
-			k_spin_unlock(&data->rx_lock, key);
+	/* Refills run from threads (buffer release) and from the RX completion
+	 * callback (interceptor release) and can interleave. Holding rx_lock
+	 * across the whole batch, dma_start() included, keeps every TAILDESC
+	 * write strictly ahead of the previous one and covering only buffers
+	 * already on rx_dma_fifo.
+	 */
+	key = k_spin_lock(&data->rx_lock);
+	while (data->rx_dma_inflight < EMZ_DMA_RX_MAX_INFLIGHT) {
+		struct emaczero_rx_buffer *rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
+
+		if (rx == NULL) {
+			emaczero_perf_stats.rx_refill_no_free++;
+			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_NO_FREE);
+			break;
+		}
+		atomic_dec(&data->rx_free_count);
+		emz_perf_set_min_u32(&emaczero_perf_stats.rx_min_free,
+				      (uint32_t)atomic_get(&data->rx_free_count));
+		EMZ_PROFILE_MIN(EMACZERO_PROFILE_MIN_RX_FREE, (uint32_t)atomic_get(&data->rx_free_count));
+
+		err = emz_post_dma_rx_buffer(dev, rx);
+		if (err != 0) {
+			atomic_inc(&data->rx_free_count);
+			k_fifo_put(&data->rx_free_fifo, rx);
+			emz_perf_update_pool_inflight(data);
 			break;
 		}
 		data->rx_dma_inflight++;
 		emz_perf_set_max_u32(&emaczero_perf_stats.rx_max_dma_inflight,
 				      data->rx_dma_inflight);
 		EMZ_PROFILE_MAX(EMACZERO_PROFILE_MAX_RX_DMA_INFLIGHT, data->rx_dma_inflight);
-		k_spin_unlock(&data->rx_lock, key);
-
-		rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
-		if (rx == NULL) {
-			key = k_spin_lock(&data->rx_lock);
-			data->rx_dma_inflight--;
-			k_spin_unlock(&data->rx_lock, key);
-			emaczero_perf_stats.rx_refill_no_free++;
-			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_NO_FREE);
-			break;
-		}
-		atomic_dec(&data->rx_free_count);
-		emz_perf_update_pool_inflight(data);
-		emz_perf_set_min_u32(&emaczero_perf_stats.rx_min_free,
-				      (uint32_t)atomic_get(&data->rx_free_count));
-		EMZ_PROFILE_MIN(EMACZERO_PROFILE_MIN_RX_FREE, (uint32_t)atomic_get(&data->rx_free_count));
-
-		ret = emz_queue_dma_rx_buffer(dev, rx);
-		if (ret != 0) {
-			key = k_spin_lock(&data->rx_lock);
-			data->rx_dma_inflight--;
-			k_spin_unlock(&data->rx_lock, key);
-			atomic_inc(&data->rx_free_count);
-			emz_perf_update_pool_inflight(data);
-			k_fifo_put(&data->rx_free_fifo, rx);
-			return ret;
-		}
 		queued++;
 		emaczero_perf_stats.rx_refill_queued++;
 		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_QUEUED);
+	}
+	if (queued > 0) {
+		int ret;
+
+		emaczero_perf_stats.rx_dma_start_calls++;
+		ret = dma_start(cfg->dma, EMZ_DMA_RX_CHANNEL);
+		if (ret != 0) {
+			emaczero_perf_stats.rx_dma_start_fail++;
+			err = err != 0 ? err : ret;
+		}
+	}
+	k_spin_unlock(&data->rx_lock, key);
+	if (err != 0) {
+		return err;
 	}
 
 #if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
@@ -1724,35 +1769,38 @@ static void emz_note_tx_icmp(const uint8_t *frame, size_t len)
 	emaczero_perf_stats.tx_last_icmp_seq = emz_sample_be16(frame, len, icmp + 6u);
 }
 
-static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
+/* Point C in the four-point trace: the bytes about to be handed to MM2S,
+ * exactly as the sender produced them.
+ */
+static void emz_note_tx_frame(const uint8_t *frame, size_t len)
+{
+	volatile uint32_t *txw = &emaczero_perf_stats.tx_ext_word0;
+
+	emaczero_perf_stats.tx_last_len = len;
+	emaczero_perf_stats.tx_last_word0 = emz_sample_word(frame, len, 0u);
+	emaczero_perf_stats.tx_last_word1 = emz_sample_word(frame, len, 4u);
+	emaczero_perf_stats.tx_last_word2 = emz_sample_word(frame, len, 8u);
+	emaczero_perf_stats.tx_last_word3 = emz_sample_word(frame, len, 12u);
+	emaczero_perf_stats.tx_ext_len = (uint32_t)len;
+	for (size_t i = 0; i < 16u; i++) {
+		txw[i] = emz_sample_word(frame, len, i * 4u);
+	}
+}
+
+/* Post one MM2S descriptor for bytes[0..len) and advance the slot index. The
+ * descriptor reaches the engine at the next dma_start(). Caller holds tx_lock
+ * and has reserved a TX slot.
+ */
+static int emz_post_dma_tx(const struct device *dev, const uint8_t *bytes, size_t len)
 {
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
-	size_t current_descriptor = data->tx_populated_buffer_index;
-	size_t next_descriptor = (current_descriptor + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
 	int ret;
 
-	if (emz_rx_direct_enabled(cfg)) {
-		return emz_setup_dma_tx_direct_transfer(dev, len);
-	}
-
-	emaczero_perf_stats.tx_setup_calls++;
-	emaczero_perf_stats.tx_last_len = len;
-	if (cfg->dma == NULL) {
-		emaczero_perf_stats.tx_setup_no_dma++;
-		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
-		return -ENODEV;
-	}
-
-	if (next_descriptor == data->tx_completed_buffer_index) {
-		emaczero_perf_stats.tx_setup_busy++;
-		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
-		return -ENOSPC;
-	}
-
+	emz_dma_cache_flush(bytes, len);
 	if (!data->dma_is_configured_tx) {
 		struct dma_block_config block = {
-			.source_address = (uintptr_t)data->tx_buffer[current_descriptor].bytes,
+			.source_address = (uintptr_t)bytes,
 			.dest_address = 0u,
 			.block_size = len,
 			.source_addr_adj = DMA_ADDR_ADJ_INCREMENT,
@@ -1764,7 +1812,6 @@ static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
 			.complete_callback_en = 1,
 			.error_callback_dis = 0,
 			.block_count = 1,
-			.num_sg_descriptors = EMZ_DMA_BUFFER_COUNT_TX,
 			.head_block = &block,
 			.user_data = (void *)dev,
 			.dma_callback = emz_dma_tx_callback,
@@ -1774,26 +1821,85 @@ static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
 		ret = dma_config(cfg->dma, EMZ_DMA_TX_CHANNEL, &dma_cfg);
 		if (ret != 0) {
 			emaczero_perf_stats.tx_dma_config_fail++;
-			emaczero_perf_stats.tx_last_ret = (uint32_t)ret;
 			return ret;
 		}
 		data->dma_is_configured_tx = true;
 	} else {
-		ret = dma_reload(cfg->dma, EMZ_DMA_TX_CHANNEL,
-				 (uintptr_t)data->tx_buffer[current_descriptor].bytes, 0u, len);
+		ret = dma_reload(cfg->dma, EMZ_DMA_TX_CHANNEL, (uintptr_t)bytes, 0u, len);
 		if (ret != 0) {
 			emaczero_perf_stats.tx_dma_reload_fail++;
-			emaczero_perf_stats.tx_last_ret = (uint32_t)ret;
 			return ret;
 		}
 	}
 
-	emz_dma_cache_flush(data->tx_buffer[current_descriptor].bytes, len);
+	data->tx_populated_buffer_index =
+		(data->tx_populated_buffer_index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
+	return 0;
+}
 
-	data->tx_populated_buffer_index = next_descriptor;
+/* Claim the next TX slot (and its buffer) for the caller to fill. Caller
+ * holds tx_lock. Slots come back from the MM2S completion callback, so a full
+ * ring drains within a few frame times: wait for one instead of failing.
+ */
+static int emz_tx_reserve(const struct device *dev, size_t *descriptor)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+
+	if (emz_rx_direct_enabled(cfg)) {
+		return emz_tx_direct_reserve(dev, descriptor);
+	}
+	if (cfg->dma == NULL) {
+		emaczero_perf_stats.tx_setup_no_dma++;
+		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
+		return -ENODEV;
+	}
+	if (k_sem_take(&data->tx_slot_sem, EMZ_TX_SLOT_TIMEOUT) != 0) {
+		emaczero_perf_stats.tx_setup_busy++;
+		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
+		return -ENOSPC;
+	}
+
+	*descriptor = data->tx_populated_buffer_index;
+	return 0;
+}
+
+/* Hand back a slot from emz_tx_reserve() that was never posted. */
+static void emz_tx_unreserve(const struct device *dev)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+
+	if (!emz_rx_direct_enabled(cfg)) {
+		k_sem_give(&data->tx_slot_sem);
+	}
+}
+
+/* Post the frame in the slot claimed by emz_tx_reserve() and start MM2S. */
+static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+	size_t current_descriptor = data->tx_populated_buffer_index;
+	int ret;
+
+	if (emz_rx_direct_enabled(cfg)) {
+		return emz_setup_dma_tx_direct_transfer(dev, len);
+	}
+
+	emaczero_perf_stats.tx_setup_calls++;
+	emaczero_perf_stats.tx_last_len = len;
+	ret = emz_post_dma_tx(dev, data->tx_buffer[current_descriptor].bytes, len);
+	if (ret != 0) {
+		emz_tx_unreserve(dev);
+		emaczero_perf_stats.tx_last_ret = (uint32_t)ret;
+		return ret;
+	}
+	/* The descriptor is in the ring now, so the slot stays claimed even if
+	 * the start fails: the TX callback releases it when MM2S completes it.
+	 */
 	ret = dma_start(cfg->dma, EMZ_DMA_TX_CHANNEL);
 	if (ret != 0) {
-		data->tx_populated_buffer_index = current_descriptor;
 		emaczero_perf_stats.tx_dma_start_fail++;
 	} else {
 		emaczero_perf_stats.tx_dma_start_ok++;
@@ -1805,7 +1911,6 @@ static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
 
 static int emz_send(const struct device *dev, struct net_pkt *pkt)
 {
-	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 	size_t len = net_pkt_get_len(pkt);
 	size_t current_descriptor;
@@ -1819,40 +1924,19 @@ static int emz_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	k_mutex_lock(&data->tx_lock, K_FOREVER);
-	if (emz_rx_direct_enabled(cfg)) {
-		ret = emz_tx_direct_reserve(dev, &current_descriptor);
-		if (ret != 0) {
-			k_mutex_unlock(&data->tx_lock);
-			return ret;
-		}
-	} else {
-		current_descriptor = data->tx_populated_buffer_index;
+	ret = emz_tx_reserve(dev, &current_descriptor);
+	if (ret != 0) {
+		k_mutex_unlock(&data->tx_lock);
+		return ret;
 	}
 	if (net_pkt_read(pkt, data->tx_buffer[current_descriptor].bytes, len) != 0) {
+		emz_tx_unreserve(dev);
 		k_mutex_unlock(&data->tx_lock);
 		emaczero_perf_stats.tx_send_read_fail++;
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-EIO;
 		return -EIO;
 	}
-	emaczero_perf_stats.tx_last_word0 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 0u);
-	emaczero_perf_stats.tx_last_word1 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 4u);
-	emaczero_perf_stats.tx_last_word2 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 8u);
-	emaczero_perf_stats.tx_last_word3 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 12u);
-	// 64-byte TX-ext capture: point C in the four-point trace — bytes the
-	// driver is about to hand to MM2S, exactly as Zephyr produced them.
-	emaczero_perf_stats.tx_ext_len = (uint32_t)len;
-	{
-		volatile uint32_t *txw = &emaczero_perf_stats.tx_ext_word0;
-		for (size_t i = 0; i < 16u; i++) {
-			txw[i] = emz_sample_word(
-				data->tx_buffer[current_descriptor].bytes, len,
-				(size_t)(i * 4u));
-		}
-	}
+	emz_note_tx_frame(data->tx_buffer[current_descriptor].bytes, len);
 	emz_note_tx_icmp(data->tx_buffer[current_descriptor].bytes, len);
 
 	ret = emz_setup_dma_tx_transfer(dev, len);
@@ -1863,7 +1947,6 @@ static int emz_send(const struct device *dev, struct net_pkt *pkt)
 int emaczero_send_raw_frame(struct net_if *iface, const uint8_t *frame, size_t len)
 {
 	const struct device *dev;
-	const struct emaczero_config *cfg;
 	struct emaczero_data *data;
 	size_t current_descriptor;
 	int ret;
@@ -1873,7 +1956,6 @@ int emaczero_send_raw_frame(struct net_if *iface, const uint8_t *frame, size_t l
 	}
 	dev = net_if_get_device(iface);
 
-	cfg = dev->config;
 	data = dev->data;
 	if (len == 0u || len > EMZ_ETH_BUFFER_SIZE) {
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-EMSGSIZE;
@@ -1883,34 +1965,14 @@ int emaczero_send_raw_frame(struct net_if *iface, const uint8_t *frame, size_t l
 	emaczero_perf_stats.tx_send_calls++;
 	emaczero_perf_stats.tx_last_len = len;
 	k_mutex_lock(&data->tx_lock, K_FOREVER);
-	if (emz_rx_direct_enabled(cfg)) {
-		ret = emz_tx_direct_reserve(dev, &current_descriptor);
-		if (ret != 0) {
-			k_mutex_unlock(&data->tx_lock);
-			return ret;
-		}
-	} else {
-		current_descriptor = data->tx_populated_buffer_index;
+	ret = emz_tx_reserve(dev, &current_descriptor);
+	if (ret != 0) {
+		k_mutex_unlock(&data->tx_lock);
+		return ret;
 	}
 
 	memcpy(data->tx_buffer[current_descriptor].bytes, frame, len);
-	emaczero_perf_stats.tx_last_word0 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 0u);
-	emaczero_perf_stats.tx_last_word1 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 4u);
-	emaczero_perf_stats.tx_last_word2 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 8u);
-	emaczero_perf_stats.tx_last_word3 =
-		emz_sample_word(data->tx_buffer[current_descriptor].bytes, len, 12u);
-	emaczero_perf_stats.tx_ext_len = (uint32_t)len;
-	{
-		volatile uint32_t *txw = &emaczero_perf_stats.tx_ext_word0;
-		for (size_t i = 0; i < 16u; i++) {
-			txw[i] = emz_sample_word(
-				data->tx_buffer[current_descriptor].bytes, len,
-				(size_t)(i * 4u));
-		}
-	}
+	emz_note_tx_frame(data->tx_buffer[current_descriptor].bytes, len);
 
 	ret = emz_setup_dma_tx_transfer(dev, len);
 	k_mutex_unlock(&data->tx_lock);
@@ -1949,24 +2011,75 @@ int emaczero_profile_send_raw_frame(const uint8_t *frame, size_t len)
 	return emaczero_send_raw_frame(net_if_lookup_by_dev(emz_profile_dev), frame, len);
 }
 
+/* Queue count copies of one frame with a single TAILDESC write, so the TX
+ * benchmark measures MM2S and the MAC rather than per-frame driver overhead.
+ */
+static int emz_profile_send_burst_dma(const struct device *dev, const uint8_t *frame,
+				      size_t len, uint32_t count)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+	uint32_t queued = 0u;
+	int ret = 0;
+
+	if (cfg->dma == NULL) {
+		return -ENODEV;
+	}
+	count = MIN(count, EMZ_TX_SLOTS);
+
+	k_mutex_lock(&data->tx_lock, K_FOREVER);
+	/* Every descriptor of the previous burst points at tx_burst_bytes, so
+	 * wait for MM2S to finish with all of them before overwriting it.
+	 */
+	for (uint32_t wait_us = 0u; k_sem_count_get(&data->tx_slot_sem) != EMZ_TX_SLOTS;
+	     wait_us++) {
+		if (wait_us >= 10000u) {
+			k_mutex_unlock(&data->tx_lock);
+			emaczero_perf_stats.tx_setup_busy++;
+			emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
+			return -ENOSPC;
+		}
+		k_busy_wait(1);
+	}
+
+	memcpy(data->tx_burst_bytes, frame, len);
+	emz_note_tx_frame(data->tx_burst_bytes, len);
+	while (queued < count && k_sem_take(&data->tx_slot_sem, K_NO_WAIT) == 0) {
+		ret = emz_post_dma_tx(dev, data->tx_burst_bytes, len);
+		if (ret != 0) {
+			k_sem_give(&data->tx_slot_sem);
+			break;
+		}
+		queued++;
+	}
+	if (queued > 0u) {
+		int start_ret = dma_start(cfg->dma, EMZ_DMA_TX_CHANNEL);
+
+		if (start_ret != 0) {
+			emaczero_perf_stats.tx_dma_start_fail++;
+			ret = ret != 0 ? ret : start_ret;
+		} else {
+			emaczero_perf_stats.tx_dma_start_ok += queued;
+		}
+	}
+	emaczero_perf_stats.tx_send_calls += queued;
+	emaczero_perf_stats.tx_setup_calls += queued;
+	emaczero_perf_stats.tx_last_ret = (uint32_t)ret;
+	k_mutex_unlock(&data->tx_lock);
+
+	return queued > 0u ? (int)queued : ret;
+}
+
 int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint32_t count)
 {
 	const struct device *dev = emz_profile_dev;
 	const struct emaczero_config *cfg;
-	struct emaczero_data *data;
-	size_t first_descriptor;
-	size_t last_descriptor;
-	uint32_t queued = 0u;
 
 	if (dev == NULL) {
 		return -ENODEV;
 	}
 
 	cfg = dev->config;
-	data = dev->data;
-	if (!emz_rx_direct_enabled(cfg)) {
-		return -ENOTSUP;
-	}
 	if (len == 0u || len > EMZ_ETH_BUFFER_SIZE) {
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-EMSGSIZE;
 		return -EMSGSIZE;
@@ -1974,6 +2087,15 @@ int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint
 	if (count == 0u) {
 		return 0;
 	}
+	if (!emz_rx_direct_enabled(cfg)) {
+		return emz_profile_send_burst_dma(dev, frame, len, count);
+	}
+#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
+	struct emaczero_data *data = dev->data;
+	size_t first_descriptor;
+	size_t last_descriptor;
+	uint32_t queued = 0u;
+
 	if (count > EMZ_DMA_BUFFER_COUNT_TX) {
 		count = EMZ_DMA_BUFFER_COUNT_TX;
 	}
@@ -2046,6 +2168,9 @@ int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint
 	emaczero_perf_stats.tx_last_ret = 0u;
 	k_mutex_unlock(&data->tx_lock);
 	return (int)queued;
+#else
+	return -ENOTSUP;
+#endif
 }
 #endif
 
@@ -2229,12 +2354,6 @@ static void emz_rx_thread(void *arg1, void *arg2, void *arg3)
 			emaczero_perf_stats.rx_invalid++;
 			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_INVALID);
 			eth_stats_update_errors_rx(data->iface);
-			emz_release_rx_buffer_from_worker(dev, rx);
-			continue;
-		}
-
-		if (data->rx_interceptor != NULL &&
-		    data->rx_interceptor(rx->bytes, rx->len, data->rx_interceptor_user_data)) {
 			emz_release_rx_buffer_from_worker(dev, rx);
 			continue;
 		}
@@ -2449,6 +2568,7 @@ static int emz_init(const struct device *dev)
 #endif
 	memcpy(data->mac, cfg->mac, NET_ETH_ADDR_LEN);
 	k_mutex_init(&data->tx_lock);
+	k_sem_init(&data->tx_slot_sem, EMZ_TX_SLOTS, EMZ_TX_SLOTS);
 
 	// Write self-describing sentinels for the 64-byte four-point-trace
 	// capture blocks. Host tooling scans the perf-stats DDR region for
@@ -2479,6 +2599,12 @@ static int emz_init(const struct device *dev)
 			return -ENOMEM;
 		}
 	}
+#if defined(CONFIG_ETH_EMACZERO_PROFILE)
+	data->tx_burst_bytes = emz_dma_mem_alloc(64u, EMZ_ETH_BUFFER_SIZE);
+	if (data->tx_burst_bytes == NULL) {
+		return -ENOMEM;
+	}
+#endif
 #else
 	for (size_t i = 0; i < ARRAY_SIZE(data->rx_buffer); i++) {
 		data->rx_buffer[i].bytes = data->rx_storage[i];
@@ -2486,6 +2612,9 @@ static int emz_init(const struct device *dev)
 	for (size_t i = 0; i < ARRAY_SIZE(data->tx_buffer); i++) {
 		data->tx_buffer[i].bytes = data->tx_storage[i];
 	}
+#if defined(CONFIG_ETH_EMACZERO_PROFILE)
+	data->tx_burst_bytes = data->tx_burst_storage;
+#endif
 #endif
 	for (size_t i = 0; i < ARRAY_SIZE(data->rx_buffer); i++) {
 		k_fifo_put(&data->rx_free_fifo, &data->rx_buffer[i]);
@@ -2578,7 +2707,24 @@ static const struct ethernet_api emz_api = {
 	}
 #endif
 
+/* The packet-buffer window and the DMA's descriptor region must not overlap:
+ * the bump allocator would hand out buffers on top of live descriptors.
+ */
+#define EMZ_DMA_WINDOW_END								\
+	((uint64_t)CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE + CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE)
+#define EMZ_DESC_REGION_CHECK(desc)							\
+	BUILD_ASSERT(CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE == 0 ||			\
+		     (uint64_t)DT_REG_ADDR(desc) + DT_REG_SIZE(desc) <=			\
+			     CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE ||			\
+		     (uint64_t)DT_REG_ADDR(desc) >= EMZ_DMA_WINDOW_END,			\
+		     "emacZero DMA memory window overlaps the AXI DMA descriptor region");
+#define EMZ_DMA_DESC_CHECK(dma)								\
+	COND_CODE_1(DT_NODE_HAS_PROP(dma, memory_region),				\
+		    (EMZ_DESC_REGION_CHECK(DT_PHANDLE(dma, memory_region))), ())
+
 #define EMZ_INIT(inst)									\
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, axistream_connected),			\
+		    (EMZ_DMA_DESC_CHECK(DT_INST_PHANDLE(inst, axistream_connected))), ())\
 	EMZ_DIRECT_RX_IRQ_CONFIGURE(inst)						\
 	static struct emaczero_data emz_data_##inst;					\
 	K_THREAD_STACK_DEFINE(emz_rx_thread_stack_##inst, EMZ_RX_THREAD_STACK_SIZE);	\
