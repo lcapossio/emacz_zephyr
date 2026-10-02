@@ -11,7 +11,7 @@
  *
  * Without these overrides, Zephyr's default arch_irq_* helpers write bits
  * straight into mie for every irqn, which silently drops any encoded
- * 2nd-level IRQ (dma_xilinx_axi_dma_*, emz_rx_direct_isr, ...). They also
+ * 2nd-level IRQ (the dma_xilinx_axi_dma_* ISRs, ...). They also
  * never dispatch the AXI INTC's ISR when cpu0_intc line 11 fires.
  */
 

@@ -26,7 +26,8 @@ domain.
   SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
   earlyBranch, R-slice on DBUS). Same emacZero MAC + Zephyr fast-path on
   both.
-- Direct AXI DMA S2MM RX ring with zero-copy handoff to the Zephyr stack and
+- AXI DMA RX through Zephyr's DMA API (upstream Xilinx AXI DMA driver),
+  with error recovery and zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
 - Optional per-region cycle instrumentation
   (`CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION`, off by default).
