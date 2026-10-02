@@ -124,11 +124,11 @@ FUNC_NORETURN void k_sys_fatal_error_handler(unsigned int reason,
 		vex_fatal_scratch[3] = esf ? (uint32_t)esf->a0 : 0xDEADBEEFu;
 	}
 
-	/* No fence: the RISC-V `fence` opcode is not decoded by the
-	 * VexRiscv-full demo config used here and raises illegal-instruction,
-	 * which would turn one fatal into a fault storm and clobber the
-	 * captured (reason, mepc). To make our scratch stores visible to
-	 * JTAG-AXI despite the write-back D-cache, scrub one D-cache worth
+	/* A fence would not help here: it orders accesses but never writes a
+	 * D-cache line back, and this core has no Zicbom cbo.clean (it traps
+	 * as illegal-instruction, which would turn one fatal into a fault
+	 * storm and clobber the captured (reason, mepc)). To make our scratch
+	 * stores visible to JTAG-AXI despite the D-cache, scrub one D-cache worth
 	 * of unrelated cached DDR to force natural capacity eviction of the
 	 * scratch line to DDR. Address must be in the CACHED range
 	 * (0x90000000-0x97FFFFFF); reads from the uncached DMA region at

@@ -87,9 +87,9 @@ west build -b arty_a7_vex -d build-vex-emac app -- \
 ```
 
 The two boards are not interchangeable: `arty_a7_vex` sets a 100 MHz timer
-base and disables D-cache maintenance ops the VexRiscv-full demo config
-cannot decode. Booting an `mbv32` image on the Vex bitstream gives a ~23%
-timer error; the reverse traps on `fence`.
+base and disables the Zicbom D-cache maintenance ops (`cbo.clean`,
+`cbo.inval`) the VexRiscv core cannot decode. Booting an `mbv32` image on
+the Vex bitstream traps on `cbo.*`; the reverse gives a ~23% timer error.
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
 a Zephyr extra module, so the local driver/binding/Kconfig are picked up
@@ -226,11 +226,11 @@ MET at their target frequencies (MBV: 81.25 MHz `ui_clk`; Vex: 100 MHz
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,688 (54.71%) | 28,909 (45.60%) | −5,779 (−16.7%) |
-| Slice Registers | 46,199 (36.43%) | 29,460 (23.23%) | −16,739 (−36.2%) |
+| Slice LUTs | 34,688 (54.71%) | 28,907 (45.59%) | −5,781 (−16.7%) |
+| Slice Registers | 46,199 (36.43%) | 29,451 (23.23%) | −16,748 (−36.3%) |
 | BRAM Tiles | 44 (32.59%) | 36 (26.67%) | −8 (−18.2%) |
 | DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
-| Setup WNS | +0.630 ns | +0.369 ns | — |
+| Setup WNS | +0.630 ns | +0.187 ns | — |
 
 Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
 I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including

@@ -28,6 +28,19 @@ To regenerate:
     hardwired to 0 and `misa` `READ_ONLY` so Zephyr's identity CSR reads
     don't trap.
 
+- `0002-bard0-decode-fence-as-nop.patch`
+  - New `FenceNopPlugin`: decodes RISC-V `FENCE` (funct3=000, which also
+    covers `fence.tso` and `pause`) as a no-op. Without it the core traps on
+    `fence`, and Zephyr had to be patched to drop its builtin barriers.
+  - `FENCE.I` is deliberately left undecoded and still traps. The stock
+    `DummyFencePlugin` would make it a no-op too, which on a core with an
+    I$ silently skips the flush instead of failing loudly.
+  - The no-op adds no ordering. Memory operations already leave this
+    in-order core in program order; whether posted writes to different AXI
+    slaves can be reordered downstream is unchanged by this patch.
+  - Logic impact: top-level ports, registers and memories are unchanged; only
+    the decoder's legal-instruction terms grow.
+
 Together the cache/prediction changes lift RX throughput from ~67 Mbps
 to line-rate ~95 Mbps on the Arty A7-100T shell (see the commit message
 that introduced these patches for the full before/after bench table).

@@ -52,10 +52,10 @@ difference, so the deltas below reflect CPU cost.
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,688 (54.71%) | 28,909 (45.60%) | **−5,779 (−16.7%)** |
-| &nbsp;&nbsp;LUT as Logic | 29,103 (45.90%) | 23,158 (36.53%) | −5,945 (−20.4%) |
+| Slice LUTs | 34,688 (54.71%) | 28,907 (45.59%) | **−5,781 (−16.7%)** |
+| &nbsp;&nbsp;LUT as Logic | 29,103 (45.90%) | 23,156 (36.52%) | −5,947 (−20.4%) |
 | &nbsp;&nbsp;LUT as Memory | 5,585 (29.39%) | 5,751 (30.27%) | +166 (+3.0%) |
-| Slice Registers (FFs) | 46,199 (36.43%) | 29,460 (23.23%) | **−16,739 (−36.2%)** |
+| Slice Registers (FFs) | 46,199 (36.43%) | 29,451 (23.23%) | **−16,748 (−36.3%)** |
 | F7 Muxes | 2,699 (8.51%) | 509 (1.61%) | −2,190 (−81.1%) |
 | F8 Muxes | 1,339 (8.45%) | 227 (1.43%) | −1,112 (−83.0%) |
 | BRAM Tile | 44 (32.59%) | 36 (26.67%) | **−8 tiles (−18.2%)** |
@@ -85,10 +85,10 @@ resource table above.
 |---|---|---|
 | CPU + SoC fabric clock | `mig_ddr/ui_clk` **81.25 MHz** | `sys_clk` **100 MHz** |
 | DDR UI clock | same 81.25 MHz domain (no CDC) | 81.25 MHz, isolated behind ddr_smartconnect CDC |
-| Setup WNS | +0.630 ns | +0.369 ns |
-| Hold WHS | +0.056 ns | +0.019 ns |
+| Setup WNS | +0.630 ns | +0.187 ns |
+| Hold WHS | +0.056 ns | +0.012 ns |
 | Failing endpoints | 0 | 0 |
-| Total endpoints | ~similar | 114,839 |
+| Total endpoints | ~similar | 114,852 |
 
 The MBV shell clocks the CPU and every AXI/AXI-Lite fabric directly from
 MIG's `ui_clk`. With the shared MIG config (`hardware/mig/arty_a7_100t_mig.prj`,

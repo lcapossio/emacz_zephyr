@@ -618,13 +618,28 @@ if {{$synth_impl}} {{
     synth_design -top ${{top}}_wrapper -part $part
     write_checkpoint -force ${{top}}_wrapper_synth.dcp
     report_utilization -file reports/utilization_synth.rpt
-    opt_design
-    place_design
-    phys_opt_design
-    route_design
+    # Timing-driven directives: the branch -> I$/predictor RAM address path
+    # (decode_to_execute_BRANCH_CTRL -> IBusCachedPlugin RAM ADDR) is the
+    # critical path at 100 MHz and the default flow only clears it by luck
+    # of placement (missed by 0.64 ns after the FENCE decode change). With
+    # these directives it routes at WNS +0.19 ns.
+    opt_design -directive Explore
+    place_design -directive Explore
+    phys_opt_design -directive AggressiveExplore
+    route_design -directive AggressiveExplore
+    phys_opt_design -directive AggressiveExplore
     write_checkpoint -force ${{top}}_wrapper_routed.dcp
     report_utilization -file reports/utilization_route.rpt
     report_timing_summary -file reports/timing.rpt
+    # Timing gate: a failing image must never replace the bitstream the
+    # programming flow loads, and the build must report failure.
+    set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+    set whs [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -hold]]
+    puts "TIMING_SUMMARY WNS=$wns WHS=$whs"
+    if {{$wns < 0 || $whs < 0}} {{
+        puts "ERROR: timing not met (WNS=$wns ns, WHS=$whs ns); bitstream not written"
+        exit 1
+    }}
     write_bitstream -force ${{top}}_wrapper.bit
     if {{[catch {{write_hw_platform -fixed -force -file ${{top}}.xsa}} hw_err]}} {{
         puts "WARNING: write_hw_platform failed after bitstream generation: $hw_err"

@@ -1,0 +1,44 @@
+diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+index 4353c8b6..71544f29 100644
+--- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
++++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+@@ -87,6 +87,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+           new DecoderSimplePlugin(
+             catchIllegalInstruction = true
+           ),
++          // bard0: FENCE as a no-op so Zephyr's builtin barriers stop
++          // trapping; FENCE.I stays illegal (see FenceNopPlugin).
++          new FenceNopPlugin,
+           new RegFilePlugin(
+             regFileReadyKind = plugin.SYNC,
+             zeroBoot = false
+diff --git a/src/main/scala/vexriscv/plugin/FenceNopPlugin.scala b/src/main/scala/vexriscv/plugin/FenceNopPlugin.scala
+new file mode 100644
+index 00000000..0843e69a
+--- /dev/null
++++ b/src/main/scala/vexriscv/plugin/FenceNopPlugin.scala
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 Leonardo Capossio - bard0 design
++
++package vexriscv.plugin
++
++import vexriscv.{VexRiscv, _}
++
++// bard0: decode RISC-V FENCE (funct3=000, incl. fence.tso and pause) as a
++// no-op. This in-order core already retires memory operations in program
++// order, so treating FENCE as a NOP keeps today's ordering while making the
++// instruction legal: Zephyr's builtin barriers emit `fence` and would
++// otherwise trap. Unlike DummyFencePlugin this leaves FENCE.I undecoded, so
++// it still traps as illegal instead of silently skipping an I$ flush.
++class FenceNopPlugin extends Plugin[VexRiscv]{
++
++  override def setup(pipeline: VexRiscv): Unit = {
++    import Riscv._
++
++    val decoderService = pipeline.service(classOf[DecoderService])
++    decoderService.add(FENCE, Nil)
++  }
++
++  override def build(pipeline: VexRiscv): Unit = {}
++}
