@@ -506,6 +506,16 @@ static void dump_profile_delta(void)
 K_THREAD_STACK_DEFINE(profile_thread_stack, PROFILE_THREAD_STACK_SIZE);
 static struct k_thread profile_thread;
 
+static bool fault_tx;
+
+static void fault_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	(void)emaczero_profile_inject_dma_fault(fault_tx);
+}
+
+static K_WORK_DELAYABLE_DEFINE(fault_work, fault_work_handler);
+
 static void profile_control_thread(void *arg1, void *arg2, void *arg3)
 {
 	int sock;
@@ -571,11 +581,22 @@ static void profile_control_thread(void *arg1, void *arg2, void *arg3)
 					   peer_len);
 			continue;
 		} else if (cmd == 'f' || cmd == 'F') {
-			/* 'f' faults S2MM, 'F' faults MM2S (recovery test). */
+			/* 'f' faults S2MM, 'F' faults MM2S (recovery test). An
+			 * optional delay in ms arms the fault for later, so it can
+			 * land while a flood keeps this socket from hearing it.
+			 */
 			char reply[32];
-			int ret = emaczero_profile_inject_dma_fault(cmd == 'F');
-			int len = snprintk(reply, sizeof(reply), "fault ret=%d", ret);
+			unsigned long delay_ms = strtoul(&request[1], NULL, 0);
+			int ret = 0;
+			int len;
 
+			fault_tx = cmd == 'F';
+			if (delay_ms == 0u) {
+				ret = emaczero_profile_inject_dma_fault(fault_tx);
+			} else {
+				(void)k_work_reschedule(&fault_work, K_MSEC(delay_ms));
+			}
+			len = snprintk(reply, sizeof(reply), "fault ret=%d", ret);
 			(void)zsock_sendto(sock, reply, (size_t)len, 0, (struct sockaddr *)&peer,
 					   peer_len);
 			continue;

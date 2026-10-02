@@ -1984,6 +1984,13 @@ static int emz_tx_reserve(const struct device *dev, size_t *descriptor)
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
 		return -ENODEV;
 	}
+	/* MM2S is about to be reset, or emz_dma_recover() is waiting to retry:
+	 * a frame posted now would only be thrown away with the ring.
+	 */
+	if (atomic_get(&data->dma_recover_pending) != 0) {
+		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENETDOWN;
+		return -ENETDOWN;
+	}
 	if (k_sem_take(&data->tx_slot_sem, EMZ_TX_SLOT_TIMEOUT) != 0) {
 		emaczero_perf_stats.tx_setup_busy++;
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
@@ -2158,6 +2165,11 @@ static int emz_profile_send_burst_dma(const struct device *dev, const uint8_t *f
 	count = MIN(count, EMZ_TX_SLOTS);
 
 	k_mutex_lock(&data->tx_lock, K_FOREVER);
+	if (atomic_get(&data->dma_recover_pending) != 0) {
+		k_mutex_unlock(&data->tx_lock);
+		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENETDOWN;
+		return -ENETDOWN;
+	}
 	/* Every descriptor of the previous burst points at tx_burst_bytes, so
 	 * wait for MM2S to finish with all of them before overwriting it.
 	 */

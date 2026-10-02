@@ -18,6 +18,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -26,21 +27,27 @@ from read_perf_stats import read_stats
 SCRIPTS = Path(__file__).resolve().parent
 
 
-def control(args: argparse.Namespace, command: str) -> str:
+def control(args: argparse.Namespace, command: str) -> str | None:
+    """Send one control command; None if no reply came back in time."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((args.bind, 0))
         sock.settimeout(args.timeout)
         sock.sendto(command.encode("ascii"), (args.board, args.control_port))
-        data, _addr = sock.recvfrom(2048)
+        try:
+            data, _addr = sock.recvfrom(2048)
+        except socket.timeout:
+            return None
     return data.decode("ascii", errors="replace").strip()
 
 
-def send_udp(args: argparse.Namespace, duration: float) -> int:
-    """Send sink traffic and return the data-packet count (the FIN is extra)."""
+def send_udp(args: argparse.Namespace, duration: float, port: int = 5001,
+             rate_mbps: float = 60.0) -> int:
+    """Send UDP traffic and return the data-packet count (the FIN is extra)."""
     out = subprocess.run(
         [sys.executable, str(SCRIPTS / "zperf_udp_client.py"), args.board,
-         "--bind", args.bind, "--duration", str(duration), "--rate-mbps", "60",
-         "--packet-size", "1472", "--fin-retries", "1", "--timeout", "0.5"],
+         "--bind", args.bind, "--port", str(port), "--duration", str(duration),
+         "--rate-mbps", str(rate_mbps), "--packet-size", "1472",
+         "--fin-retries", "1", "--timeout", "0.5"],
         capture_output=True, text=True, check=False,
     ).stdout
     match = re.search(r"sent packets=(\d+)", out)
@@ -72,18 +79,36 @@ def main() -> int:
     parser.add_argument("--bind", default="192.168.137.1")
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--timeout", type=float, default=2.0)
+    parser.add_argument("--drain", action="store_true",
+                        help="fault while a flood to a port with no listener holds the "
+                             "RX pool in the net stack, so recovery may find it empty")
     args = parser.parse_args()
 
     before = stats(args)
-    reply = control(args, "f" if args.channel == "rx" else "F")
+    # Arm the fault for later so the reply leaves before MM2S can halt, and
+    # under the flood (which starves the control socket) so it fires 2 s in.
+    # The reply only says the command arrived: the counters decide whether
+    # the fault fired.
+    delay_ms = 2000 if args.drain else 100
+    command = f"{'f' if args.channel == 'rx' else 'F'} {delay_ms}"
+    reply = control(args, command)
     print(f"inject_reply={reply}")
     if reply != "fault ret=0":
-        print("result=FAIL (injection refused)")
+        print("result=FAIL (injection not accepted)")
         return 1
+    flood = None
+    if args.drain:
+        flood = threading.Thread(target=send_udp, args=(args, 6.0, 5009, 95.0))
+        flood.start()
 
     # S2MM reaches the faulted descriptor only after every buffer posted
     # ahead of it has been filled, so push traffic through. The frames sent
     # around the halt are lost by design and not counted.
+    # Under the flood the pool is empty and the ring stays short, so S2MM
+    # may only get there once the pool is back.
+    if flood is not None:
+        flood.join()
+        time.sleep(1.0)
     if args.channel == "rx":
         send_udp(args, 1.0)
     time.sleep(0.5)
@@ -95,23 +120,28 @@ def main() -> int:
     after = stats(args)
     tx_reply = control(args, "s")
 
+    def delta(name: str, a=before, b=faulted) -> int:
+        return getattr(b, name) - getattr(a, name)
+
     error_name = "dma_errors" if args.channel == "rx" else "tx_dma_error"
     checks = {
-        "recovered_once": faulted.rx_dma_recoveries - before.rx_dma_recoveries == 1,
-        "error_reported": getattr(faulted, error_name) > getattr(before, error_name),
+        "recovered_once": delta("rx_dma_recoveries", before, after) == 1,
+        "error_reported": delta(error_name) > 0,
         "rx_exact_after": after.sink_packets - faulted.sink_packets == sent + 1,
-        "tx_after": bool(tx_reply),
+        "tx_after": tx_reply is not None,
         "pool_consistent": after.rx_owner_sum_bad == before.rx_owner_sum_bad,
     }
-    print(f"{error_name}_delta={getattr(faulted, error_name) - getattr(before, error_name)}")
-    print(f"rx_dma_recoveries_delta={after.rx_dma_recoveries - before.rx_dma_recoveries}")
+    print(f"{error_name}_delta={delta(error_name)}")
+    print(f"rx_dma_recoveries_delta={delta('rx_dma_recoveries', before, after)}")
+    # Whether the reset cut a frame mid-stream and a fragment got delivered.
+    for name in ("rx_bd_errors", "rx_invalid", "net_ipv4_drop"):
+        print(f"{name}_delta={delta(name)}")
     print(f"sent_after={sent} board_after={after.sink_packets - faulted.sink_packets}")
     for name, ok in checks.items():
         print(f"{name}={'ok' if ok else 'FAIL'}")
     passed = all(checks.values())
     print(f"result={'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

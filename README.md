@@ -309,7 +309,8 @@ python scripts/run_dma_recovery_test.py --channel tx --chain 3 \
 
 Each run halts one channel with a zero-length descriptor (DMAIntErr, no
 memory written) and passes when the driver recovers exactly once and RX
-counts are exact afterwards.
+counts are exact afterwards. Add `--drain` to fire the fault while a flood
+to a port with no listener holds the RX pool in the net stack.
 
 ### Throughput paths
 
