@@ -28,7 +28,6 @@ KEEP = [
     "gate_drain_tready_low_cycles",
     "dma_callbacks",
     "dma_errors",
-    "rx_bd_hw_completed",
     "rx_bd_errors",
     "rx_invalid",
     "rx_alloc_pkt_fail",

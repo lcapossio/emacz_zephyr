@@ -960,6 +960,12 @@ DMA interrupt itself, and records direct-ring counters such as
 `rx_bd_available_min`. The old generic RX DMA path remains buildable for A/B
 testing by leaving the Kconfig option disabled.
 
+> **Update (2026-10):** the direct ring and its counters have since been
+> removed. Upstream's driver now keeps a persistent descriptor ring, and
+> with batched refills (one `TAILDESC` write per batch) plus DMA error
+> recovery, the DMA-API path reaches the same line rate on both shells.
+> See the README for the current design.
+
 This does not bypass the Zephyr network stack. The packet path is still:
 
 ```text

@@ -28,16 +28,6 @@ config ETH_EMACZERO_PROFILE
 	  modes that can drop packets after DMA completion or after Zephyr
 	  packet construction to isolate bottlenecks without rebuilding.
 
-config ETH_EMACZERO_RX_DIRECT_RING
-	bool "emacZero direct AXI DMA S2MM RX descriptor ring"
-	depends on ETH_EMACZERO_DMA_MEMORY_SIZE != 0
-	help
-	  Let the emacZero Ethernet driver own the AXI DMA S2MM scatter/gather
-	  descriptor ring directly for RX. This bypasses Zephyr's generic DMA
-	  API on the receive hot path while leaving TX on the generic DMA API.
-	  The Zephyr Xilinx AXI DMA driver must not install its RX ISR when
-	  this option is enabled.
-
 config ETH_EMACZERO_RX_BUFFER_COUNT
 	int "emacZero RX DMA buffer count"
 	default 64
@@ -97,31 +87,13 @@ config ETH_EMACZERO_DMA_MEMORY_SIZE
 	  Size in bytes of the DMA-visible memory window. A zero size keeps
 	  the packet buffers in kernel RAM.
 
-config ETH_EMACZERO_SG_MEMORY_BASE
-	hex "emacZero AXI DMA scatter-gather descriptor memory base"
-	default 0x0
-	help
-	  Base address of a dedicated memory window (typically an AXI BRAM)
-	  used for AXI DMA scatter-gather descriptor rings and the TX/RX BDs.
-	  When zero, SG allocations fall back to the general DMA memory pool
-	  (ETH_EMACZERO_DMA_MEMORY_BASE).
-
-config ETH_EMACZERO_SG_MEMORY_SIZE
-	hex "emacZero AXI DMA scatter-gather descriptor memory size"
-	default 0x0
-	help
-	  Size in bytes of the SG descriptor memory window. Set to non-zero
-	  when the hardware has a dedicated BRAM on the AXI DMA M_AXI_SG
-	  port, keeping small descriptor transactions off DDR.
-
 config ETH_EMACZERO_R7_INSTRUMENTATION
 	bool "emacZero per-region cycle instrumentation (R7)"
 	depends on ETH_EMACZERO_PROFILE
 	help
 	  Enable per-region cycle accumulators inside the RX hot path so a host
 	  tool can attribute per-packet wall time to individual driver regions
-	  (ISR, spinlocks, ready-fifo enqueue, release/refill, tail CSR write,
-	  RX-thread build). The counters land in the perf-stats block behind a
+	  (buffer release + refill, RX-thread build). The counters land in the perf-stats block behind a
 	  "PRF2" magic word so host tools can locate them by scan. Cost is a
 	  handful of k_cycle_get_32() reads per packet — off by default.
 

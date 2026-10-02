@@ -11,7 +11,7 @@
 #include <stdbool.h>
 
 #define EMACZERO_PERF_STATS_MAGIC 0x45505a53u
-#define EMACZERO_PERF_STATS_VERSION 17u
+#define EMACZERO_PERF_STATS_VERSION 18u
 /* Perf-stats block (4 KiB) + JTAG mailbox (4 KiB) at the top of DMA memory. */
 #define EMACZERO_PERF_STATS_DMA_RESERVED 0x2000u
 
@@ -55,18 +55,11 @@ struct emaczero_perf_stats {
 	uint32_t rx_refill_cycles_max;
 	uint32_t rx_refill_cycles_ge_1ms;
 	uint32_t rx_refill_queued_max;
-	uint32_t _reserved_v10;
-	uint64_t rx_bd_hw_completed;
-	uint64_t rx_bd_refilled;
-	uint64_t rx_bd_tail_updates;
-	uint64_t rx_bd_no_free;
-	uint64_t rx_irq_count;
-	uint32_t rx_bd_available_current;
-	uint32_t rx_bd_available_min;
-	uint32_t rx_poll_completed_max;
+	/* emz_dma_recover() passes that found no free RX buffer and retried. */
+	uint32_t dma_recover_retries;
 	uint32_t rx_bd_errors;
-	/* Completed S2MM resets after a halting DMA/SG error. Non-zero means
-	 * the RX ring was rebuilt at least once; pair with rx_bd_errors.
+	/* Completed rebuilds of both DMA channels after a halting DMA/SG
+	 * error (emz_dma_recover()); pair with dma_errors / tx_dma_error.
 	 */
 	uint32_t rx_dma_recoveries;
 	uint64_t rx_worker_packets;
@@ -373,7 +366,7 @@ bool emaczero_profile_should_keep_control(const uint8_t *bytes, size_t len);
 void emaczero_profile_note_release(uint32_t lifetime_cycles);
 int emaczero_profile_send_raw_frame(const uint8_t *frame, size_t len);
 int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint32_t count);
-int emaczero_profile_inject_dma_fault(bool tx);
+int emaczero_profile_inject_dma_fault(bool tx, uint32_t starve_passes);
 #else
 static inline void emaczero_profile_snapshot(struct emaczero_profile_snapshot *snapshot)
 {
@@ -451,9 +444,10 @@ static inline int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, si
 	return -1;
 }
 
-static inline int emaczero_profile_inject_dma_fault(bool tx)
+static inline int emaczero_profile_inject_dma_fault(bool tx, uint32_t starve_passes)
 {
 	(void)tx;
+	(void)starve_passes;
 	return -1;
 }
 #endif

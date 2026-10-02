@@ -95,19 +95,26 @@ BUILD_ASSERT((uint64_t)CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE > EMZ_DMA_DCACHE_HIGH
 
 /* Sol r7 instrumentation regions. Slot indices are wire-format for host tools;
  * do not reorder without bumping EMACZERO_PERF_STATS_VERSION and updating readers.
+ * Slots 0-2, 4 and 5 timed the retired direct RX ring and stay empty.
  */
 enum emz_r7_region {
-	EMZ_R7_ISR_TOTAL = 0,      /* ISR entry -> ISR exit (whole poll incl. cache/CSR) */
-	EMZ_R7_LOCK_CONSUME = 1,   /* spin_lock..spin_unlock in emz_rx_direct_poll body */
-	EMZ_R7_READY_ENQUEUE = 2,  /* atomic_inc + k_fifo_put(rx_ready_fifo) */
 	EMZ_R7_RELEASE_REFILL = 3, /* emz_release_rx_buffer entry -> refill returns */
-	EMZ_R7_LOCK_POST = 4,      /* spin_lock..spin_unlock in emz_rx_direct_post_one */
-	EMZ_R7_TAIL_CSR = 5,       /* barrier + TAILDESC write in emz_rx_direct_update_tail */
 	EMZ_R7_RX_THREAD_BUILD = 6,/* rx_thread: net_pkt build -> net_recv_data() return */
 	EMZ_R7_SLOT_COUNT = 8,
 };
 #define EMZ_R7_MAGIC 0x50524632u  /* "PRF2" LE */
 #define EMZ_DMA_RX_MAX_INFLIGHT CONFIG_ETH_EMACZERO_RX_DMA_POST_COUNT
+
+#if defined(CONFIG_DMA_XILINX_AXI_DMA)
+/* The DMA driver posts into the descriptor after the last populated one and
+ * refuses (-EBUSY) while it is still in use. Posted descriptors are contiguous,
+ * so one stays free as long as fewer than the ring size are outstanding.
+ */
+BUILD_ASSERT(EMZ_DMA_RX_MAX_INFLIGHT < CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX,
+	     "ETH_EMACZERO_RX_DMA_POST_COUNT must be below the AXI DMA RX ring size");
+BUILD_ASSERT(EMZ_TX_SLOTS < CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX,
+	     "emacZero TX slots must be below the AXI DMA TX ring size");
+#endif
 #define EMZ_RX_MAX_STACK_OWNED_ZEROCOPY CONFIG_ETH_EMACZERO_RX_MAX_STACK_OWNED_ZEROCOPY
 #define EMZ_RX_COPY_FALLBACK_COUNT CONFIG_ETH_EMACZERO_RX_COPY_FALLBACK_COUNT
 #define EMZ_RX_THREAD_STACK_SIZE 2048u
@@ -118,43 +125,16 @@ enum emz_r7_region {
 #define EMZ_IP_PROTO_ICMP 1u
 #define EMZ_IP_PROTO_UDP 17u
 
-#define EMZ_AXI_DMA_REG_MM2S_DMACR 0x00u
-#define EMZ_AXI_DMA_REG_MM2S_DMASR 0x04u
-#define EMZ_AXI_DMA_REG_MM2S_CURDESC 0x08u
-#define EMZ_AXI_DMA_REG_MM2S_TAILDESC 0x10u
-#define EMZ_AXI_DMA_REG_S2MM_DMACR 0x30u
-#define EMZ_AXI_DMA_REG_S2MM_DMASR 0x34u
-#define EMZ_AXI_DMA_REG_S2MM_CURDESC 0x38u
-#define EMZ_AXI_DMA_REG_S2MM_TAILDESC 0x40u
-
-#define EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT 16
-#define EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT 24
-#define EMZ_AXI_DMA_DMACR_ERR_IRQEN BIT(14)
-#define EMZ_AXI_DMA_DMACR_DLY_IRQEN BIT(13)
-#define EMZ_AXI_DMA_DMACR_IOC_IRQEN BIT(12)
-#define EMZ_AXI_DMA_DMACR_RESET BIT(2)
-#define EMZ_AXI_DMA_DMACR_RS BIT(0)
-
-#define EMZ_AXI_DMA_DMASR_IRQ_ALL (BIT(14) | BIT(13) | BIT(12))
-#define EMZ_AXI_DMA_DMASR_ERROR_MASK (BIT(10) | BIT(9) | BIT(8) | BIT(6) | BIT(5) | BIT(4))
-/* DMASR.Halted: the engine clears RS and stops on any DMA/SG error. Nothing
- * restarts it except a full RESET + CURDESC + RS sequence.
- */
-#define EMZ_AXI_DMA_DMASR_HALTED BIT(0)
-
-#define EMZ_AXI_DMA_BD_CTRL_SOF BIT(27)
-#define EMZ_AXI_DMA_BD_CTRL_EOF BIT(26)
-#define EMZ_AXI_DMA_BD_CTRL_LEN_MASK 0x03ffffffu
-#define EMZ_AXI_DMA_BD_STATUS_COMPLETE BIT(31)
-#define EMZ_AXI_DMA_BD_STATUS_ERROR_MASK (BIT(30) | BIT(29) | BIT(28))
-#define EMZ_AXI_DMA_BD_STATUS_LEN_MASK 0x03ffffffu
-
 #if defined(CONFIG_DMA_XILINX_AXI_DMA)
 uint32_t dma_xilinx_axi_dma_last_received_frame_length(const struct device *dev);
 #endif
 
 #if defined(CONFIG_ETH_EMACZERO_PROFILE)
 static const struct device *emz_profile_dev;
+/* Recovery-test hook: emz_dma_recover() passes still to run as if the RX
+ * pool were empty, so the retry branch can be exercised on demand.
+ */
+static atomic_t emz_profile_recover_starve;
 #endif
 
 struct emaczero_tx_buffer {
@@ -172,25 +152,6 @@ struct emaczero_rx_buffer {
 	uint32_t stack_handoff_cycle;
 } __aligned(4);
 
-struct emaczero_rx_bd {
-	uint32_t nxtdesc;
-	uint32_t nxtdesc_msb;
-	uint32_t buffer_address;
-	uint32_t buffer_address_msb;
-	uint32_t reserved0;
-	uint32_t reserved1;
-	uint32_t control;
-	uint32_t status;
-	uint32_t app0;
-	uint32_t app1;
-	uint32_t app2;
-	uint32_t app3;
-	uint32_t app4;
-	uint32_t pad0;
-	uint32_t pad1;
-	uint32_t pad2;
-} __aligned(64);
-
 struct emaczero_rx_frag_ctx {
 	const struct device *dev;
 	struct emaczero_rx_buffer *rx;
@@ -202,10 +163,7 @@ struct emaczero_rx_copy_frag_ctx {
 
 struct emaczero_config {
 	uintptr_t base;
-	uintptr_t dma_base;
 	const struct device *dma;
-	unsigned int dma_rx_irq;
-	void (*direct_rx_irq_configure)(void);
 	k_thread_stack_t *rx_thread_stack;
 	size_t rx_thread_stack_size;
 	uint32_t speed;
@@ -230,21 +188,8 @@ struct emaczero_data {
 	 */
 	atomic_t dma_recover_pending;
 	struct k_work_delayable dma_recover_work;
-	uint32_t tx_bd_inflight;
 	unsigned int rx_dma_inflight;
 	uint32_t last_dma_callback_cycle;
-	struct emaczero_rx_bd *tx_bd_ring;
-	struct emaczero_rx_bd *rx_bd_ring;
-	struct emaczero_rx_buffer *rx_bd_buffer[EMZ_DMA_BUFFER_COUNT_RX];
-	size_t rx_bd_consume_index;
-	size_t rx_bd_refill_index;
-	size_t rx_bd_tail_index;
-	uint32_t rx_bd_posted;
-	bool rx_direct_ring_started;
-	struct k_spinlock rx_direct_lock;
-	struct k_work_delayable rx_direct_poll_work;
-	struct k_work rx_direct_recover_work;
-	atomic_t rx_direct_recover_pending;
 	atomic_t rx_free_count;
 	atomic_t rx_dma_fifo_count;
 	atomic_t rx_ready_fifo_count;
@@ -394,18 +339,9 @@ static inline void emz_r7_add(enum emz_r7_region slot, uint32_t cycles)
 static inline void emz_r7_init_magic(void) {}
 #endif
 
-static inline void emz_r7_note_lock(void)
-{
-#if defined(CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION)
-	emaczero_perf_stats.r7_lock_acquisitions++;
-#endif
-}
-
 #if CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0
 static uintptr_t emz_dma_mem_cursor;
 static uintptr_t emz_dma_mem_end;
-static uintptr_t emz_sg_mem_cursor;
-static uintptr_t emz_sg_mem_end;
 
 static void emz_dma_mem_reset(void)
 {
@@ -413,18 +349,6 @@ static void emz_dma_mem_reset(void)
 	emz_dma_mem_end = CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE +
 			  CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE -
 			  EMACZERO_PERF_STATS_DMA_RESERVED;
-}
-
-static void emz_sg_mem_reset(void)
-{
-#if CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE != 0
-	emz_sg_mem_cursor = CONFIG_ETH_EMACZERO_SG_MEMORY_BASE;
-	emz_sg_mem_end = CONFIG_ETH_EMACZERO_SG_MEMORY_BASE +
-			 CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE;
-#else
-	emz_sg_mem_cursor = 0u;
-	emz_sg_mem_end = 0u;
-#endif
 }
 
 static void *emz_dma_mem_alloc(size_t align, size_t size)
@@ -440,32 +364,6 @@ static void *emz_dma_mem_alloc(size_t align, size_t size)
 	return (void *)ptr;
 }
 
-static void *emz_sg_mem_alloc(size_t align, size_t size)
-{
-#if CONFIG_ETH_EMACZERO_SG_MEMORY_SIZE != 0
-	uintptr_t ptr = ROUND_UP(emz_sg_mem_cursor, align);
-	uintptr_t next = ROUND_UP(ptr + size, align);
-
-	if (ptr == 0u || next > emz_sg_mem_end || next < ptr) {
-		return NULL;
-	}
-
-	emz_sg_mem_cursor = next;
-	return (void *)ptr;
-#else
-	return emz_dma_mem_alloc(align, size);
-#endif
-}
-
-void *dma_xilinx_axi_dma_sg_descriptor_alloc(size_t align, size_t size)
-{
-	return emz_sg_mem_alloc(align, size);
-}
-
-void dma_xilinx_axi_dma_sg_descriptor_free(void *ptr)
-{
-	ARG_UNUSED(ptr);
-}
 #endif
 
 #define EMZ_PROFILE_COUNTER(counter) emaczero_profile_counter(counter)
@@ -532,16 +430,6 @@ static void emz_perf_update_pool_inflight(struct emaczero_data *data)
 	emaczero_perf_stats.rx_pool_inflight_current = inflight;
 	emz_perf_set_max_u32(&emaczero_perf_stats.rx_pool_inflight_high, inflight);
 }
-
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-static void emz_perf_set_bd_available(struct emaczero_data *data)
-{
-	uint32_t available = EMZ_DMA_BUFFER_COUNT_RX - data->rx_bd_posted;
-
-	emaczero_perf_stats.rx_bd_available_current = available;
-	emz_perf_set_min_u32(&emaczero_perf_stats.rx_bd_available_min, available);
-}
-#endif
 
 static void emz_perf_note_dwell(uint32_t cycles)
 {
@@ -901,707 +789,6 @@ static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint3
 	k_sem_give(&data->tx_slot_sem);
 }
 
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-static uint32_t emz_dma_read(const struct emaczero_config *cfg, uint32_t reg)
-{
-	return sys_read32(cfg->dma_base + reg);
-}
-
-static void emz_dma_write(const struct emaczero_config *cfg, uint32_t reg, uint32_t val)
-{
-	sys_write32(val, cfg->dma_base + reg);
-}
-
-static uint32_t emz_tx_direct_dmacr(void)
-{
-	return EMZ_AXI_DMA_DMACR_RS | EMZ_AXI_DMA_DMACR_IOC_IRQEN |
-	       EMZ_AXI_DMA_DMACR_DLY_IRQEN | EMZ_AXI_DMA_DMACR_ERR_IRQEN |
-	       (CONFIG_DMA_XILINX_AXI_DMA_INTERRUPT_THRESHOLD <<
-		EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT) |
-	       (CONFIG_DMA_XILINX_AXI_DMA_INTERRUPT_TIMEOUT <<
-		EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
-}
-
-static bool emz_rx_direct_enabled(const struct emaczero_config *cfg)
-{
-	return cfg->dma_base != 0u;
-}
-
-static int emz_tx_direct_start(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	uintptr_t bd_addr;
-
-	data->tx_bd_ring = emz_sg_mem_alloc(64u,
-					     sizeof(struct emaczero_rx_bd) *
-					     EMZ_DMA_BUFFER_COUNT_TX);
-	if (data->tx_bd_ring == NULL) {
-		return -ENOMEM;
-	}
-
-	memset((void *)data->tx_bd_ring, 0,
-	       sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_TX);
-	data->tx_populated_buffer_index = 0u;
-	data->tx_completed_buffer_index = 0u;
-	data->tx_bd_inflight = 0u;
-	for (size_t i = 0; i < EMZ_DMA_BUFFER_COUNT_TX; i++) {
-		uintptr_t next = (uintptr_t)&data->tx_bd_ring[(i + 1u) %
-							      EMZ_DMA_BUFFER_COUNT_TX];
-
-		__ASSERT(((uintptr_t)&data->tx_bd_ring[i] & 0x3fu) == 0u,
-			 "emacZero direct TX BD is not 64-byte aligned");
-		data->tx_bd_ring[i].nxtdesc = (uint32_t)next;
-	}
-	bd_addr = (uintptr_t)data->tx_bd_ring;
-	emz_dma_cache_flush((const void *)data->tx_bd_ring,
-			    sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_TX);
-
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_DMASR, 0xffffffffu);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_CURDESC, (uint32_t)bd_addr);
-	barrier_dmem_fence_full();
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_DMACR, emz_tx_direct_dmacr());
-	barrier_dmem_fence_full();
-	data->dma_is_configured_tx = true;
-	return 0;
-}
-
-static uint32_t emz_tx_direct_reclaim(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	uint32_t reclaimed = 0u;
-
-	while (data->tx_bd_inflight > 0u) {
-		size_t index = data->tx_completed_buffer_index;
-		volatile struct emaczero_rx_bd *bd = &data->tx_bd_ring[index];
-		uint32_t status;
-
-		emz_dma_cache_invd((const void *)bd, sizeof(*bd));
-		status = bd->status;
-		if ((status & (EMZ_AXI_DMA_BD_STATUS_COMPLETE |
-			       EMZ_AXI_DMA_BD_STATUS_ERROR_MASK)) == 0u) {
-			break;
-		}
-
-		bd->control = 0u;
-		bd->status = 0u;
-		emz_dma_cache_flush((const void *)bd, sizeof(*bd));
-		data->tx_completed_buffer_index =
-			(index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
-		data->tx_bd_inflight--;
-		reclaimed++;
-
-		if ((status & EMZ_AXI_DMA_BD_STATUS_ERROR_MASK) != 0u) {
-			emaczero_perf_stats.tx_dma_error++;
-			eth_stats_update_errors_tx(data->iface);
-		} else {
-			emaczero_perf_stats.tx_dma_completed++;
-		}
-	}
-
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_DMASR,
-		      EMZ_AXI_DMA_DMASR_IRQ_ALL | EMZ_AXI_DMA_DMASR_ERROR_MASK);
-	return reclaimed;
-}
-
-static int emz_tx_direct_reserve(const struct device *dev, size_t *descriptor)
-{
-	struct emaczero_data *data = dev->data;
-
-	if (data->tx_bd_ring == NULL) {
-		emaczero_perf_stats.tx_setup_no_dma++;
-		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
-		return -ENODEV;
-	}
-
-	(void)emz_tx_direct_reclaim(dev);
-	for (uint32_t wait_us = 0u; data->tx_bd_inflight >= EMZ_DMA_BUFFER_COUNT_TX;
-	     wait_us++) {
-		if (wait_us >= 2000u) {
-			emaczero_perf_stats.tx_setup_busy++;
-			emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
-			return -ENOSPC;
-		}
-		k_busy_wait(1);
-		(void)emz_tx_direct_reclaim(dev);
-	}
-
-	*descriptor = data->tx_populated_buffer_index;
-	return 0;
-}
-
-static int emz_setup_dma_tx_direct_transfer(const struct device *dev, size_t len)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	size_t current_descriptor = data->tx_populated_buffer_index;
-	volatile struct emaczero_rx_bd *bd;
-
-	if (data->tx_bd_ring == NULL) {
-		emaczero_perf_stats.tx_setup_no_dma++;
-		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
-		return -ENODEV;
-	}
-	if (data->tx_bd_inflight >= EMZ_DMA_BUFFER_COUNT_TX) {
-		emaczero_perf_stats.tx_setup_busy++;
-		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
-		return -ENOSPC;
-	}
-	bd = &data->tx_bd_ring[current_descriptor];
-
-	emaczero_perf_stats.tx_setup_calls++;
-	emaczero_perf_stats.tx_last_len = len;
-	emz_dma_cache_flush(data->tx_buffer[current_descriptor].bytes, len);
-
-	bd->buffer_address = (uint32_t)(uintptr_t)data->tx_buffer[current_descriptor].bytes;
-	bd->buffer_address_msb = 0u;
-	bd->control = EMZ_AXI_DMA_BD_CTRL_SOF | EMZ_AXI_DMA_BD_CTRL_EOF |
-		      (len & EMZ_AXI_DMA_BD_CTRL_LEN_MASK);
-	bd->app0 = 0u;
-	bd->app1 = 0u;
-	bd->app2 = 0u;
-	bd->app3 = 0u;
-	bd->app4 = 0u;
-	bd->status = 0u;
-	emz_dma_cache_flush((const void *)bd, sizeof(*bd));
-
-	barrier_dmem_fence_full();
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_TAILDESC, (uint32_t)(uintptr_t)bd);
-	data->tx_populated_buffer_index =
-		(current_descriptor + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
-	data->tx_bd_inflight++;
-	emaczero_perf_stats.tx_dma_start_ok++;
-	emaczero_perf_stats.tx_last_ret = 0u;
-	return 0;
-}
-
-static void emz_rx_direct_program_bd(struct emaczero_data *data, size_t index,
-				     struct emaczero_rx_buffer *rx)
-{
-	volatile struct emaczero_rx_bd *bd = &data->rx_bd_ring[index];
-
-	emz_dma_cache_flush(rx->bytes, EMZ_ETH_BUFFER_SIZE);
-	emz_dma_cache_invd(rx->bytes, EMZ_ETH_BUFFER_SIZE);
-
-	/* Xilinx AXI DMA SG invariant: every BD from hardware CURDESC through
-	 * TAILDESC inclusive must have a valid buffer pointer and Cmplt=0. Fill
-	 * buffer/control first, clear status second, publish by writing TAILDESC
-	 * last. Reordering these writes can make S2MM halt or fetch a stale BD.
-	 */
-	bd->buffer_address = (uint32_t)(uintptr_t)rx->bytes;
-	bd->buffer_address_msb = 0u;
-	bd->control = EMZ_ETH_BUFFER_SIZE & EMZ_AXI_DMA_BD_CTRL_LEN_MASK;
-	bd->app0 = 0u;
-	bd->app1 = 0u;
-	bd->app2 = 0u;
-	bd->app3 = 0u;
-	bd->app4 = 0u;
-	bd->status = 0u;
-	data->rx_bd_buffer[index] = rx;
-	emz_dma_cache_flush((const void *)&data->rx_bd_ring[index],
-			    sizeof(data->rx_bd_ring[index]));
-}
-
-/* Publish the current refill position to S2MM TAILDESC.
- *
- * The index read and the register write must both happen under
- * rx_direct_lock. S2MM stops only when CURDESC reaches TAILDESC, so a
- * TAILDESC write that lands *behind* the engine re-opens BDs the driver has
- * already consumed and whose buffers now belong to the net stack or the free
- * FIFO — the engine would DMA over live data. Reading the index outside the
- * lock allows exactly that: a preempted thread can overwrite a newer tail
- * published by the ISR.
- */
-static void emz_rx_direct_update_tail(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	k_spinlock_key_t key;
-	uint32_t r7_tail_start;
-	size_t index;
-
-	key = k_spin_lock(&data->rx_direct_lock);
-	if (!data->rx_direct_ring_started) {
-		k_spin_unlock(&data->rx_direct_lock, key);
-		return;
-	}
-	index = data->rx_bd_tail_index;
-
-	r7_tail_start = k_cycle_get_32();
-	barrier_dmem_fence_full();
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
-		      (uint32_t)(uintptr_t)&data->rx_bd_ring[index]);
-	k_spin_unlock(&data->rx_direct_lock, key);
-
-	emz_r7_add(EMZ_R7_TAIL_CSR, emz_r7_elapsed(r7_tail_start, k_cycle_get_32()));
-	emaczero_perf_stats.rx_bd_tail_updates++;
-}
-
-static int emz_rx_direct_post_one(const struct device *dev, struct emaczero_rx_buffer *rx)
-{
-	struct emaczero_data *data = dev->data;
-	size_t index;
-	k_spinlock_key_t key;
-	uint32_t r7_post_start = k_cycle_get_32();
-
-	key = k_spin_lock(&data->rx_direct_lock);
-	emz_r7_note_lock();
-	index = data->rx_bd_refill_index;
-	if (data->rx_bd_buffer[index] != NULL) {
-		k_spin_unlock(&data->rx_direct_lock, key);
-		emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
-		emaczero_perf_stats.rx_bd_no_free++;
-		return 0;
-	}
-
-	if (data->rx_dma_inflight >= EMZ_DMA_RX_MAX_INFLIGHT) {
-		k_spin_unlock(&data->rx_direct_lock, key);
-		emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
-		return 0;
-	}
-	data->rx_dma_inflight++;
-	emz_perf_set_max_u32(&emaczero_perf_stats.rx_max_dma_inflight,
-			      data->rx_dma_inflight);
-	EMZ_PROFILE_MAX(EMACZERO_PROFILE_MAX_RX_DMA_INFLIGHT, data->rx_dma_inflight);
-
-	emz_rx_direct_program_bd(data, index, rx);
-	data->rx_bd_posted++;
-	emz_perf_set_bd_available(data);
-	emaczero_perf_stats.rx_bd_refilled++;
-
-	data->rx_bd_refill_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_RX;
-	data->rx_bd_tail_index = index;
-	k_spin_unlock(&data->rx_direct_lock, key);
-	emz_r7_add(EMZ_R7_LOCK_POST, emz_r7_elapsed(r7_post_start, k_cycle_get_32()));
-
-	atomic_inc(&data->rx_dma_fifo_count);
-	emz_perf_update_pool_inflight(data);
-	return 1;
-}
-
-static int emz_rx_direct_refill(const struct device *dev)
-{
-	struct emaczero_data *data = dev->data;
-	int queued = 0;
-
-	while (true) {
-		struct emaczero_rx_buffer *rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
-		int ret;
-
-		if (rx == NULL) {
-			emaczero_perf_stats.rx_refill_no_free++;
-			emaczero_perf_stats.rx_bd_no_free++;
-			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_NO_FREE);
-			break;
-		}
-
-		ret = emz_rx_direct_post_one(dev, rx);
-		if (ret <= 0) {
-			k_fifo_put(&data->rx_free_fifo, rx);
-			break;
-		}
-
-		atomic_dec(&data->rx_free_count);
-		emz_perf_update_pool_inflight(data);
-		emz_perf_set_min_u32(&emaczero_perf_stats.rx_min_free,
-				      (uint32_t)atomic_get(&data->rx_free_count));
-		EMZ_PROFILE_MIN(EMACZERO_PROFILE_MIN_RX_FREE, (uint32_t)atomic_get(&data->rx_free_count));
-		queued++;
-		emaczero_perf_stats.rx_refill_queued++;
-		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_QUEUED);
-	}
-
-	if (queued > 0) {
-		emz_rx_direct_update_tail(dev);
-	}
-
-	return queued;
-}
-
-/* Queue one ring rebuild; collapses repeated requests (e.g. the interrupt
- * storm from a halted engine) into a single pass.
- */
-static void emz_rx_direct_request_recover(struct emaczero_data *data)
-{
-	if (atomic_cas(&data->rx_direct_recover_pending, 0, 1)) {
-		(void)k_work_submit(&data->rx_direct_recover_work);
-	}
-}
-
-static void emz_rx_direct_poll(const struct device *dev)
-{
-	struct emaczero_data *data = dev->data;
-	uint32_t completed = 0u;
-
-	while (true) {
-		size_t index;
-		volatile struct emaczero_rx_bd *bd;
-		struct emaczero_rx_buffer *rx;
-		uint32_t status;
-		k_spinlock_key_t key;
-		uint32_t r7_lock_start;
-
-		r7_lock_start = k_cycle_get_32();
-		key = k_spin_lock(&data->rx_direct_lock);
-		emz_r7_note_lock();
-		index = data->rx_bd_consume_index;
-		bd = &data->rx_bd_ring[index];
-		rx = data->rx_bd_buffer[index];
-		emz_dma_cache_invd((const void *)&data->rx_bd_ring[index],
-				   sizeof(data->rx_bd_ring[index]));
-		status = bd->status;
-		if ((status & (EMZ_AXI_DMA_BD_STATUS_COMPLETE |
-			       EMZ_AXI_DMA_BD_STATUS_ERROR_MASK)) == 0u) {
-			k_spin_unlock(&data->rx_direct_lock, key);
-			emz_r7_add(EMZ_R7_LOCK_CONSUME,
-				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
-			break;
-		}
-
-		if (rx == NULL) {
-			/* Consumed BDs are retired with status cleared (below), and
-			 * program_bd records the buffer before TAILDESC can expose
-			 * the slot, so Cmplt on a slot with no buffer means S2MM
-			 * wrote a BD it never owned. The ring's ownership state is
-			 * no longer trustworthy: skipping the slot would move the
-			 * consume index past refill and strand in-flight buffers.
-			 * Stop here and let the recovery pass rebuild the ring.
-			 */
-			k_spin_unlock(&data->rx_direct_lock, key);
-			emz_r7_add(EMZ_R7_LOCK_CONSUME,
-				   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
-			emaczero_perf_stats.rx_bd_errors++;
-			emz_rx_direct_request_recover(data);
-			break;
-		}
-
-		/* Retire the slot: clear Cmplt so a drained ring (consume ==
-		 * refill) reads as idle rather than as a stale completion. The
-		 * slot sits behind CURDESC, so the engine no longer owns it.
-		 */
-		bd->status = 0u;
-		emz_dma_cache_flush((const void *)&data->rx_bd_ring[index],
-				    sizeof(data->rx_bd_ring[index]));
-		data->rx_bd_buffer[index] = NULL;
-		data->rx_bd_posted--;
-		emz_perf_set_bd_available(data);
-		data->rx_bd_consume_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_RX;
-
-		if (data->rx_dma_inflight > 0u) {
-			data->rx_dma_inflight--;
-		}
-		k_spin_unlock(&data->rx_direct_lock, key);
-		emz_r7_add(EMZ_R7_LOCK_CONSUME,
-			   emz_r7_elapsed(r7_lock_start, k_cycle_get_32()));
-		atomic_dec(&data->rx_dma_fifo_count);
-
-		rx->status = (status & EMZ_AXI_DMA_BD_STATUS_ERROR_MASK) != 0u ? -EFAULT :
-			     DMA_STATUS_COMPLETE;
-		/* The transferred-length field is 26 bits, so a corrupt or stale
-		 * status word can claim megabytes. Clamp before anyone sees it:
-		 * the interceptor below runs in ISR context against a
-		 * 1518-byte buffer and does no bounds check of its own.
-		 */
-		rx->len = status & EMZ_AXI_DMA_BD_STATUS_LEN_MASK;
-		if (rx->len > EMZ_ETH_BUFFER_SIZE) {
-			rx->len = EMZ_ETH_BUFFER_SIZE;
-			rx->status = -EFAULT;
-			emaczero_perf_stats.rx_bd_errors++;
-		}
-		emz_dma_cache_invd(rx->bytes, rx->len);
-		if (rx->status == DMA_STATUS_COMPLETE && data->rx_interceptor != NULL &&
-		    data->rx_interceptor(rx->bytes, rx->len, data->rx_interceptor_user_data)) {
-			emz_release_rx_buffer(dev, rx);
-			emaczero_perf_stats.dma_callbacks++;
-			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
-			emaczero_perf_stats.rx_bd_hw_completed++;
-			completed++;
-			continue;
-		}
-#if defined(CONFIG_ETH_EMACZERO_PROFILE)
-		rx->dma_done_cycle = k_cycle_get_32();
-		if (emaczero_profile_get_mode() == EMACZERO_PROFILE_MODE_DROP_AFTER_DMA &&
-		    !emaczero_profile_should_keep_control(rx->bytes, rx->len)) {
-			bool rx_error = rx->status < 0;
-
-			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_DROP_AFTER_DMA);
-			emz_release_rx_buffer(dev, rx);
-			emaczero_perf_stats.dma_callbacks++;
-			EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
-			emaczero_perf_stats.rx_bd_hw_completed++;
-			if (rx_error) {
-				emaczero_perf_stats.dma_errors++;
-				emaczero_perf_stats.rx_bd_errors++;
-			}
-			completed++;
-			continue;
-		}
-#endif
-		{
-			uint32_t r7_enq_start = k_cycle_get_32();
-			atomic_inc(&data->rx_ready_fifo_count);
-			k_fifo_put(&data->rx_ready_fifo, rx);
-			emz_r7_add(EMZ_R7_READY_ENQUEUE,
-				   emz_r7_elapsed(r7_enq_start, k_cycle_get_32()));
-		}
-		emz_perf_update_pool_inflight(data);
-
-		emaczero_perf_stats.dma_callbacks++;
-		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
-		emaczero_perf_stats.rx_bd_hw_completed++;
-		if (rx->status < 0) {
-			emaczero_perf_stats.dma_errors++;
-			emaczero_perf_stats.rx_bd_errors++;
-		}
-		completed++;
-	}
-
-	emz_perf_set_max_u32(&emaczero_perf_stats.rx_poll_completed_max, completed);
-	if (completed != 0u) {
-		(void)emz_refill_dma_rx(dev);
-	}
-}
-
-static void emz_rx_direct_poll_work_handler(struct k_work *work)
-{
-	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	struct emaczero_data *data =
-		CONTAINER_OF(dwork, struct emaczero_data, rx_direct_poll_work);
-
-	if (data->rx_direct_ring_started && data->dev != NULL) {
-		emz_rx_direct_poll(data->dev);
-	}
-
-	(void)k_work_reschedule(&data->rx_direct_poll_work, K_MSEC(1));
-}
-
-/* Reset S2MM and (re)start it on the current ring. Callers own
- * irq_disable/irq_enable. RS alone does not fetch in SG mode; the TAILDESC
- * write does, so it is only issued when at least one BD is posted.
- */
-static void emz_rx_direct_arm(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	k_spinlock_key_t key;
-	uint32_t dmacr;
-
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
-	k_busy_wait(10);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_CURDESC,
-		      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_consume_index]);
-	barrier_dmem_fence_full();
-	/* Coalesce IOC interrupts across up to 32 completions to amortise ISR
-	 * cost. Enable Dly_IrqEn with a short delay so bursts smaller than the
-	 * threshold still get serviced quickly. IRQDelay unit = 125 SG cycles;
-	 * at 81.25 MHz that is ~1.54 us, so 32 = ~50 us of idle before wakeup.
-	 */
-	dmacr = EMZ_AXI_DMA_DMACR_RS | EMZ_AXI_DMA_DMACR_IOC_IRQEN |
-		EMZ_AXI_DMA_DMACR_DLY_IRQEN | EMZ_AXI_DMA_DMACR_ERR_IRQEN |
-		(32u << EMZ_AXI_DMA_DMACR_IRQTHRESH_SHIFT) |
-		(32u << EMZ_AXI_DMA_DMACR_IRQDELAY_SHIFT);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, dmacr);
-	barrier_dmem_fence_full();
-
-	/* An empty ring leaves tail_index on an unprogrammed BD, and CURDESC ==
-	 * TAILDESC still processes that one BD: the engine would fetch an
-	 * invalid descriptor, halt, and re-trigger recovery until a buffer
-	 * came back. Arm without a tail instead; the first refill publishes it
-	 * through emz_rx_direct_update_tail(). Checking posted under the lock
-	 * also catches a refill that ran while ring_started was still false.
-	 */
-	key = k_spin_lock(&data->rx_direct_lock);
-	data->rx_direct_ring_started = true;
-	if (data->rx_bd_posted > 0u) {
-		emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_TAILDESC,
-			      (uint32_t)(uintptr_t)&data->rx_bd_ring[data->rx_bd_tail_index]);
-		emaczero_perf_stats.rx_bd_tail_updates++;
-	}
-	k_spin_unlock(&data->rx_direct_lock, key);
-}
-
-/* Rebuild the RX ring after S2MM halted on a DMA/SG error.
- *
- * A halted engine never restarts on its own, so without this the first
- * DMADecErr/DMASlvErr takes RX down until reboot. Runs from the system work
- * queue, not the ISR: the reset sequence busy-waits.
- */
-static void emz_rx_direct_recover(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	struct emaczero_rx_buffer *orphans[EMZ_DMA_BUFFER_COUNT_RX];
-	size_t orphan_count = 0u;
-	k_spinlock_key_t key;
-
-	irq_disable(cfg->dma_rx_irq);
-
-	/* Stop the engine before touching the ring: a halted S2MM may still be
-	 * mid-writeback on the BD it faulted on.
-	 */
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMACR, EMZ_AXI_DMA_DMACR_RESET);
-	k_busy_wait(10);
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR, 0xffffffffu);
-	barrier_dmem_fence_full();
-
-	key = k_spin_lock(&data->rx_direct_lock);
-	data->rx_direct_ring_started = false;
-	for (size_t i = 0; i < EMZ_DMA_BUFFER_COUNT_RX; i++) {
-		if (data->rx_bd_buffer[i] != NULL) {
-			orphans[orphan_count] = data->rx_bd_buffer[i];
-			orphan_count++;
-			data->rx_bd_buffer[i] = NULL;
-		}
-		data->rx_bd_ring[i].status = 0u;
-		data->rx_bd_ring[i].control = 0u;
-	}
-	data->rx_bd_consume_index = 0u;
-	data->rx_bd_refill_index = 0u;
-	data->rx_bd_tail_index = 0u;
-	data->rx_bd_posted = 0u;
-	data->rx_dma_inflight = 0u;
-	emz_perf_set_bd_available(data);
-	k_spin_unlock(&data->rx_direct_lock, key);
-
-	emz_dma_cache_flush((const void *)data->rx_bd_ring,
-			    sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_RX);
-
-	/* Return every buffer the engine still owned to the free pool. Done
-	 * outside the lock and without emz_release_rx_buffer(), which would
-	 * re-enter the refill path mid-rebuild.
-	 */
-	atomic_sub(&data->rx_dma_fifo_count, (atomic_val_t)orphan_count);
-	for (size_t i = 0; i < orphan_count; i++) {
-		atomic_inc(&data->rx_free_count);
-		k_fifo_put(&data->rx_free_fifo, orphans[i]);
-	}
-	emz_perf_update_pool_inflight(data);
-
-	/* Repopulate before arming. If the pool is momentarily empty the ring
-	 * comes up bare and untailed; the next buffer release refills and
-	 * publishes the tail through the normal path.
-	 */
-	(void)emz_rx_direct_refill(dev);
-	emz_rx_direct_arm(dev);
-	irq_enable(cfg->dma_rx_irq);
-
-	emaczero_perf_stats.rx_dma_recoveries++;
-	atomic_clear(&data->rx_direct_recover_pending);
-}
-
-static void emz_rx_direct_recover_work_handler(struct k_work *work)
-{
-	struct emaczero_data *data =
-		CONTAINER_OF(work, struct emaczero_data, rx_direct_recover_work);
-
-	if (data->dev != NULL) {
-		emz_rx_direct_recover(data->dev);
-	} else {
-		atomic_clear(&data->rx_direct_recover_pending);
-	}
-}
-
-static void emz_rx_direct_isr(const void *arg)
-{
-	const struct device *dev = arg;
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	uint32_t now_cycle = k_cycle_get_32();
-	uint32_t r7_isr_start = now_cycle;
-	uint32_t dmasr = emz_dma_read(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR);
-
-	emaczero_perf_stats.rx_irq_count++;
-	emz_perf_note_dma_callback_gap(data, now_cycle);
-	if ((dmasr & EMZ_AXI_DMA_DMASR_ERROR_MASK) != 0u) {
-		emaczero_perf_stats.dma_errors++;
-		emaczero_perf_stats.rx_bd_errors++;
-
-		/* An error halts S2MM (RS clears). Clearing the status bits does
-		 * not restart it, so hand off to the work queue for a full ring
-		 * rebuild. The flag collapses the interrupt storm a halted
-		 * engine produces into a single recovery pass.
-		 */
-		if ((dmasr & EMZ_AXI_DMA_DMASR_HALTED) != 0u) {
-			emz_rx_direct_request_recover(data);
-		}
-	}
-
-	/* Acknowledge the edge-causing IRQ before walking completed BDs. At
-	 * high packet rates, clearing DMASR after polling can erase a completion
-	 * that arrived during the poll/refill window and leave S2MM parked at the
-	 * published tail until another interrupt source happens to fire.
-	 */
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_S2MM_DMASR,
-		      dmasr & (EMZ_AXI_DMA_DMASR_IRQ_ALL |
-			       EMZ_AXI_DMA_DMASR_ERROR_MASK));
-	barrier_dmem_fence_full();
-	emz_rx_direct_poll(dev);
-	barrier_dmem_fence_full();
-	emz_r7_add(EMZ_R7_ISR_TOTAL, emz_r7_elapsed(r7_isr_start, k_cycle_get_32()));
-}
-
-static int emz_rx_direct_start(const struct device *dev)
-{
-	const struct emaczero_config *cfg = dev->config;
-	struct emaczero_data *data = dev->data;
-	int queued;
-
-	data->rx_bd_ring = emz_sg_mem_alloc(64u,
-					     sizeof(struct emaczero_rx_bd) *
-					     EMZ_DMA_BUFFER_COUNT_RX);
-	if (data->rx_bd_ring == NULL) {
-		return -ENOMEM;
-	}
-	memset((void *)data->rx_bd_ring, 0,
-	       sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_RX);
-	for (size_t i = 0; i < EMZ_DMA_BUFFER_COUNT_RX; i++) {
-		uintptr_t next = (uintptr_t)&data->rx_bd_ring[(i + 1u) % EMZ_DMA_BUFFER_COUNT_RX];
-
-		__ASSERT(((uintptr_t)&data->rx_bd_ring[i] & 0x3fu) == 0u,
-			 "emacZero direct RX BD is not 64-byte aligned");
-		data->rx_bd_ring[i].nxtdesc = (uint32_t)next;
-	}
-	emz_dma_cache_flush((const void *)data->rx_bd_ring,
-			    sizeof(struct emaczero_rx_bd) * EMZ_DMA_BUFFER_COUNT_RX);
-
-	emaczero_perf_stats.rx_bd_available_min = UINT32_MAX;
-	emz_perf_set_bd_available(data);
-
-	queued = emz_rx_direct_refill(dev);
-	if (queued <= 0) {
-		return queued < 0 ? queued : -ENOSPC;
-	}
-
-	irq_disable(cfg->dma_rx_irq);
-	emz_rx_direct_arm(dev);
-	irq_enable(cfg->dma_rx_irq);
-	(void)k_work_schedule(&data->rx_direct_poll_work, K_MSEC(1));
-	return queued;
-}
-#else
-static bool emz_rx_direct_enabled(const struct emaczero_config *cfg)
-{
-	ARG_UNUSED(cfg);
-	return false;
-}
-
-static int emz_setup_dma_tx_direct_transfer(const struct device *dev, size_t len)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(len);
-	return -ENOTSUP;
-}
-
-static int emz_tx_direct_reserve(const struct device *dev, size_t *descriptor)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(descriptor);
-	return -ENOTSUP;
-}
-#endif
-
 /* Post one buffer to S2MM without publishing it: the descriptor only becomes
  * visible to the engine at the next dma_start() (TAILDESC write). Caller holds
  * rx_lock so the descriptor and the rx_dma_fifo entry naming its buffer appear
@@ -1671,12 +858,6 @@ static int emz_refill_dma_rx(const struct device *dev)
 
 	EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_RX_REFILL_CALLS);
 	emaczero_perf_stats.rx_refill_calls++;
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-	if (emz_rx_direct_enabled(cfg)) {
-		queued = emz_rx_direct_refill(dev);
-		goto out;
-	}
-#endif
 	if (cfg->dma == NULL) {
 		return -ENODEV;
 	}
@@ -1738,9 +919,6 @@ static int emz_refill_dma_rx(const struct device *dev)
 		return err;
 	}
 
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-out:
-#endif
 	emz_perf_set_max_u32(&emaczero_perf_stats.rx_refill_queued_max, (uint32_t)queued);
 	if (queued > 0) {
 		uint32_t refill_cycles = k_cycle_get_32() - start_cycle;
@@ -1753,6 +931,17 @@ out:
 	}
 
 	return queued;
+}
+
+static bool emz_recover_starved(void)
+{
+#if defined(CONFIG_ETH_EMACZERO_PROFILE)
+	if (atomic_get(&emz_profile_recover_starve) > 0) {
+		atomic_dec(&emz_profile_recover_starve);
+		return true;
+	}
+#endif
+	return false;
 }
 
 /* Rebuild both DMA channels after either one reported a halt.
@@ -1808,7 +997,7 @@ static void emz_dma_recover(const struct device *dev)
 	/* dma_config() needs a first buffer. If the stack holds all of them,
 	 * try again once some come back.
 	 */
-	rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
+	rx = emz_recover_starved() ? NULL : k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
 	if (rx == NULL) {
 		goto retry;
 	}
@@ -1832,6 +1021,7 @@ static void emz_dma_recover(const struct device *dev)
 	return;
 
 retry:
+	emaczero_perf_stats.dma_recover_retries++;
 	emz_perf_update_pool_inflight(data);
 	k_mutex_unlock(&data->tx_lock);
 	(void)k_work_reschedule(&data->dma_recover_work, K_MSEC(1));
@@ -1976,9 +1166,6 @@ static int emz_tx_reserve(const struct device *dev, size_t *descriptor)
 	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 
-	if (emz_rx_direct_enabled(cfg)) {
-		return emz_tx_direct_reserve(dev, descriptor);
-	}
 	if (cfg->dma == NULL) {
 		emaczero_perf_stats.tx_setup_no_dma++;
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-ENODEV;
@@ -2004,12 +1191,9 @@ static int emz_tx_reserve(const struct device *dev, size_t *descriptor)
 /* Hand back a slot from emz_tx_reserve() that was never posted. */
 static void emz_tx_unreserve(const struct device *dev)
 {
-	const struct emaczero_config *cfg = dev->config;
 	struct emaczero_data *data = dev->data;
 
-	if (!emz_rx_direct_enabled(cfg)) {
-		k_sem_give(&data->tx_slot_sem);
-	}
+	k_sem_give(&data->tx_slot_sem);
 }
 
 /* Post the frame in the slot claimed by emz_tx_reserve() and start MM2S. */
@@ -2019,10 +1203,6 @@ static int emz_setup_dma_tx_transfer(const struct device *dev, size_t len)
 	struct emaczero_data *data = dev->data;
 	size_t current_descriptor = data->tx_populated_buffer_index;
 	int ret;
-
-	if (emz_rx_direct_enabled(cfg)) {
-		return emz_setup_dma_tx_direct_transfer(dev, len);
-	}
 
 	emaczero_perf_stats.tx_setup_calls++;
 	emaczero_perf_stats.tx_last_len = len;
@@ -2216,9 +1396,10 @@ static int emz_profile_send_burst_dma(const struct device *dev, const uint8_t *f
  * When the engine reaches it the DataMover raises DMAIntErr and the channel
  * halts, the same state a bus error leaves, without writing any memory.
  * S2MM reaches it once every RX buffer posted ahead of it has been filled;
- * MM2S reaches it at once.
+ * MM2S reaches it at once. The recovery that follows then runs
+ * starve_passes times as if the RX pool were empty before it may finish.
  */
-int emaczero_profile_inject_dma_fault(bool tx)
+int emaczero_profile_inject_dma_fault(bool tx, uint32_t starve_passes)
 {
 	const struct device *dev = emz_profile_dev;
 	const struct emaczero_config *cfg;
@@ -2232,9 +1413,10 @@ int emaczero_profile_inject_dma_fault(bool tx)
 	}
 	cfg = dev->config;
 	data = dev->data;
-	if (cfg->dma == NULL || emz_rx_direct_enabled(cfg)) {
+	if (cfg->dma == NULL) {
 		return -ENOTSUP;
 	}
+	atomic_set(&emz_profile_recover_starve, (atomic_val_t)starve_passes);
 
 	if (tx) {
 		k_mutex_lock(&data->tx_lock, K_FOREVER);
@@ -2276,13 +1458,11 @@ int emaczero_profile_inject_dma_fault(bool tx)
 int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint32_t count)
 {
 	const struct device *dev = emz_profile_dev;
-	const struct emaczero_config *cfg;
 
 	if (dev == NULL) {
 		return -ENODEV;
 	}
 
-	cfg = dev->config;
 	if (len == 0u || len > EMZ_ETH_BUFFER_SIZE) {
 		emaczero_perf_stats.tx_last_ret = (uint32_t)-EMSGSIZE;
 		return -EMSGSIZE;
@@ -2290,90 +1470,7 @@ int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint
 	if (count == 0u) {
 		return 0;
 	}
-	if (!emz_rx_direct_enabled(cfg)) {
-		return emz_profile_send_burst_dma(dev, frame, len, count);
-	}
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-	struct emaczero_data *data = dev->data;
-	size_t first_descriptor;
-	size_t last_descriptor;
-	uint32_t queued = 0u;
-
-	if (count > EMZ_DMA_BUFFER_COUNT_TX) {
-		count = EMZ_DMA_BUFFER_COUNT_TX;
-	}
-
-	k_mutex_lock(&data->tx_lock, K_FOREVER);
-	(void)emz_tx_direct_reclaim(dev);
-	for (uint32_t wait_us = 0u; data->tx_bd_inflight != 0u; wait_us++) {
-		if (wait_us >= 10000u) {
-			k_mutex_unlock(&data->tx_lock);
-			emaczero_perf_stats.tx_setup_busy++;
-			emaczero_perf_stats.tx_last_ret = (uint32_t)-ENOSPC;
-			return -ENOSPC;
-		}
-		k_busy_wait(1);
-		(void)emz_tx_direct_reclaim(dev);
-	}
-
-	first_descriptor = data->tx_populated_buffer_index;
-	last_descriptor = first_descriptor;
-	memcpy(data->tx_buffer[first_descriptor].bytes, frame, len);
-	emz_dma_cache_flush(data->tx_buffer[first_descriptor].bytes, len);
-	emaczero_perf_stats.tx_last_len = len;
-	emaczero_perf_stats.tx_last_word0 =
-		emz_sample_word(data->tx_buffer[first_descriptor].bytes, len, 0u);
-	emaczero_perf_stats.tx_last_word1 =
-		emz_sample_word(data->tx_buffer[first_descriptor].bytes, len, 4u);
-	emaczero_perf_stats.tx_last_word2 =
-		emz_sample_word(data->tx_buffer[first_descriptor].bytes, len, 8u);
-	emaczero_perf_stats.tx_last_word3 =
-		emz_sample_word(data->tx_buffer[first_descriptor].bytes, len, 12u);
-	emaczero_perf_stats.tx_ext_len = (uint32_t)len;
-	{
-		volatile uint32_t *txw = &emaczero_perf_stats.tx_ext_word0;
-		for (size_t i = 0; i < 16u; i++) {
-			txw[i] = emz_sample_word(
-				data->tx_buffer[first_descriptor].bytes, len,
-				(size_t)(i * 4u));
-		}
-	}
-
-	while (queued < count) {
-		size_t index = data->tx_populated_buffer_index;
-		volatile struct emaczero_rx_bd *bd = &data->tx_bd_ring[index];
-
-		bd->buffer_address =
-			(uint32_t)(uintptr_t)data->tx_buffer[first_descriptor].bytes;
-		bd->buffer_address_msb = 0u;
-		bd->control = EMZ_AXI_DMA_BD_CTRL_SOF | EMZ_AXI_DMA_BD_CTRL_EOF |
-			      (len & EMZ_AXI_DMA_BD_CTRL_LEN_MASK);
-		bd->app0 = 0u;
-		bd->app1 = 0u;
-		bd->app2 = 0u;
-		bd->app3 = 0u;
-		bd->app4 = 0u;
-		bd->status = 0u;
-		emz_dma_cache_flush((const void *)bd, sizeof(*bd));
-
-		last_descriptor = index;
-		data->tx_populated_buffer_index = (index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
-		data->tx_bd_inflight++;
-		queued++;
-	}
-
-	barrier_dmem_fence_full();
-	emz_dma_write(cfg, EMZ_AXI_DMA_REG_MM2S_TAILDESC,
-		      (uint32_t)(uintptr_t)&data->tx_bd_ring[last_descriptor]);
-	emaczero_perf_stats.tx_send_calls += queued;
-	emaczero_perf_stats.tx_setup_calls += queued;
-	emaczero_perf_stats.tx_dma_start_ok += queued;
-	emaczero_perf_stats.tx_last_ret = 0u;
-	k_mutex_unlock(&data->tx_lock);
-	return (int)queued;
-#else
-	return -ENOTSUP;
-#endif
+	return emz_profile_send_burst_dma(dev, frame, len, count);
 }
 #endif
 
@@ -2780,16 +1877,11 @@ static int emz_init(const struct device *dev)
 	// not need to be known.
 	emaczero_perf_stats.rx_ext_magic = 0x52584542u; // "RXEB"
 	emaczero_perf_stats.tx_ext_magic = 0x54584542u; // "TXEB"
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-	k_work_init_delayable(&data->rx_direct_poll_work, emz_rx_direct_poll_work_handler);
-	k_work_init(&data->rx_direct_recover_work, emz_rx_direct_recover_work_handler);
-#endif
 	k_fifo_init(&data->rx_free_fifo);
 	k_fifo_init(&data->rx_dma_fifo);
 	k_fifo_init(&data->rx_ready_fifo);
 #if CONFIG_ETH_EMACZERO_DMA_MEMORY_SIZE != 0
 	emz_dma_mem_reset();
-	emz_sg_mem_reset();
 	emz_r7_init_magic();
 	for (size_t i = 0; i < ARRAY_SIZE(data->rx_buffer); i++) {
 		data->rx_buffer[i].bytes = emz_dma_mem_alloc(64u, EMZ_ETH_BUFFER_SIZE);
@@ -2848,29 +1940,7 @@ static int emz_init(const struct device *dev)
 	emz_write(cfg, EMZ_REG_IRQ_STATUS, EMZ_IRQ_ALL);
 
 	if (cfg->dma != NULL) {
-		int ret;
-
-		if (emz_rx_direct_enabled(cfg)) {
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-			if (cfg->direct_rx_irq_configure != NULL) {
-				cfg->direct_rx_irq_configure();
-			}
-			ret = emz_rx_direct_start(dev);
-			if (ret < 0) {
-				LOG_ERR("failed to queue RX DMA buffers: %d", ret);
-				return ret;
-			}
-			ret = emz_tx_direct_start(dev);
-			if (ret != 0) {
-				LOG_ERR("failed to start TX DMA channel: %d", ret);
-				return ret;
-			}
-#else
-			ret = -ENOTSUP;
-#endif
-		} else {
-			ret = emz_refill_dma_rx(dev);
-		}
+		int ret = emz_refill_dma_rx(dev);
 
 		if (ret < 0) {
 			LOG_ERR("failed to queue RX DMA buffers: %d", ret);
@@ -2895,22 +1965,6 @@ static const struct ethernet_api emz_api = {
 	.send = emz_send,
 };
 
-#if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
-#define EMZ_DIRECT_RX_IRQ_CONFIGURE(inst)						\
-	static void emz_direct_rx_irq_configure_##inst(void)				\
-	{										\
-		IRQ_CONNECT(DT_IRQN_BY_IDX(DT_INST_PHANDLE(inst, axistream_connected), 1),	\
-			    DT_IRQ_BY_IDX(DT_INST_PHANDLE(inst, axistream_connected), 1,	\
-					  priority),					\
-			    emz_rx_direct_isr, DEVICE_DT_INST_GET(inst), 0);		\
-	}
-#else
-#define EMZ_DIRECT_RX_IRQ_CONFIGURE(inst)						\
-	static void emz_direct_rx_irq_configure_##inst(void)				\
-	{										\
-	}
-#endif
-
 /* The packet-buffer window and the DMA's descriptor region must not overlap:
  * the bump allocator would hand out buffers on top of live descriptors.
  */
@@ -2929,21 +1983,13 @@ static const struct ethernet_api emz_api = {
 #define EMZ_INIT(inst)									\
 	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, axistream_connected),			\
 		    (EMZ_DMA_DESC_CHECK(DT_INST_PHANDLE(inst, axistream_connected))), ())\
-	EMZ_DIRECT_RX_IRQ_CONFIGURE(inst)						\
 	static struct emaczero_data emz_data_##inst;					\
 	K_THREAD_STACK_DEFINE(emz_rx_thread_stack_##inst, EMZ_RX_THREAD_STACK_SIZE);	\
 	static const struct emaczero_config emz_config_##inst = {			\
 		.base = DT_INST_REG_ADDR(inst),						\
-		.dma_base = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, axistream_connected),\
-					(DT_REG_ADDR(DT_INST_PHANDLE(inst, axistream_connected))),\
-					(0)),						\
 		.dma = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, axistream_connected),	\
 				   (DEVICE_DT_GET(DT_INST_PHANDLE(inst, axistream_connected))),\
 				   (NULL)),						\
-		.dma_rx_irq = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, axistream_connected),\
-					  (DT_IRQN_BY_IDX(DT_INST_PHANDLE(inst, axistream_connected), 1)),\
-					  (0)),						\
-		.direct_rx_irq_configure = emz_direct_rx_irq_configure_##inst,		\
 		.rx_thread_stack = emz_rx_thread_stack_##inst,			\
 		.rx_thread_stack_size = K_THREAD_STACK_SIZEOF(emz_rx_thread_stack_##inst),\
 		.speed = DT_INST_PROP_OR(inst, link_speed, 100),			\

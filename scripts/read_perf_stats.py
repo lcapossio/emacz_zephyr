@@ -16,6 +16,10 @@ from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
 
+# Must match EMACZERO_PERF_STATS_VERSION in eth_emaczero_profile.h. FIELDS
+# mirrors that layout, so any other version would be read at wrong offsets.
+PERF_STATS_VERSION = 18
+
 FIELDS = (
     ("magic", "u32"),
     ("version", "u32"),
@@ -56,15 +60,7 @@ FIELDS = (
     ("rx_refill_cycles_max", "u32"),
     ("rx_refill_cycles_ge_1ms", "u32"),
     ("rx_refill_queued_max", "u32"),
-    ("_reserved_v10", "u32"),
-    ("rx_bd_hw_completed", "u64"),
-    ("rx_bd_refilled", "u64"),
-    ("rx_bd_tail_updates", "u64"),
-    ("rx_bd_no_free", "u64"),
-    ("rx_irq_count", "u64"),
-    ("rx_bd_available_current", "u32"),
-    ("rx_bd_available_min", "u32"),
-    ("rx_poll_completed_max", "u32"),
+    ("dma_recover_retries", "u32"),
     ("rx_bd_errors", "u32"),
     ("rx_dma_recoveries", "u32"),
     ("rx_worker_packets", "u64"),
@@ -303,6 +299,11 @@ def read_stats(
     for name, kind in FIELDS:
         fmt = "<Q" if kind == "u64" else "<I"
         values[name] = struct.unpack_from(fmt, data, offsets[name])[0]
+    if values["version"] != PERF_STATS_VERSION:
+        raise RuntimeError(
+            f"perf stats layout v{values['version']} on the board, this reader "
+            f"expects v{PERF_STATS_VERSION}: rebuild the firmware or update FIELDS"
+        )
 
     return SimpleNamespace(**values)
 
@@ -321,7 +322,7 @@ def main() -> int:
         "magic", "version", "uptime_ms",
         "mac_rx_frames", "mac_rx_bytes", "mac_rx_err",
         "gate_good_frames", "gate_dropped_bad_frames", "gate_dropped_overflow_frames",
-        "dma_callbacks", "dma_errors", "rx_bd_hw_completed", "rx_irq_count",
+        "dma_callbacks", "dma_errors",
         "rx_worker_packets", "rx_invalid", "rx_alloc_pkt_fail", "rx_alloc_frag_fail",
         "rx_zero_copy_submit", "rx_copy_submit", "rx_net_recv_fail", "rx_released",
         "rx_free_current", "rx_dma_fifo_current", "rx_ready_fifo_current",

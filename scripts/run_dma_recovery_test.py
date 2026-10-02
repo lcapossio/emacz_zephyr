@@ -82,6 +82,9 @@ def main() -> int:
     parser.add_argument("--drain", action="store_true",
                         help="fault while a flood to a port with no listener holds the "
                              "RX pool in the net stack, so recovery may find it empty")
+    parser.add_argument("--starve", type=int, default=0,
+                        help="make the recovery find the RX pool empty this many times "
+                             "first, exercising its retry branch")
     args = parser.parse_args()
 
     before = stats(args)
@@ -90,7 +93,7 @@ def main() -> int:
     # The reply only says the command arrived: the counters decide whether
     # the fault fired.
     delay_ms = 2000 if args.drain else 100
-    command = f"{'f' if args.channel == 'rx' else 'F'} {delay_ms}"
+    command = f"{'f' if args.channel == 'rx' else 'F'} {delay_ms} {args.starve}"
     reply = control(args, command)
     print(f"inject_reply={reply}")
     if reply != "fault ret=0":
@@ -102,16 +105,22 @@ def main() -> int:
         flood.start()
 
     # S2MM reaches the faulted descriptor only after every buffer posted
-    # ahead of it has been filled, so push traffic through. The frames sent
-    # around the halt are lost by design and not counted.
-    # Under the flood the pool is empty and the ring stays short, so S2MM
-    # may only get there once the pool is back.
+    # ahead of it has been filled, so push sink traffic through, after the
+    # flood if there is one (the pool, and so the ring, is short until the
+    # stack lets go). Frames sent around the halt are lost by design and not
+    # counted.
     if flood is not None:
         flood.join()
         time.sleep(1.0)
     if args.channel == "rx":
         send_udp(args, 1.0)
     time.sleep(0.5)
+    # A board deaf through a drain misses the host's ARP probes, and the host
+    # then drops the first datagrams it sends while it re-resolves. One
+    # control round trip settles ARP before the counted window.
+    for _ in range(3):
+        if control(args, "s") is not None:
+            break
     faulted = stats(args)
 
     # Recovered: RX accounting exact again, and TX carries a control reply.
@@ -126,6 +135,7 @@ def main() -> int:
     error_name = "dma_errors" if args.channel == "rx" else "tx_dma_error"
     checks = {
         "recovered_once": delta("rx_dma_recoveries", before, after) == 1,
+        "retried_as_asked": delta("dma_recover_retries", before, after) >= args.starve,
         "error_reported": delta(error_name) > 0,
         "rx_exact_after": after.sink_packets - faulted.sink_packets == sent + 1,
         "tx_after": tx_reply is not None,
@@ -133,15 +143,22 @@ def main() -> int:
     }
     print(f"{error_name}_delta={delta(error_name)}")
     print(f"rx_dma_recoveries_delta={delta('rx_dma_recoveries', before, after)}")
+    print(f"dma_recover_retries_delta={delta('dma_recover_retries', before, after)}")
     # Whether the reset cut a frame mid-stream and a fragment got delivered.
     for name in ("rx_bd_errors", "rx_invalid", "net_ipv4_drop"):
         print(f"{name}_delta={delta(name)}")
     print(f"sent_after={sent} board_after={after.sink_packets - faulted.sink_packets}")
+    # Where frames of the post-recovery window went, should any be missing.
+    post = ("mac_rx_frames", "gate_good_frames", "gate_dropped_bad_frames",
+            "gate_dropped_overflow_frames", "dma_callbacks", "rx_refill_no_free",
+            "rx_net_recv_fail", "net_udp_drop", "sink_recv_errors")
+    print("post " + " ".join(f"{name}+={delta(name, faulted, after)}" for name in post))
     for name, ok in checks.items():
         print(f"{name}={'ok' if ok else 'FAIL'}")
     passed = all(checks.values())
     print(f"result={'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

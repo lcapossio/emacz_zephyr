@@ -443,19 +443,13 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer,
 static void dump_profile_delta(void)
 {
 	static struct emaczero_profile_snapshot prev;
-	static uint64_t prev_irq;
 	struct emaczero_profile_snapshot now;
 	uint64_t dma_count;
 	uint64_t worker_count;
 	uint64_t net_recv_count;
 	uint64_t lifetime_count;
-	uint64_t irq_now;
-	uint64_t irq_count;
 
 	emaczero_profile_snapshot(&now);
-	irq_now = emaczero_perf_stats.rx_irq_count;
-	irq_count = u64_delta(irq_now, prev_irq);
-	prev_irq = irq_now;
 	dma_count = u64_delta(now.dma_callbacks, prev.dma_callbacks);
 	worker_count = u64_delta(now.rx_worker_packets, prev.rx_worker_packets);
 	net_recv_count = u64_delta(now.rx_zero_copy_submit + now.rx_copy_submit +
@@ -466,7 +460,6 @@ static void dump_profile_delta(void)
 
 	raw_uart_puts("PROF ");
 	raw_uart_kv32("mode", now.mode);
-	raw_uart_kv64("irq", irq_count);
 	raw_uart_kv64("dma", dma_count);
 	raw_uart_kv64("work", worker_count);
 	raw_uart_kv64("zc", u64_delta(now.rx_zero_copy_submit, prev.rx_zero_copy_submit));
@@ -507,11 +500,12 @@ K_THREAD_STACK_DEFINE(profile_thread_stack, PROFILE_THREAD_STACK_SIZE);
 static struct k_thread profile_thread;
 
 static bool fault_tx;
+static uint32_t fault_starve;
 
 static void fault_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	(void)emaczero_profile_inject_dma_fault(fault_tx);
+	(void)emaczero_profile_inject_dma_fault(fault_tx, fault_starve);
 }
 
 static K_WORK_DELAYABLE_DEFINE(fault_work, fault_work_handler);
@@ -583,16 +577,20 @@ static void profile_control_thread(void *arg1, void *arg2, void *arg3)
 		} else if (cmd == 'f' || cmd == 'F') {
 			/* 'f' faults S2MM, 'F' faults MM2S (recovery test). An
 			 * optional delay in ms arms the fault for later, so it can
-			 * land while a flood keeps this socket from hearing it.
+			 * land while a flood keeps this socket from hearing it. An
+			 * optional second number makes the recovery find the RX
+			 * pool empty that many times first.
 			 */
 			char reply[32];
-			unsigned long delay_ms = strtoul(&request[1], NULL, 0);
+			char *next;
+			unsigned long delay_ms = strtoul(&request[1], &next, 0);
 			int ret = 0;
 			int len;
 
 			fault_tx = cmd == 'F';
+			fault_starve = (uint32_t)strtoul(next, NULL, 0);
 			if (delay_ms == 0u) {
-				ret = emaczero_profile_inject_dma_fault(fault_tx);
+				ret = emaczero_profile_inject_dma_fault(fault_tx, fault_starve);
 			} else {
 				(void)k_work_reschedule(&fault_work, K_MSEC(delay_ms));
 			}
