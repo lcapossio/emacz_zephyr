@@ -61,7 +61,9 @@ The patch step asks west for the Zephyr checkout path (falls back to
 `ZEPHYR_BASE`) and applies the Xilinx AXI DMA driver patches in
 `patches/zephyr/`: 0001 brings the driver up to upstream Zephyr
 `ac03a4a9085`, 0002 adds an optional `memory-region` property that places
-the scatter-gather descriptor rings in a given linker region. Re-run after
+the scatter-gather descriptor rings in a given linker region, and 0003
+reports a channel halted by a DMA error to the client callback (`-EIO`) so
+the driver can reset and rebuild both channels. Re-run after
 every `west update`; it skips patches that are already applied and refuses
 to touch locally modified driver files.
 
@@ -294,6 +296,20 @@ python scripts/run_arty_stress.py --interface "Ethernet 2" \
 
 Defaults are 600 s at 95 Mbit/s with 1472 B payloads and 100% delivery
 required. Exits non-zero on any monitored MAC/gate/DMA/driver error delta.
+
+DMA error recovery (profile build, JTAG for the perf counters; `--chain 3`
+on MBV, `4` on Vex):
+
+```sh
+python scripts/run_dma_recovery_test.py --channel rx --chain 3 \
+  --board 192.168.237.200 --bind 192.168.237.1
+python scripts/run_dma_recovery_test.py --channel tx --chain 3 \
+  --board 192.168.237.200 --bind 192.168.237.1
+```
+
+Each run halts one channel with a zero-length descriptor (DMAIntErr, no
+memory written) and passes when the driver recovers exactly once and RX
+counts are exact afterwards.
 
 ### Throughput paths
 

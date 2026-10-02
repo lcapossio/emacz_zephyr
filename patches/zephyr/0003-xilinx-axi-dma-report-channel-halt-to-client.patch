@@ -1,0 +1,52 @@
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+index 6115101ddd3..d46dbab10cc 100644
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -441,6 +441,25 @@ dma_xilinx_axi_dma_clean_up_sg_descriptors(const struct device *dev,
+ 	return processed_packets;
+ }
+ 
++/*
++ * An error halts the channel, and it stays halted until the client calls
++ * dma_stop() and then dma_config(), which soft-resets the core. Report the
++ * descriptors the channel finished before the fault, then invoke the callback
++ * once with -EIO. An SG fetch error is never written back to a descriptor, so
++ * without this call the client cannot tell a halted channel from an idle one.
++ */
++static void dma_xilinx_axi_dma_report_halt(const struct device *dev,
++					   struct dma_xilinx_axi_dma_channel *channel_data,
++					   uint32_t channel_num, const char *chan_name)
++{
++	dma_xilinx_axi_dma_clean_up_sg_descriptors(dev, channel_data, chan_name);
++
++	if (channel_data->completion_callback) {
++		channel_data->completion_callback(dev, channel_data->completion_callback_user_data,
++						  channel_num, -EIO);
++	}
++}
++
+ static void dma_xilinx_axi_dma_tx_isr(const struct device *dev)
+ {
+ 	struct dma_xilinx_axi_dma_data *data = dev->data;
+@@ -471,6 +490,10 @@ static void dma_xilinx_axi_dma_tx_isr(const struct device *dev)
+ 
+ 		LOG_DBG("Completed %u TX packets in this ISR!\n", processed_packets);
+ 	}
++	if (dmasr & XILINX_AXI_DMA_REGS_DMASR_ERR_IRQ) {
++		dma_xilinx_axi_dma_report_halt(dev, channel_data, XILINX_AXI_DMA_TX_CHANNEL_NUM,
++					       "TX");
++	}
+ 	if (irq_enabled) {
+ 		irq_enable(channel_data->irq);
+ 	}
+@@ -506,6 +529,10 @@ static void dma_xilinx_axi_dma_rx_isr(const struct device *dev)
+ 
+ 		LOG_DBG("Cleaned up %u RX packets in this ISR!", processed_packets);
+ 	}
++	if (dmasr & XILINX_AXI_DMA_REGS_DMASR_ERR_IRQ) {
++		dma_xilinx_axi_dma_report_halt(dev, channel_data, XILINX_AXI_DMA_RX_CHANNEL_NUM,
++					       "RX");
++	}
+ 	if (irq_enabled) {
+ 		irq_enable(channel_data->irq);
+ 	}

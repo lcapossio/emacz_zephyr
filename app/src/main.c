@@ -570,6 +570,15 @@ static void profile_control_thread(void *arg1, void *arg2, void *arg3)
 			(void)zsock_sendto(sock, reply, len, 0, (struct sockaddr *)&peer,
 					   peer_len);
 			continue;
+		} else if (cmd == 'f' || cmd == 'F') {
+			/* 'f' faults S2MM, 'F' faults MM2S (recovery test). */
+			char reply[32];
+			int ret = emaczero_profile_inject_dma_fault(cmd == 'F');
+			int len = snprintk(reply, sizeof(reply), "fault ret=%d", ret);
+
+			(void)zsock_sendto(sock, reply, (size_t)len, 0, (struct sockaddr *)&peer,
+					   peer_len);
+			continue;
 		} else if (cmd == 't' || cmd == 'T') {
 			char reply[160];
 			size_t len = run_tx_bench(sock, &peer, &request[1], reply,

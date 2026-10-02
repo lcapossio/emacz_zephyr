@@ -225,6 +225,11 @@ struct emaczero_data {
 	size_t tx_completed_buffer_index;
 	/* Free TX slots on the DMA-API path; given by the MM2S callback. */
 	struct k_sem tx_slot_sem;
+	/* Set from the first DMA error report until emz_dma_recover() has
+	 * rebuilt both channels; refill and RX completions stand down meanwhile.
+	 */
+	atomic_t dma_recover_pending;
+	struct k_work_delayable dma_recover_work;
 	uint32_t tx_bd_inflight;
 	unsigned int rx_dma_inflight;
 	uint32_t last_dma_callback_cycle;
@@ -270,6 +275,7 @@ struct emaczero_data {
 };
 
 static int emz_refill_dma_rx(const struct device *dev);
+static void emz_dma_request_recover(struct emaczero_data *data);
 
 static void emz_dma_cache_fence(void)
 {
@@ -785,6 +791,21 @@ static void emz_dma_rx_callback(const struct device *dma, void *user_data, uint3
 	emaczero_perf_stats.dma_callbacks++;
 	EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_CALLBACKS);
 
+	/* A negative status means S2MM halted. Completions reported after that
+	 * are dropped: emz_dma_recover() reclaims every buffer still on
+	 * rx_dma_fifo when it rebuilds the ring.
+	 */
+	if (status < 0) {
+		LOG_ERR("DMA RX error: %d", status);
+		emaczero_perf_stats.dma_errors++;
+		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_ERRORS);
+		emz_dma_request_recover(data);
+		return;
+	}
+	if (atomic_get(&data->dma_recover_pending) != 0) {
+		return;
+	}
+
 	/* The DMA driver completes S2MM descriptors in ring order, and
 	 * emz_refill_dma_rx() queues each buffer on rx_dma_fifo under rx_lock
 	 * together with the dma_reload() that posts it, so the fifo head is the
@@ -804,11 +825,6 @@ static void emz_dma_rx_callback(const struct device *dma, void *user_data, uint3
 	atomic_dec(&data->rx_dma_fifo_count);
 	emz_perf_update_pool_inflight(data);
 
-	if (status < 0) {
-		LOG_ERR("DMA RX error: %d", status);
-		emaczero_perf_stats.dma_errors++;
-		EMZ_PROFILE_COUNTER(EMACZERO_PROFILE_COUNTER_DMA_ERRORS);
-	}
 	rx->status = status;
 #if defined(CONFIG_DMA_XILINX_AXI_DMA)
 	rx->len = dma_xilinx_axi_dma_last_received_frame_length(dma);
@@ -868,16 +884,21 @@ static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint3
 	ARG_UNUSED(dma);
 	ARG_UNUSED(channel);
 
-	data->tx_completed_buffer_index =
-		(data->tx_completed_buffer_index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
-	emaczero_perf_stats.tx_dma_completed++;
-	k_sem_give(&data->tx_slot_sem);
-
+	/* MM2S halted. The slot accounting is rebuilt by emz_dma_recover(), so
+	 * neither this report nor the frames lost with it return a slot here.
+	 */
 	if (status < 0) {
 		LOG_ERR("DMA TX error: %d", status);
 		eth_stats_update_errors_tx(data->iface);
 		emaczero_perf_stats.tx_dma_error++;
+		emz_dma_request_recover(data);
+		return;
 	}
+
+	data->tx_completed_buffer_index =
+		(data->tx_completed_buffer_index + 1u) % EMZ_DMA_BUFFER_COUNT_TX;
+	emaczero_perf_stats.tx_dma_completed++;
+	k_sem_give(&data->tx_slot_sem);
 }
 
 #if defined(CONFIG_ETH_EMACZERO_RX_DIRECT_RING)
@@ -1584,7 +1605,8 @@ static int emz_tx_direct_reserve(const struct device *dev, size_t *descriptor)
 /* Post one buffer to S2MM without publishing it: the descriptor only becomes
  * visible to the engine at the next dma_start() (TAILDESC write). Caller holds
  * rx_lock so the descriptor and the rx_dma_fifo entry naming its buffer appear
- * together to the completion callback.
+ * together to the completion callback. emz_dma_recover() is the exception: it
+ * posts while the engine is halted and the callback stands down.
  */
 static int emz_post_dma_rx_buffer(const struct device *dev, struct emaczero_rx_buffer *rx)
 {
@@ -1666,6 +1688,13 @@ static int emz_refill_dma_rx(const struct device *dev)
 	 * already on rx_dma_fifo.
 	 */
 	key = k_spin_lock(&data->rx_lock);
+	/* Mid-recovery, freed buffers wait on rx_free_fifo: emz_dma_recover()
+	 * restarts the ring itself once the core is reset.
+	 */
+	if (atomic_get(&data->dma_recover_pending) != 0) {
+		k_spin_unlock(&data->rx_lock, key);
+		return 0;
+	}
 	while (data->rx_dma_inflight < EMZ_DMA_RX_MAX_INFLIGHT) {
 		struct emaczero_rx_buffer *rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
 
@@ -1724,6 +1753,107 @@ out:
 	}
 
 	return queued;
+}
+
+/* Rebuild both DMA channels after either one reported a halt.
+ *
+ * An AXI DMA error halts the channel until dma_stop() and then dma_config(),
+ * whose soft reset covers the whole core and sleeps. So this runs from the
+ * system work queue and rebuilds TX and RX together. Refill and the RX
+ * callback stand down while dma_recover_pending is set.
+ */
+static void emz_dma_recover(const struct device *dev)
+{
+	const struct emaczero_config *cfg = dev->config;
+	struct emaczero_data *data = dev->data;
+	struct emaczero_rx_buffer *rx;
+	unsigned int reclaimed = 0u;
+	k_spinlock_key_t key;
+	int ret;
+
+	/* tx_lock keeps senders off MM2S. One blocked in emz_tx_reserve() gives
+	 * up within EMZ_TX_SLOT_TIMEOUT: a halted MM2S returns no slots.
+	 */
+	k_mutex_lock(&data->tx_lock, K_FOREVER);
+	(void)dma_stop(cfg->dma, EMZ_DMA_RX_CHANNEL);
+	(void)dma_stop(cfg->dma, EMZ_DMA_TX_CHANNEL);
+
+	/* Frames posted to MM2S are lost. The next send re-runs dma_config(),
+	 * which rebuilds the TX ring once the core is reset.
+	 */
+	data->dma_is_configured_tx = false;
+	data->tx_populated_buffer_index = 0u;
+	data->tx_completed_buffer_index = 0u;
+	k_sem_reset(&data->tx_slot_sem);
+	for (unsigned int i = 0u; i < EMZ_TX_SLOTS; i++) {
+		k_sem_give(&data->tx_slot_sem);
+	}
+
+	/* Take back every buffer still posted to S2MM. Nothing draws on the
+	 * pool while refill is gated, and the soft reset in dma_config() below
+	 * completes before any of these is posted again.
+	 */
+	key = k_spin_lock(&data->rx_lock);
+	while ((rx = k_fifo_get(&data->rx_dma_fifo, K_NO_WAIT)) != NULL) {
+		k_fifo_put(&data->rx_free_fifo, rx);
+		reclaimed++;
+	}
+	data->rx_dma_inflight = 0u;
+	data->dma_is_configured_rx = false;
+	k_spin_unlock(&data->rx_lock, key);
+	atomic_sub(&data->rx_dma_fifo_count, (atomic_val_t)reclaimed);
+	atomic_add(&data->rx_free_count, (atomic_val_t)reclaimed);
+	emz_perf_update_pool_inflight(data);
+
+	/* dma_config() needs a first buffer. If the stack holds all of them,
+	 * try again once some come back.
+	 */
+	rx = k_fifo_get(&data->rx_free_fifo, K_NO_WAIT);
+	if (rx == NULL) {
+		goto retry;
+	}
+	atomic_dec(&data->rx_free_count);
+
+	/* Soft reset and ring rebuild happen here. No rx_lock: it may sleep,
+	 * and refill and the RX callback are idle until the flag clears.
+	 */
+	ret = emz_post_dma_rx_buffer(dev, rx);
+	if (ret != 0) {
+		atomic_inc(&data->rx_free_count);
+		k_fifo_put(&data->rx_free_fifo, rx);
+		goto retry;
+	}
+	data->rx_dma_inflight = 1u;
+	k_mutex_unlock(&data->tx_lock);
+
+	emaczero_perf_stats.rx_dma_recoveries++;
+	atomic_clear(&data->dma_recover_pending);
+	(void)emz_refill_dma_rx(dev);
+	return;
+
+retry:
+	emz_perf_update_pool_inflight(data);
+	k_mutex_unlock(&data->tx_lock);
+	(void)k_work_reschedule(&data->dma_recover_work, K_MSEC(1));
+}
+
+static void emz_dma_recover_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct emaczero_data *data =
+		CONTAINER_OF(dwork, struct emaczero_data, dma_recover_work);
+
+	emz_dma_recover(data->dev);
+}
+
+/* Callable from the DMA ISR: the first report schedules one recovery pass,
+ * and later ones fold into it.
+ */
+static void emz_dma_request_recover(struct emaczero_data *data)
+{
+	if (atomic_cas(&data->dma_recover_pending, 0, 1)) {
+		(void)k_work_reschedule(&data->dma_recover_work, K_NO_WAIT);
+	}
 }
 
 static uint32_t emz_sample_word(const uint8_t *bytes, size_t len, size_t offset);
@@ -2068,6 +2198,67 @@ static int emz_profile_send_burst_dma(const struct device *dev, const uint8_t *f
 	k_mutex_unlock(&data->tx_lock);
 
 	return queued > 0u ? (int)queued : ret;
+}
+
+/* Fault injection for the DMA recovery test: post a zero-length descriptor.
+ * When the engine reaches it the DataMover raises DMAIntErr and the channel
+ * halts, the same state a bus error leaves, without writing any memory.
+ * S2MM reaches it once every RX buffer posted ahead of it has been filled;
+ * MM2S reaches it at once.
+ */
+int emaczero_profile_inject_dma_fault(bool tx)
+{
+	const struct device *dev = emz_profile_dev;
+	const struct emaczero_config *cfg;
+	struct emaczero_data *data;
+	k_spinlock_key_t key;
+	size_t slot;
+	int ret;
+
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	cfg = dev->config;
+	data = dev->data;
+	if (cfg->dma == NULL || emz_rx_direct_enabled(cfg)) {
+		return -ENOTSUP;
+	}
+
+	if (tx) {
+		k_mutex_lock(&data->tx_lock, K_FOREVER);
+		if (!data->dma_is_configured_tx) {
+			k_mutex_unlock(&data->tx_lock);
+			return -EAGAIN;
+		}
+		ret = emz_tx_reserve(dev, &slot);
+		if (ret == 0) {
+			ret = dma_reload(cfg->dma, EMZ_DMA_TX_CHANNEL,
+					 (uintptr_t)data->tx_buffer[slot].bytes, 0u, 0u);
+			if (ret == 0) {
+				data->tx_populated_buffer_index =
+					(data->tx_populated_buffer_index + 1u) %
+					EMZ_DMA_BUFFER_COUNT_TX;
+				ret = dma_start(cfg->dma, EMZ_DMA_TX_CHANNEL);
+			} else {
+				emz_tx_unreserve(dev);
+			}
+		}
+		k_mutex_unlock(&data->tx_lock);
+		return ret;
+	}
+
+	key = k_spin_lock(&data->rx_lock);
+	if (!data->dma_is_configured_rx || atomic_get(&data->dma_recover_pending) != 0) {
+		k_spin_unlock(&data->rx_lock, key);
+		return -EAGAIN;
+	}
+	ret = dma_reload(cfg->dma, EMZ_DMA_RX_CHANNEL, 0u, (uintptr_t)data->rx_buffer[0].bytes,
+			 0u);
+	if (ret == 0) {
+		ret = dma_start(cfg->dma, EMZ_DMA_RX_CHANNEL);
+	}
+	k_spin_unlock(&data->rx_lock, key);
+	return ret;
 }
 
 int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint32_t count)
@@ -2569,6 +2760,7 @@ static int emz_init(const struct device *dev)
 	memcpy(data->mac, cfg->mac, NET_ETH_ADDR_LEN);
 	k_mutex_init(&data->tx_lock);
 	k_sem_init(&data->tx_slot_sem, EMZ_TX_SLOTS, EMZ_TX_SLOTS);
+	k_work_init_delayable(&data->dma_recover_work, emz_dma_recover_work_handler);
 
 	// Write self-describing sentinels for the 64-byte four-point-trace
 	// capture blocks. Host tooling scans the perf-stats DDR region for

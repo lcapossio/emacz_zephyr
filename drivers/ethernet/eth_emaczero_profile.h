@@ -373,6 +373,7 @@ bool emaczero_profile_should_keep_control(const uint8_t *bytes, size_t len);
 void emaczero_profile_note_release(uint32_t lifetime_cycles);
 int emaczero_profile_send_raw_frame(const uint8_t *frame, size_t len);
 int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, size_t len, uint32_t count);
+int emaczero_profile_inject_dma_fault(bool tx);
 #else
 static inline void emaczero_profile_snapshot(struct emaczero_profile_snapshot *snapshot)
 {
@@ -447,6 +448,12 @@ static inline int emaczero_profile_send_raw_frame_burst(const uint8_t *frame, si
 	(void)frame;
 	(void)len;
 	(void)count;
+	return -1;
+}
+
+static inline int emaczero_profile_inject_dma_fault(bool tx)
+{
+	(void)tx;
 	return -1;
 }
 #endif
