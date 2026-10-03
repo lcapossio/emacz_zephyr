@@ -1,8 +1,17 @@
 diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
-index 6115101ddd3..d46dbab10cc 100644
+index 6115101ddd3..bbe7f517287 100644
 --- a/drivers/dma/dma_xilinx_axi_dma.c
 +++ b/drivers/dma/dma_xilinx_axi_dma.c
-@@ -441,6 +441,25 @@ dma_xilinx_axi_dma_clean_up_sg_descriptors(const struct device *dev,
+@@ -220,6 +220,8 @@ struct dma_xilinx_axi_dma_channel {
+ 	/* call this when the transfer is complete */
+ 	dma_callback_t completion_callback;
+ 	void *completion_callback_user_data;
++	/* client set error_callback_dis: do not report a channel halt */
++	bool error_callback_dis;
+ 
+ 	uint32_t last_rx_size;
+ 
+@@ -441,6 +443,26 @@ dma_xilinx_axi_dma_clean_up_sg_descriptors(const struct device *dev,
  	return processed_packets;
  }
  
@@ -10,8 +19,9 @@ index 6115101ddd3..d46dbab10cc 100644
 + * An error halts the channel, and it stays halted until the client calls
 + * dma_stop() and then dma_config(), which soft-resets the core. Report the
 + * descriptors the channel finished before the fault, then invoke the callback
-+ * once with -EIO. An SG fetch error is never written back to a descriptor, so
-+ * without this call the client cannot tell a halted channel from an idle one.
++ * once with -EIO unless the client disabled error callbacks. An SG fetch error
++ * is never written back to a descriptor, so without this call the client
++ * cannot tell a halted channel from an idle one.
 + */
 +static void dma_xilinx_axi_dma_report_halt(const struct device *dev,
 +					   struct dma_xilinx_axi_dma_channel *channel_data,
@@ -19,7 +29,7 @@ index 6115101ddd3..d46dbab10cc 100644
 +{
 +	dma_xilinx_axi_dma_clean_up_sg_descriptors(dev, channel_data, chan_name);
 +
-+	if (channel_data->completion_callback) {
++	if (channel_data->completion_callback && !channel_data->error_callback_dis) {
 +		channel_data->completion_callback(dev, channel_data->completion_callback_user_data,
 +						  channel_num, -EIO);
 +	}
@@ -28,7 +38,7 @@ index 6115101ddd3..d46dbab10cc 100644
  static void dma_xilinx_axi_dma_tx_isr(const struct device *dev)
  {
  	struct dma_xilinx_axi_dma_data *data = dev->data;
-@@ -471,6 +490,10 @@ static void dma_xilinx_axi_dma_tx_isr(const struct device *dev)
+@@ -471,6 +493,10 @@ static void dma_xilinx_axi_dma_tx_isr(const struct device *dev)
  
  		LOG_DBG("Completed %u TX packets in this ISR!\n", processed_packets);
  	}
@@ -39,7 +49,7 @@ index 6115101ddd3..d46dbab10cc 100644
  	if (irq_enabled) {
  		irq_enable(channel_data->irq);
  	}
-@@ -506,6 +529,10 @@ static void dma_xilinx_axi_dma_rx_isr(const struct device *dev)
+@@ -506,6 +532,10 @@ static void dma_xilinx_axi_dma_rx_isr(const struct device *dev)
  
  		LOG_DBG("Cleaned up %u RX packets in this ISR!", processed_packets);
  	}
@@ -50,3 +60,11 @@ index 6115101ddd3..d46dbab10cc 100644
  	if (irq_enabled) {
  		irq_enable(channel_data->irq);
  	}
+@@ -954,6 +984,7 @@ static int dma_xilinx_axi_dma_configure(const struct device *dev, uint32_t chann
+ 
+ 	data->channels[channel].completion_callback = dma_cfg->dma_callback;
+ 	data->channels[channel].completion_callback_user_data = dma_cfg->user_data;
++	data->channels[channel].error_callback_dis = dma_cfg->error_callback_dis;
+ 
+ 	LOG_DBG("Completed configuration of AXI DMA - Starting transfer!");
+ 

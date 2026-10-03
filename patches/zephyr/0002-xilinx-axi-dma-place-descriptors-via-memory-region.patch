@@ -64,12 +64,12 @@ index 6d6130d9258..6115101ddd3 100644
  	};                                                                                         \
  	static struct dma_xilinx_axi_dma_channel                                                   \
  		dma_xilinx_axi_dma##inst##_channels[DT_INST_PROP(inst, dma_channels)];             \
-+	static struct dma_xilinx_axi_dma_sg_descriptor                                             \
-+		dma_xilinx_axi_dma##inst##_desc_tx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX] \
-+		XILINX_AXI_DMA_DESC_SECTION(inst) __aligned(64);                                   \
-+	static struct dma_xilinx_axi_dma_sg_descriptor                                             \
-+		dma_xilinx_axi_dma##inst##_desc_rx[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX] \
-+		XILINX_AXI_DMA_DESC_SECTION(inst) __aligned(64);                                   \
++	static struct dma_xilinx_axi_dma_sg_descriptor dma_xilinx_axi_dma##inst##_desc_tx          \
++		[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX] XILINX_AXI_DMA_DESC_SECTION(inst) \
++			__aligned(64);                                                             \
++	static struct dma_xilinx_axi_dma_sg_descriptor dma_xilinx_axi_dma##inst##_desc_rx          \
++		[CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX] XILINX_AXI_DMA_DESC_SECTION(inst) \
++			__aligned(64);                                                             \
  	static struct dma_xilinx_axi_dma_data dma_xilinx_axi_dma##inst##_data = {                  \
  		.ctx = {.magic = DMA_MAGIC, .atomic = NULL},                                       \
  		.channels = dma_xilinx_axi_dma##inst##_channels,                                   \
