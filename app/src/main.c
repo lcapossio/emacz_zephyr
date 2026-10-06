@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
@@ -23,13 +24,8 @@
 #include "perf_stats.h"
 #include "provision.h"
 
-#define UARTLITE_BASE 0x40600000u
-#define UARTLITE_TX_FIFO 0x04u
-#define UARTLITE_STATUS 0x08u
-#define UARTLITE_CONTROL 0x0cu
-#define UARTLITE_STATUS_TX_FULL BIT(3)
-#define UARTLITE_CONTROL_RST_RX BIT(1)
-#define UARTLITE_CONTROL_RST_TX BIT(0)
+/* Status lines go to the console UART by polling, whatever its driver */
+#define STATUS_UART DEVICE_DT_GET(DT_CHOSEN(zephyr_console))
 
 #define SCRATCH_MAGIC 0x5a455048u
 
@@ -95,15 +91,11 @@ static uint32_t emz_read(uint32_t reg)
 static void raw_uart_puts(const char *str)
 {
 #if defined(CONFIG_EMACZ_APP_RAW_UART)
+	if (!device_is_ready(STATUS_UART)) {
+		return;
+	}
 	for (; *str != '\0'; str++) {
-		uint32_t timeout = 1000000u;
-
-		while ((sys_read32(UARTLITE_BASE + UARTLITE_STATUS) & UARTLITE_STATUS_TX_FULL) != 0u) {
-			if (timeout-- == 0u) {
-				return;
-			}
-		}
-		sys_write32((uint8_t)*str, UARTLITE_BASE + UARTLITE_TX_FIFO);
+		uart_poll_out(STATUS_UART, *str);
 	}
 #else
 	ARG_UNUSED(str);
@@ -112,22 +104,15 @@ static void raw_uart_puts(const char *str)
 
 static void raw_uart_hex32(uint32_t value)
 {
-#if defined(CONFIG_EMACZ_APP_RAW_UART)
-	for (int shift = 28; shift >= 0; shift -= 4) {
-		uint8_t nibble = (value >> shift) & 0xfu;
-		uint32_t timeout = 1000000u;
+	char text[9];
 
-		while ((sys_read32(UARTLITE_BASE + UARTLITE_STATUS) & UARTLITE_STATUS_TX_FULL) != 0u) {
-			if (timeout-- == 0u) {
-				return;
-			}
-		}
-		sys_write32(nibble < 10u ? '0' + nibble : 'A' + nibble - 10u,
-			    UARTLITE_BASE + UARTLITE_TX_FIFO);
+	for (int i = 0; i < 8; i++) {
+		uint8_t nibble = (value >> (28 - 4 * i)) & 0xfu;
+
+		text[i] = nibble < 10u ? '0' + nibble : 'A' + nibble - 10u;
 	}
-#else
-	ARG_UNUSED(value);
-#endif
+	text[8] = '\0';
+	raw_uart_puts(text);
 }
 
 #if defined(CONFIG_NET_ZPERF)
@@ -407,9 +392,9 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer, const char 
 	uint32_t port = TX_BENCH_PORT;
 	uint32_t cycles_per_sec = sys_clock_hw_cycles_per_sec();
 	uint32_t delay_us = 0u;
-	uint32_t start_cycle;
-	uint32_t duration_cycles;
-	uint32_t elapsed_cycles;
+	uint32_t last_cycle;
+	uint64_t duration_cycles;
+	uint64_t elapsed_cycles = 0u;
 	uint64_t packets = 0u;
 	uint64_t bytes = 0u;
 	uint64_t errors = 0u;
@@ -447,9 +432,13 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer, const char 
 	}
 
 	dst.sin_port = htons((uint16_t)port);
-	duration_cycles = (uint32_t)(((uint64_t)duration_ms * cycles_per_sec) / 1000u);
-	start_cycle = k_cycle_get_32();
-	while ((uint32_t)(k_cycle_get_32() - start_cycle) < duration_cycles) {
+	/*
+	 * The 32-bit cycle counter wraps within the 30 s limit above 143 MHz,
+	 * so each pass adds its (short) delta to a 64-bit total.
+	 */
+	duration_cycles = ((uint64_t)duration_ms * cycles_per_sec) / 1000u;
+	last_cycle = k_cycle_get_32();
+	while (elapsed_cycles < duration_cycles) {
 		ssize_t ret = zsock_sendto(sock, tx_bench_payload, payload_len, 0,
 					   (struct sockaddr *)&dst, sizeof(dst));
 
@@ -459,22 +448,26 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer, const char 
 			last_errno = errno;
 			/* out of packets: let the stack and driver drain */
 			k_yield();
-			continue;
+		} else {
+			packets++;
+			bytes += (uint64_t)ret;
+			if (delay_us != 0u) {
+				k_busy_wait(delay_us);
+			}
 		}
-		packets++;
-		bytes += (uint64_t)ret;
-		if (delay_us != 0u) {
-			k_busy_wait(delay_us);
-		}
+
+		uint32_t now = k_cycle_get_32();
+
+		elapsed_cycles += (uint32_t)(now - last_cycle);
+		last_cycle = now;
 	}
 
-	elapsed_cycles = k_cycle_get_32() - start_cycle;
 	return (size_t)snprintk(reply, reply_len,
 				"tx pkts=%llu bytes=%llu errors=%llu elapsed_ms=%u "
 				"payload=%u rate_mbps_x1000=%u port=%u last_ret=%d "
 				"errno=%d\r\n",
 				packets, bytes, errors,
-				(uint32_t)(((uint64_t)elapsed_cycles * 1000u) / cycles_per_sec),
+				(uint32_t)((elapsed_cycles * 1000u) / cycles_per_sec),
 				payload_len, rate_mbps_x1000, port, last_ret, last_errno);
 }
 
@@ -643,9 +636,7 @@ int main(void)
 	last_uptime = k_uptime_get();
 	emacz_boot_marker = 0xB0074444u;
 	emacz_scratch_heartbeat[0] = SCRATCH_MAGIC;
-	sys_write32(UARTLITE_CONTROL_RST_RX | UARTLITE_CONTROL_RST_TX,
-		    UARTLITE_BASE + UARTLITE_CONTROL);
-	raw_uart_puts("MBV Zephyr emacZero main\r\n");
+	raw_uart_puts("Zephyr emacZero main on " CONFIG_BOARD "\r\n");
 
 	raw_uart_reg("EMZ VER", EMZ_REG_VERSION);
 	raw_uart_reg("EMZ CTRL", EMZ_REG_CTRL);

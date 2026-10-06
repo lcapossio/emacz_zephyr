@@ -55,19 +55,13 @@
 
 	aliases {
 		ethernet0 = &emaczero0;
-		/delete-property/ serial0;
 	};
 
+	/* uart0, the shell's AXI UARTLite at 0x40600000, stays the console */
 	chosen {
 		/delete-property/ bootargs;
 		/delete-property/ stdout-path;
-		/delete-property/ zephyr,console;
-		/delete-property/ zephyr,shell-uart;
 	};
-};
-
-&uart0 {
-	status = "disabled";
 };
 
 &axi_gpio {

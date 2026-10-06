@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
+DT_CHOSEN_Z_CONSOLE := zephyr,console
+
 menu "emacz Zephyr app"
 
 config EMACZ_APP_RAW_UART
 	bool "emacz app raw UART status output"
+	depends on SERIAL && $(dt_chosen_enabled,$(DT_CHOSEN_Z_CONSOLE))
 	default y
 	help
-	  Enable the bring-up application's direct UARTLite status prints.
+	  Enable the bring-up application's status prints, polled out on the
+	  console UART.
 	  Disable this for performance tests that must rule out blocking UART
 	  output independently from Zephyr's console and logging settings.
 
