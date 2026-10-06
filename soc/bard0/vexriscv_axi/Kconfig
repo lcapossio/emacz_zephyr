@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-config SOC_ARTY_A7_VEX
+config SOC_VEXRISCV_AXI
 	select ATOMIC_OPERATIONS_C
 	select INCLUDE_RESET_VECTOR
 	select RISCV_ISA_RV32I

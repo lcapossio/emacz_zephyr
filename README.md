@@ -191,7 +191,7 @@ target `mbv32`):
 
 VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, Zephyr board
 target `arty_a7_vex` — defined in-tree under `boards/bard0/arty_a7_vex/`
-and `soc/bard0/arty_a7_vex/`):
+and `soc/bard0/vexriscv_axi/`):
 
 - SpinalHDL VexRiscv-full RV32IMA with `IBusCachedPlugin` (16 KiB I$,
   DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and

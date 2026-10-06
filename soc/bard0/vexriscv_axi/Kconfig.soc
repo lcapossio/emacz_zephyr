@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+config SOC_VEXRISCV_AXI
+	bool
+	select RISCV
+	help
+	  VexRiscv-full soft CPU with AXI4 buses, an AXI INTC and a RISC-V
+	  machine timer, as built by the bard0 emacz_zephyr hardware shells
+	  (Arty A7-100T, ZCU106).
+
+config SOC
+	default "vexriscv_axi" if SOC_VEXRISCV_AXI

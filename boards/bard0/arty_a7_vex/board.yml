@@ -3,4 +3,4 @@ board:
   full_name: Arty A7-100T VexRiscv-full
   vendor: bard0
   socs:
-    - name: arty_a7_vex
+    - name: vexriscv_axi

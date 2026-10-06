@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-if SOC_ARTY_A7_VEX
+if SOC_VEXRISCV_AXI
 
 # Zephyr XIP-less — the image is DMAed to DDR and .text runs from there.
 config XIP
 	default n
 
+# riscv_mtimer counts the SoC clock, which each board's DTS gives as the
+# timebase frequency.
 config SYS_CLOCK_HW_CYCLES_PER_SEC
-	default 100000000
+	default $(dt_node_int_prop_int,/cpus,timebase-frequency)
 
 config RISCV_MACHINE_TIMER
 	default y
@@ -34,4 +36,4 @@ config 2ND_LVL_INTR_00_OFFSET
 config MAX_IRQ_PER_AGGREGATOR
 	default 32
 
-endif # SOC_ARTY_A7_VEX
+endif # SOC_VEXRISCV_AXI
