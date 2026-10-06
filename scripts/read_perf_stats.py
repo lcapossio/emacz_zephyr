@@ -12,8 +12,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+import fcapz_jtag  # noqa: E402
 
 
 # Must match EMACZ_PERF_STATS_VERSION in app/src/perf_stats.h. FIELDS
@@ -125,9 +124,7 @@ def read_stats(
     offsets, total_bytes = field_offsets()
     words = (total_bytes + 3) // 4
     seq_addr = addr + offsets["sink_seq"]
-    transport = XilinxHwServerTransport(fpga_name=tap)
-    axi = EjtagAxiController(transport, chain=chain)
-    axi.connect()
+    axi = fcapz_jtag.axi(tap, chain)
     try:
         # The firmware updates the sink_* block under a seqlock while we read
         # it beat by beat. Bursts walk ascending addresses and sink_seq sits

@@ -36,7 +36,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
 from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+import fcapz_jtag  # noqa: E402
 
 # Xilinx AXI DMA scatter-gather descriptor fields
 DESC_CONTROL = 0x18
@@ -49,32 +49,8 @@ DMASR_HALTED = 1 << 0
 DMASR_ERRORS = 0x770  # DMAIntErr, DMASlvErr, DMADecErr, SGIntErr, SGSlvErr, SGDecErr
 
 
-def retry_jtag(open_session):
-    """Run open_session(), once more if xsdb lost the target list."""
-    # xsdb sometimes reports "target list is empty" when a JTAG session
-    # opens right after the previous one closed; one retry after a pause
-    # gets through.
-    try:
-        return open_session()
-    except RuntimeError as exc:
-        if "target list is empty" not in str(exc):
-            raise
-        time.sleep(2.0)
-        return open_session()
-
-
 def jtag(args: argparse.Namespace) -> EjtagAxiController:
-    def connect() -> EjtagAxiController:
-        transport = XilinxHwServerTransport(fpga_name=args.tap)
-        axi = EjtagAxiController(transport, chain=args.chain)
-        try:
-            axi.connect()
-        except Exception:
-            transport.close()
-            raise
-        return axi
-
-    return retry_jtag(connect)
+    return fcapz_jtag.axi(args.tap, args.chain)
 
 
 def inject(args: argparse.Namespace) -> int | None:
@@ -129,7 +105,7 @@ def send_udp(args: argparse.Namespace, duration: float) -> int:
 
 
 def stats(args: argparse.Namespace):
-    return retry_jtag(lambda: read_stats(args.addr, args.tap, args.chain))
+    return read_stats(args.addr, args.tap, args.chain)
 
 
 def main() -> int:

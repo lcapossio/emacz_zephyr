@@ -20,8 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+import fcapz_jtag  # noqa: E402
 
 
 REGS = {
@@ -37,17 +36,11 @@ REGS = {
 }
 
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
-    transport = XilinxHwServerTransport(fpga_name=tap)
-    transport.connect()
+    axi = fcapz_jtag.axi(tap, chain)
     try:
-        axi = EjtagAxiController(transport, chain=chain)
-        axi.attach()
-        try:
-            return {name: axi.axi_read(base + off) for name, off in REGS.items()}
-        finally:
-            axi.close()
+        return {name: axi.axi_read(base + off) for name, off in REGS.items()}
     finally:
-        transport.close()
+        axi.close()
 
 
 def parse_reply(text: str) -> dict[str, int]:
@@ -173,10 +166,23 @@ def main() -> int:
     if host_window > 0:
         print(f"host_payload_mbps_rx_window={rx.bytes * 8 / host_window / 1_000_000:.3f}")
 
-    for name in REGS:
-        print(f"{name}_delta={after_regs[name] - before_regs[name]}")
+    deltas = {name: after_regs[name] - before_regs[name] for name in REGS}
+    for name, value in deltas.items():
+        print(f"{name}_delta={value}")
 
-    return 0
+    # Every datagram the board sent is one frame on the wire, so the MAC
+    # count covers them (plus any ARP or control replies). The host may
+    # drop some at line rate, so it only has to receive something, cleanly.
+    board_packets = reply.get("pkts", 0)
+    passed = (
+        board_packets > 0 and
+        deltas["tx_frames"] >= board_packets and
+        deltas["tx_er_frames"] == 0 and
+        rx.packets > 0 and
+        rx.errors == 0
+    )
+    print(f"tx_result={'pass' if passed else 'fail'}")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
