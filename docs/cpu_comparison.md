@@ -2,9 +2,8 @@
 
 Two CPU options for the emacZero + Zephyr SoC on the Arty A7-100T shell.
 All numbers below are measured on the same host, same PHY (Intel I226-V on
-Ethernet 2 @ 100 Mbps), and the same emacZero MAC + Zephyr fast-path
-firmware. What differs is only the CPU macro and the AXI plumbing around
-it.
+Ethernet 2 @ 100 Mbps), and the same emacZero MAC and Zephyr firmware.
+What differs is only the CPU macro and the AXI plumbing around it.
 
 Bitstream provenance:
 - **mbv**: `build/vivado/arty_a7_100t_mbv/arty_a7_100t_mbv_wrapper.bit`
@@ -13,34 +12,34 @@ Bitstream provenance:
   built by commit 088ac8f (Aug 30, 2026 — VexRiscv-full, 16 KiB I$/D$,
   DYNAMIC_TARGET branch predictor, earlyBranch, R-slice on DBUS)
 
-## Throughput — apples-to-apples (delivered rate)
+## Throughput (delivered rate)
 
-Sender: `iperf.exe -c 192.168.237.200 -B 192.168.237.1 -u -b <rate>M -t 5 -l 1472 -p 5001`.
-RX "delivered" is the delta in `sink_packets` from Zephyr's `emaczero_perf_stats`
-across the bench window — NOT iperf's offered rate. TX is
-`scripts/run_tx_accounting.py --rate-mbps 0 --duration 5 --packet-size 1472`
-(unthrottled). Concurrent runs iperf + tx bench simultaneously.
+UDP with 1472 B payloads through Zephyr sockets on the mainline emacZero
+driver. RX is the board's sink count over a 10 s window
+(`scripts/run_udp_accounting.py`); TX is the board's `zsock_sendto` loop,
+unthrottled, counted by the MAC and checked against the host
+(`scripts/run_tx_accounting.py --rate-mbps 0`).
 
-| Test | MBV | Vex (fixed, 088ac8f) |
+| Test | MBV | Vex |
 |---|---|---|
-| RX single-direction | **96.0 Mbps** delivered, 0 drops anywhere | **94.5 Mbps** delivered, 0 drops anywhere |
-| TX single-direction | **91.4 Mbps**, 99.88% host-received, 0 errors | **92.3 Mbps**, 99.87% host-received, 0 errors |
-| RX+TX concurrent | RX 95.8 + TX 91.4 = **187.2 Mbps** aggregate | RX 94.7 + TX 91.4 = **186.1 Mbps** aggregate |
-| % of 200 Mbps full-duplex | **93.6%** | **93.1%** |
+| RX at 5 Mbit/s offered | 100% delivered, 0 errors | 100% delivered, 0 errors |
+| RX ceiling | 8.5 Mbit/s, ~720 frames/s | 8.5 Mbit/s, ~720 frames/s |
+| TX single-direction | 9.5 Mbit/s, 0 errors | 11.7 Mbit/s, 0 errors |
 
-Both CPUs saturate the 100 Mbps MII in both directions with zero drops at
-`mac_rx_err`, `gate_dropped_bad_frames`, `gate_dropped_overflow_frames`,
-or `tx_dma_error`. On this SoC composition the two CPUs are
-indistinguishable at the network layer — the workload is
-network-bound, not CPU-bound.
+The RX ceiling is the same on both CPUs despite Vex's 23% faster clock,
+because memory latency sets it. Frame buffers live in uncached DDR and the
+UDP payload starts 2 bytes off a word boundary, so the socket's `memcpy`
+of each payload reads uncached memory a byte at a time: measured at
+~87k cycles on MBV and ~107k on Vex for 1472 bytes, ~1.07 ms on both, out
+of ~1.39 ms per frame. With source and destination at the same alignment
+the copy drops to ~22k/27k cycles, and from cached memory to ~3.5k/2.2k.
+TX copies into uncached buffers too and gains a little from Vex's faster
+core.
 
-Historical bench numbers that suggested vex or mbv had a large edge over
-the other were measurement artifacts: either the Python
-`send_fast_sink` sender was host-side capped near 66 Mbps (making both
-look slow), or the reported number was iperf's OFFERED rate rather than
-the board-delivered rate. Once both are read from
-`sink_packets` deltas with an iperf sender, they converge at ~94-96 Mbps
-RX / ~91-92 Mbps TX / ~186-187 Mbps aggregate.
+Earlier revisions measured ~95 Mbit/s RX and ~91 Mbit/s TX on both CPUs.
+Those numbers came from a driver-level interceptor that counted port-5001
+frames without the network stack, and a TX bench that bypassed it, which
+the mainline driver does not have.
 
 ## FPGA resource utilization
 
@@ -113,10 +112,9 @@ Program + boot (`<shell>` is `mbv` or `vex`; `<N>` is 3 for mbv, 4 for vex):
 Provision IP (both, once booted):
 - `python scripts/emacz_config.py --bind <host-ip> configure --ip 192.168.237.200 --prefix 24`
 
-Bench (iperf 2 on the host):
-- RX: `iperf -c 192.168.237.200 -B <host-ip> -u -b 95M -t 5 -l 1472 -p 5001`,
-  then diff `sink_packets` from `python scripts/read_perf_stats.py --chain <N> --all`
-- TX: `python scripts/run_tx_accounting.py --board 192.168.237.200 --bind <host-ip> --chain <N> --rate-mbps 0 --duration 5 --packet-size 1472 --skip-profile-check`
+Bench:
+- RX: `python scripts/run_udp_accounting.py --chain <N> --target 192.168.237.200 --bind <host-ip> --rate-mbps <rate> --duration 10`
+- TX: `python scripts/run_tx_accounting.py --chain <N> --board 192.168.237.200 --bind <host-ip> --rate-mbps 0 --duration 5 --packet-size 1472`
 
 ## When to pick which
 
@@ -131,7 +129,5 @@ Bench (iperf 2 on the host):
 - Designs that want AMD's supported toolchain end-to-end
 - LMB-BRAM boot (no external loader step)
 
-**Neither, if the goal is throughput** — the two are indistinguishable
-on this SoC at 100 Mbps line rate. Any perceived difference is a
-measurement bias; verify both with `sink_packets` deltas before drawing
-a conclusion.
+**Neither, if the goal is RX throughput** — uncached-memory copies hold
+both to the same ~720 frames/s. Vex's faster core buys about 20% on TX.

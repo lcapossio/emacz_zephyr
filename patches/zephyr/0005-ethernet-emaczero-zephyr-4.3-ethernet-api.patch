@@ -1,0 +1,94 @@
+Backport the mainline emacZero driver (0004) to the Zephyr 4.3 ethernet API
+in deps/zephyr: no struct net_if *iface argument on the ethernet_api calls,
+and net_eth_carrier_on/off instead of net_eth_carrier_set. Drop this patch
+once deps/zephyr is 4.5 or newer.
+
+diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
+--- a/drivers/ethernet/eth_emaczero.c
++++ b/drivers/ethernet/eth_emaczero.c
+@@ -651,7 +651,11 @@
+ 		emz_update_ctrl(cfg, EMZ_CTRL_SPEED_MASK | EMZ_CTRL_FULL_DUPLEX, ctrl);
+ 	}
+ 
+-	net_eth_carrier_set(data->iface, state->is_up);
++	if (state->is_up) {
++		net_eth_carrier_on(data->iface);
++	} else {
++		net_eth_carrier_off(data->iface);
++	}
+ }
+ 
+ static void emz_iface_init(struct net_if *iface)
+@@ -673,26 +677,23 @@
+ 	}
+ }
+ 
+-static int emz_start(const struct device *dev, struct net_if *iface)
++static int emz_start(const struct device *dev)
+ {
+-	ARG_UNUSED(iface);
+ 
+ 	emz_update_ctrl(dev->config, 0, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN);
+ 	return 0;
+ }
+ 
+-static int emz_stop(const struct device *dev, struct net_if *iface)
++static int emz_stop(const struct device *dev)
+ {
+-	ARG_UNUSED(iface);
+ 
+ 	emz_update_ctrl(dev->config, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN, 0);
+ 	return 0;
+ }
+ 
+-static enum ethernet_hw_caps emz_get_capabilities(const struct device *dev, struct net_if *iface)
++static enum ethernet_hw_caps emz_get_capabilities(const struct device *dev)
+ {
+ 	ARG_UNUSED(dev);
+-	ARG_UNUSED(iface);
+ 
+ 	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE
+ #if defined(CONFIG_NET_PROMISCUOUS_MODE)
+@@ -701,7 +702,7 @@
+ 		;
+ }
+ 
+-static int emz_set_config(const struct device *dev, struct net_if *iface,
++static int emz_set_config(const struct device *dev,
+ 			  enum ethernet_config_type type, const struct ethernet_config *config)
+ {
+ 	const struct emz_config *cfg = dev->config;
+@@ -711,7 +712,7 @@
+ 	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
+ 		memcpy(data->mac, config->mac_address.addr, sizeof(data->mac));
+ 		emz_set_mac(cfg, data->mac);
+-		net_if_set_link_addr(iface, data->mac, sizeof(data->mac), NET_LINK_ETHERNET);
++		net_if_set_link_addr(data->iface, data->mac, sizeof(data->mac), NET_LINK_ETHERNET);
+ 		return 0;
+ #if defined(CONFIG_NET_PROMISCUOUS_MODE)
+ 	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
+@@ -723,22 +724,20 @@
+ 	}
+ }
+ 
+-static const struct device *emz_get_phy(const struct device *dev, struct net_if *iface)
++static const struct device *emz_get_phy(const struct device *dev)
+ {
+ 	const struct emz_config *cfg = dev->config;
+ 
+-	ARG_UNUSED(iface);
+ 
+ 	return cfg->phy;
+ }
+ 
+ #if defined(CONFIG_NET_STATISTICS_ETHERNET)
+-static struct net_stats_eth *emz_get_stats(const struct device *dev, struct net_if *iface)
++static struct net_stats_eth *emz_get_stats(const struct device *dev)
+ {
+ 	const struct emz_config *cfg = dev->config;
+ 	struct emz_data *data = dev->data;
+ 
+-	ARG_UNUSED(iface);
+ 
+ 	data->stats.pkts.tx = emz_read(cfg, EMZ_REG_TX_FRAME);
+ 	data->stats.bytes.sent = emz_read(cfg, EMZ_REG_TX_BYTE);

@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-"""Run the board-side UDP TX benchmark and print host/perf-counter deltas."""
+"""Run the board-side UDP TX benchmark and print host and MAC counter deltas.
+
+The control port's 't' command sends UDP datagrams through the board's
+network stack and driver to this host for the requested time.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +16,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-
-from read_perf_stats import read_stats
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
@@ -33,23 +35,6 @@ REGS = {
     "tx_er_pulses": 0x1D0,
     "tx_er_frames": 0x1D4,
 }
-
-PERF_KEEP = [
-    "tx_send_calls",
-    "tx_send_read_fail",
-    "tx_setup_calls",
-    "tx_setup_no_dma",
-    "tx_setup_busy",
-    "tx_dma_config_fail",
-    "tx_dma_reload_fail",
-    "tx_dma_start_fail",
-    "tx_dma_start_ok",
-    "tx_dma_completed",
-    "tx_dma_error",
-    "tx_last_len",
-    "tx_last_ret",
-]
-
 
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
     transport = XilinxHwServerTransport(fpga_name=tap)
@@ -78,11 +63,7 @@ def parse_reply(text: str) -> dict[str, int]:
     return out
 
 
-def delta(after, before, name: str) -> int:
-    return int(getattr(after, name)) - int(getattr(before, name))
-
-
-def profile_check(board: str, bind: str, port: int, timeout: float) -> str:
+def control_check(board: str, bind: str, port: int, timeout: float) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((bind, 0))
         sock.settimeout(timeout)
@@ -125,7 +106,6 @@ class Receiver(threading.Thread):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--addr", type=lambda s: int(s, 0), default=0x9FFFF000)
     parser.add_argument("--csr-base", type=lambda s: int(s, 0), default=0x44A00000)
     parser.add_argument("--tap", default="xc7a100t")
     parser.add_argument("--chain", type=int, default=3)
@@ -133,8 +113,8 @@ def main() -> int:
     parser.add_argument("--bind", default="192.168.137.1")
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--listen-port", type=int, default=5003)
-    parser.add_argument("--profile-timeout", type=float, default=2.0)
-    parser.add_argument("--skip-profile-check", action="store_true")
+    parser.add_argument("--control-timeout", type=float, default=2.0)
+    parser.add_argument("--skip-control-check", action="store_true")
     parser.add_argument("--rate-mbps", type=float, default=0.0,
                         help="Payload pacing request; 0 means unthrottled")
     parser.add_argument("--duration", type=float, default=5.0)
@@ -145,22 +125,20 @@ def main() -> int:
     duration_ms = max(1, int(round(args.duration * 1000.0)))
     command = f"t {duration_ms} {args.packet_size} {rate_x1000} {args.listen_port}"
 
-    if not args.skip_profile_check:
+    if not args.skip_control_check:
         try:
-            reply = profile_check(args.board, args.bind, args.control_port,
-                                  args.profile_timeout)
+            reply = control_check(args.board, args.bind, args.control_port,
+                                  args.control_timeout)
         except OSError as exc:
-            print(f"profile_check=fail error={exc}")
-            print("hint=profile control must reply before TX tests; try the elevated host context")
+            print(f"control_check=fail error={exc}")
+            print("hint=the control port must reply before TX tests; try the elevated host context")
             return 2
-        print(f"profile_check=ok reply_from={reply}")
+        print(f"control_check=ok reply_from={reply}")
 
     rx = Receiver(args.bind, args.listen_port)
     rx.start()
     time.sleep(0.2)
 
-    # Only tx_* fields are used, and RX may be running concurrently.
-    before_perf = read_stats(args.addr, args.tap, args.chain, sink_consistent=False)
     before_regs = read_regs(args.csr_base, args.tap, args.chain)
     started = time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -173,7 +151,6 @@ def main() -> int:
     rx.stop.set()
     rx.join(timeout=2.0)
 
-    after_perf = read_stats(args.addr, args.tap, args.chain, sink_consistent=False)
     after_regs = read_regs(args.csr_base, args.tap, args.chain)
 
     reply_text = data.decode("ascii", errors="replace").strip()
@@ -196,8 +173,6 @@ def main() -> int:
     if host_window > 0:
         print(f"host_payload_mbps_rx_window={rx.bytes * 8 / host_window / 1_000_000:.3f}")
 
-    for name in PERF_KEEP:
-        print(f"{name}_delta={delta(after_perf, before_perf, name)}")
     for name in REGS:
         print(f"{name}_delta={after_regs[name] - before_regs[name]}")
 

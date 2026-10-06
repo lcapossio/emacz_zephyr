@@ -1,5 +1,14 @@
 # emacZero Zephyr Performance Plan
 
+**Status (2026-10-07).** The app now runs the mainline Zephyr emacZero
+driver, which has no port-5001 interceptor, so every number below that
+came from the interceptor's "sink" is history. Through sockets, both shells
+deliver 8.5 Mbit/s RX (~720 frames/s) and 9.5 (MBV) / 11.7 (Vex) Mbit/s
+TX. The RX ceiling is the payload copy out of uncached DDR: the UDP payload
+sits 2 bytes off a word boundary, `memcpy` reads it a byte at a time, and
+that costs ~1.07 ms of the ~1.39 ms per frame on both CPUs. The plan below
+is the record of how the hardware path was made clean; it is not current.
+
 The current 1472-byte UDP receive ceiling is about 8 Mbit/s, or roughly
 680 packets/s. On a 100 MHz MicroBlaze V-class core that is about 147k cycles
 per packet, which is too high to explain as ordinary packet-copy or checksum

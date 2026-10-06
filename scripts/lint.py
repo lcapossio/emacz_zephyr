@@ -22,16 +22,17 @@ PYTHON_SOURCES = (
     "tests/test_run_arty_stress.py",
 )
 C_SOURCES = (
+    "app/src/hostio.h",
+    "app/src/perf_stats.h",
     "app/src/provision.c",
     "app/src/provision.h",
-    "drivers/ethernet/eth_emaczero.h",
 )
 POLICY_SOURCES = (
     "app/src/main.c",
     "app/src/provision.c",
+    "app/src/hostio.h",
+    "app/src/perf_stats.h",
     "app/src/provision.h",
-    "drivers/ethernet/eth_emaczero.c",
-    "drivers/ethernet/eth_emaczero.h",
     *PYTHON_SOURCES,
 )
 

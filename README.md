@@ -15,24 +15,23 @@ domain.
 - [Host-configured IPv4](#host-configured-ipv4)
 - [Arty A7-100T SoC](#arty-a7-100t-soc)
 - [Resource Usage and Frequency](#resource-usage-and-frequency)
-- [MBV vs Vex comparison](#mbv-vs-vex-comparison)
+- [Throughput](#throughput)
 - [Verification](#verification)
 - [Author and License](#author-and-license)
 
 ## Features
 
-- Out-of-tree Zephyr Ethernet driver and DT binding for `bard0,emaczero`.
+- Runs the mainline Zephyr emacZero driver (`bard0,emaczero`), carried in
+  `patches/zephyr/` until the pinned Zephyr tree includes it.
 - Arty A7-100T shells for two CPUs: AMD MicroBlaze V (`mbv32` board) and
   SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
-  earlyBranch, R-slice on DBUS). Same emacZero MAC + Zephyr fast-path on
+  earlyBranch, R-slice on DBUS). Same emacZero MAC and Zephyr app on
   both.
 - AXI DMA RX through Zephyr's DMA API (upstream Xilinx AXI DMA driver),
   with error recovery and zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
-- Optional per-region cycle instrumentation
-  (`CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION`, off by default).
-- Application-owned high-rate UDP endpoint on port 5001 for line-rate RX
-  testing, plus a normal Zephyr socket path for arbitrary traffic.
+- UDP sink on port 5001 and a control port on 5002 for host-side RX/TX
+  accounting, both through ordinary Zephyr sockets.
 - Host-configured IPv4 — no deployment subnet baked into the firmware.
 - `external/emacZero` and `fcapz` pulled in as git submodules; Zephyr is
   pinned to AMD/Xilinx `zephyr-amd` branch `xlnx_rel_v2026.1`.
@@ -41,8 +40,8 @@ domain.
 
 - `external/emacZero/` — emacZero RTL, docs, and bare-metal SW submodule.
 - `fcapz/` — fpgacapZero debug cores and host tools submodule.
-- `drivers/ethernet/` — native Zephyr emacZero Ethernet driver.
-- `dts/bindings/ethernet/` — Zephyr DT binding.
+- `patches/zephyr/` — Zephyr patches: AXI DMA driver fixes and the emacZero
+  driver.
 - `app/` — minimal Zephyr bring-up app for the Arty A7 example.
 - `hardware/` — Vivado build script, RTL, XDC.
 - `scripts/` — host tools (loader, provisioning, perf-stats, stress test).
@@ -64,7 +63,9 @@ The patch step asks west for the Zephyr checkout path (falls back to
 `ac03a4a9085`, 0002 adds an optional `memory-region` property that places
 the scatter-gather descriptor rings in a given linker region, and 0003
 reports a channel halted by a DMA error to the client callback (`-EIO`) so
-the driver can reset and rebuild both channels. Re-run after
+the driver can reset and rebuild both channels. 0004 adds the emacZero
+Ethernet driver and DT binding as submitted to mainline Zephyr, and 0005
+backports it to this tree's older Ethernet API. Re-run after
 every `west update`; it skips patches that are already applied and refuses
 to touch locally modified driver files.
 
@@ -94,13 +95,13 @@ west build -b arty_a7_vex -d build-vex-emac app -- \
 ```
 
 The two boards are not interchangeable: `arty_a7_vex` sets a 100 MHz timer
-base and disables the Zicbom D-cache maintenance ops (`cbo.clean`,
-`cbo.inval`) the VexRiscv core cannot decode. Booting an `mbv32` image on
-the Vex bitstream traps on `cbo.*`; the reverse gives a ~23% timer error.
+base and builds without the C extension, which the RV32IMA VexRiscv core
+lacks. Booting an `mbv32` image on the Vex bitstream traps on the first
+compressed instruction; the reverse gives a ~23% timer error.
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
-a Zephyr extra module, so the local driver/binding/Kconfig are picked up
-automatically.
+a Zephyr extra module, so the `arty_a7_vex` board, its SoC and the app
+Kconfig are picked up automatically.
 
 Hardware (Vivado):
 
@@ -149,11 +150,10 @@ Configuration is intentionally runtime-only and must be re-applied after a
 reboot. Use `--interface NAME`, `--bind HOST_IP`, or `--mac` to disambiguate
 when multiple boards or NICs are present.
 
-The default app registers emacZero, brings up AXI DMA-backed RX/TX,
-provisions IPv4 from the host, and installs a driver-level RX interceptor
-for unicast UDP port 5001 that returns each DMA buffer immediately after
-accounting. ARP, ICMP, port-5004 provisioning, and every other UDP port
-continue through the normal Zephyr network stack.
+The default app brings up emacZero with AXI DMA-backed RX/TX, provisions
+IPv4 from the host, and serves a UDP sink on port 5001 and a control port
+on 5002. All traffic, including provisioning on port 5004, goes through
+the normal Zephyr network stack.
 
 ## Arty A7-100T SoC
 
@@ -243,26 +243,31 @@ I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including
 LUT-as-memory and F7/F8 wide-mux counts, is in
 [docs/cpu_comparison.md](docs/cpu_comparison.md).
 
-## MBV vs Vex comparison
+## Throughput
 
-Both CPUs saturate the 100 Mbps MII in both directions with zero drops.
-Numbers below are delivered rate — the delta in Zephyr's `sink_packets`
-from `emaczero_perf_stats` across the bench window, not iperf's offered
-rate. Sender is `iperf.exe -c <board> -u -b <rate>M -t 5 -l 1472`.
+UDP with 1472 B payloads through Zephyr sockets, delivered rate as counted
+by the board (`scripts/run_udp_accounting.py`, `scripts/run_tx_accounting.py
+--rate-mbps 0`):
 
-| Test | MBV | Vex |
+| Path | MBV (81.25 MHz) | Vex (100 MHz) |
 |---|---|---|
-| RX single-direction | 96.0 Mbps, 0 drops | 94.5 Mbps, 0 drops |
-| TX single-direction | 91.4 Mbps | 92.3 Mbps |
-| RX+TX concurrent | 187.2 Mbps aggregate | 186.1 Mbps aggregate |
-| % of 200 Mbps full-duplex | 93.6% | 93.1% |
+| RX, socket sink on port 5001 | 8.5 Mbit/s (~720 frames/s) | 8.5 Mbit/s (~720 frames/s) |
+| TX, `zsock_sendto` loop | 9.5 Mbit/s | 11.7 Mbit/s |
 
-At the network layer the two CPUs are indistinguishable on this SoC —
-the workload is network-bound, not CPU-bound. Pick MBV for a
-Vivado-native toolchain end-to-end, or Vex for the FPGA-area savings
-above and a rebuild pipeline that uses SpinalHDL/sbt. See
-[docs/cpu_comparison.md](docs/cpu_comparison.md) for the full
-methodology, reproduction steps, and when-to-pick-which.
+Both CPUs hit the same RX ceiling because it is set by memory latency,
+not the core. The emacZero frame buffers sit in uncached DDR, and the
+socket's copy of each payload out of them costs ~1.07 ms of the
+~1.39 ms per frame on both shells: the UDP payload starts 2 bytes off a
+word boundary, so `memcpy` falls back to byte reads of uncached memory.
+Above the ceiling the MAC and driver drop the excess and count it; DMA
+and the rest of the system stay healthy.
+
+Earlier versions of this repository reported ~95 Mbit/s through a
+driver-level interceptor for port 5001 that bypassed the network stack.
+The mainline driver has no such hook. Pick MBV for a Vivado-native
+toolchain end-to-end, or Vex for the FPGA-area savings above and a
+rebuild pipeline that uses SpinalHDL/sbt; see
+[docs/cpu_comparison.md](docs/cpu_comparison.md).
 
 ## Verification
 
@@ -292,44 +297,26 @@ python scripts/run_arty_stress.py --interface "Ethernet 2" \
   --board-ip 192.168.237.200
 ```
 
-Defaults are 600 s at 95 Mbit/s with 1472 B payloads and 100% delivery
-required. Exits non-zero on any monitored MAC/gate/DMA/driver error delta.
+Defaults are 600 s at 5 Mbit/s with 1472 B payloads and 100% delivery
+required, below the socket path's ceiling (see
+[Throughput](#throughput)). Exits non-zero on any monitored
+MAC/gate/DMA/driver error delta.
 
-DMA error recovery (profile build, JTAG for the perf counters; `--chain 3`
-on MBV, `4` on Vex):
+DMA error recovery (JTAG for the descriptor ring and perf counters;
+`--chain 3` on MBV, `4` on Vex):
 
 ```sh
-python scripts/run_dma_recovery_test.py --channel rx --chain 3 \
-  --board 192.168.237.200 --bind 192.168.237.1
-python scripts/run_dma_recovery_test.py --channel tx --chain 3 \
+python scripts/run_dma_recovery_test.py --chain 3 \
   --board 192.168.237.200 --bind 192.168.237.1
 ```
 
-Each run halts one channel with a zero-length descriptor (DMAIntErr, no
-memory written) and passes when the driver recovers exactly once and RX
-counts are exact afterwards. Add `--drain` to fire the fault while a flood
-to a port with no listener holds the RX pool in the net stack, and
-`--starve N` to make the recovery find the RX pool empty N times first,
-which exercises its retry path.
-
-### Throughput paths
-
-The application registers a driver-level RX interceptor for unicast UDP
-port 5001 (the "sink-bypass" fast path) and lets everything else go
-through the normal Zephyr net stack. These two paths behave very
-differently:
-
-- **Sink-bypass (UDP :5001)**: line-rate on 100BASE-TX with zero MAC,
-  RX-gate, S2MM `tready`-low, DMA/BD, allocation, or refill error
-  deltas. Head-to-head numbers for MBV and Vex are in
-  [MBV vs Vex comparison](#mbv-vs-vex-comparison).
-- **Zephyr socket path (any other UDP port)**: saturates around
-  ~12 Mbit/s. Driver overhead is only ~10.9% of the wall (measured via
-  the gated R7 per-region counters); the remainder is Zephyr net-stack
-  work on a single core (81.25 MHz on MBV, 100 MHz on Vex). Reaching
-  25-30 Mbit/s through
-  arbitrary sockets would require a stack rewrite or SMP. See
-  `no_commit/BUGS.md` #33 for the analysis.
+The test zeroes the length of the RX descriptor at S2MM's TAILDESC, one
+the engine cannot have fetched yet, and sends traffic until S2MM reaches
+it and halts with DMAIntErr, no memory written. It passes when the driver
+counted exactly one RX DMA failure (`rx_dma_failed`), S2MM runs without
+error, RX counts are exact afterwards and TX works. `--rate-mbps`
+(default 5) must stay below the socket path's ceiling for the exact count
+to be meaningful.
 
 ## Author and License
 

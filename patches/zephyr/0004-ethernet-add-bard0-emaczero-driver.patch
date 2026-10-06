@@ -1,0 +1,1054 @@
+diff --git a/drivers/ethernet/CMakeLists.txt b/drivers/ethernet/CMakeLists.txt
+index 0a7a1fbb143..a1b815425b6 100644
+--- a/drivers/ethernet/CMakeLists.txt
++++ b/drivers/ethernet/CMakeLists.txt
+@@ -22,6 +22,7 @@ zephyr_library_sources_ifdef(CONFIG_ETH_DWMAC_STM32H7X	eth_dwmac_stm32h7x.c)
+ zephyr_library_sources_ifdef(CONFIG_ETH_DWMAC_MMU	eth_dwmac_mmu.c)
+ 
+ zephyr_library_sources_ifdef(CONFIG_ETH_E1000		eth_e1000.c)
++zephyr_library_sources_ifdef(CONFIG_ETH_EMACZERO	eth_emaczero.c)
+ zephyr_library_sources_ifdef(CONFIG_ETH_ENC28J60	eth_enc28j60.c)
+ zephyr_library_sources_ifdef(CONFIG_ETH_ENC424J600	eth_enc424j600.c)
+ zephyr_library_sources_ifdef(CONFIG_ETH_ESP32		eth_esp32.c)
+diff --git a/drivers/ethernet/Kconfig b/drivers/ethernet/Kconfig
+index 215a05fa038..3937cac6564 100644
+--- a/drivers/ethernet/Kconfig
++++ b/drivers/ethernet/Kconfig
+@@ -53,6 +53,7 @@ source "drivers/ethernet/Kconfig.enc28j60"
+ source "drivers/ethernet/Kconfig.enc424j600"
+ source "drivers/ethernet/Kconfig.esp32"
+ source "drivers/ethernet/Kconfig.e1000"
++source "drivers/ethernet/Kconfig.emaczero"
+ source "drivers/ethernet/Kconfig.sam_gmac"
+ source "drivers/ethernet/Kconfig.stm32_hal"
+ source "drivers/ethernet/Kconfig.dwmac"
+diff --git a/drivers/ethernet/Kconfig.emaczero b/drivers/ethernet/Kconfig.emaczero
+new file mode 100644
+index 00000000000..fdd6298b13d
+--- /dev/null
++++ b/drivers/ethernet/Kconfig.emaczero
+@@ -0,0 +1,77 @@
++# bard0 emacZero Ethernet MAC
++
++# Copyright (c) 2026 Leonardo Capossio - bard0 design
++# SPDX-License-Identifier: Apache-2.0
++
++menuconfig ETH_EMACZERO
++	bool "bard0 emacZero Ethernet MAC driver"
++	default y
++	depends on DT_HAS_BARD0_EMACZERO_ENABLED
++	depends on DMA_XILINX_AXI_DMA
++	help
++	  Enable the driver for the bard0 emacZero Ethernet MAC, an FPGA soft
++	  core that moves frames through a Xilinx AXI DMA.
++
++if ETH_EMACZERO
++
++config ETH_EMACZERO_RX_BUFFER_COUNT
++	int "Number of RX frame buffers"
++	default 32
++	range 2 1024
++	help
++	  Frame-sized RX buffers per MAC. Buffers are posted to the DMA, then
++	  lent to the network stack without copying until it releases them.
++
++config ETH_EMACZERO_RX_DMA_POST_COUNT
++	int "Number of RX buffers kept posted to the DMA"
++	default 8
++	range 1 1024
++	help
++	  How many RX buffers the driver keeps queued on the S2MM channel.
++	  Must be smaller than ETH_EMACZERO_RX_BUFFER_COUNT, so that buffers
++	  remain to lend to the network stack, and smaller than
++	  DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX.
++
++config ETH_EMACZERO_RX_ZERO_COPY_MAX
++	int "Maximum RX buffers lent to the network stack"
++	default 16
++	range 0 1024
++	help
++	  Received frames are handed to the network stack in the DMA buffer
++	  itself until this many are outstanding. Further frames are copied
++	  into ETH_EMACZERO_RX_COPY_BUFFER_COUNT buffers, so a stack that holds
++	  on to packets cannot starve the DMA of RX buffers. Set to 0 to always
++	  copy.
++
++config ETH_EMACZERO_RX_COPY_BUFFER_COUNT
++	int "Number of RX copy buffers"
++	default 8
++	range 1 1024
++	help
++	  Frame-sized buffers used when a received frame is copied rather than
++	  lent to the network stack.
++
++config ETH_EMACZERO_TX_BUFFER_COUNT
++	int "Number of TX frame buffers"
++	default 8
++	range 1 1024
++	help
++	  Frame-sized TX buffers, which is also the number of frames that can
++	  be queued on the MM2S channel. Must be smaller than
++	  DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX.
++
++config ETH_EMACZERO_RX_THREAD_STACK_SIZE
++	int "RX thread stack size"
++	default 2048
++	help
++	  Stack size of the thread that hands received frames to the network
++	  stack.
++
++config ETH_EMACZERO_RX_THREAD_PRIORITY
++	int "RX thread cooperative priority"
++	default 2
++	help
++	  Cooperative priority, as passed to K_PRIO_COOP(), of the thread that
++	  hands received frames to the network stack.
++
++endif # ETH_EMACZERO
+diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
+new file mode 100644
+index 00000000000..685da05233e
+--- /dev/null
++++ b/drivers/ethernet/eth_emaczero.c
+@@ -0,0 +1,868 @@
++/*
++ * Copyright (c) 2026 Leonardo Capossio - bard0 design
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#define DT_DRV_COMPAT bard0_emaczero
++
++#include <errno.h>
++#include <string.h>
++
++#include <zephyr/device.h>
++#include <zephyr/drivers/dma.h>
++#include <zephyr/kernel.h>
++#include <zephyr/linker/devicetree_regions.h>
++#include <zephyr/logging/log.h>
++#include <zephyr/net/ethernet.h>
++#include <zephyr/net/net_if.h>
++#include <zephyr/net/net_pkt.h>
++#include <zephyr/net/phy.h>
++#include <zephyr/net_buf.h>
++#include <zephyr/sys/byteorder.h>
++#include <zephyr/sys/sys_io.h>
++#include <zephyr/sys/util.h>
++#include <ethernet/eth_stats.h>
++
++#include "../dma/dma_xilinx_axi_dma.h"
++
++LOG_MODULE_REGISTER(eth_emaczero, CONFIG_ETHERNET_LOG_LEVEL);
++
++#define EMZ_REG_VERSION         0x00
++#define EMZ_REG_CTRL            0x04
++#define EMZ_REG_MAC_LO          0x0c
++#define EMZ_REG_MAC_HI          0x10
++#define EMZ_REG_IRQ_EN          0x20
++#define EMZ_REG_IRQ_STATUS      0x24
++#define EMZ_REG_TX_FRAME        0x28
++#define EMZ_REG_TX_BYTE         0x2c
++#define EMZ_REG_RX_FRAME        0x30
++#define EMZ_REG_RX_BYTE         0x34
++#define EMZ_REG_RX_ERR          0x38
++#define EMZ_REG_RX_ERR_SYMBOL   0x4c
++#define EMZ_REG_RX_ERR_OVERFLOW 0x50
++#define EMZ_REG_RX_ERR_OVERSIZE 0x54
++#define EMZ_REG_RX_BCAST        0x58
++#define EMZ_REG_RX_MCAST        0x5c
++
++/* VERSION[15:0] is the core identifier, ASCII "EM" */
++#define EMZ_VERSION_ID_MASK GENMASK(15, 0)
++#define EMZ_VERSION_ID      0x454d
++
++#define EMZ_CTRL_TX_EN       BIT(0)
++#define EMZ_CTRL_RX_EN       BIT(1)
++#define EMZ_CTRL_PROMISC     BIT(2)
++#define EMZ_CTRL_SPEED_MASK  GENMASK(4, 3)
++#define EMZ_CTRL_SPEED_1000  0
++#define EMZ_CTRL_SPEED_100   1
++#define EMZ_CTRL_SPEED_10    2
++#define EMZ_CTRL_FULL_DUPLEX BIT(5)
++
++#define EMZ_IRQ_ALL GENMASK(2, 0)
++
++/* Largest frame the MAC accepts with jumbo frames disabled */
++#define EMZ_MAX_FRAME_SIZE 1518U
++
++#if defined(CONFIG_DCACHE_LINE_SIZE) && (CONFIG_DCACHE_LINE_SIZE > 0)
++#define EMZ_BUF_ALIGN CONFIG_DCACHE_LINE_SIZE
++#else
++#define EMZ_BUF_ALIGN 4
++#endif
++
++/* Whole cache lines, so DMA cache maintenance never touches a neighbour */
++#define EMZ_BUF_SIZE ROUND_UP(EMZ_MAX_FRAME_SIZE, EMZ_BUF_ALIGN)
++
++#define EMZ_RX_BUF_COUNT  CONFIG_ETH_EMACZERO_RX_BUFFER_COUNT
++#define EMZ_RX_POST_COUNT CONFIG_ETH_EMACZERO_RX_DMA_POST_COUNT
++#define EMZ_TX_BUF_COUNT  CONFIG_ETH_EMACZERO_TX_BUFFER_COUNT
++
++/* A full TX ring drains in about 10 ms at 10 Mbit/s */
++#define EMZ_TX_TIMEOUT K_MSEC(100)
++
++/*
++ * The DMA driver refuses to post into a descriptor that is still in use, so
++ * one descriptor must stay free behind the ones a channel has outstanding.
++ */
++BUILD_ASSERT(EMZ_RX_POST_COUNT < CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_RX,
++	     "ETH_EMACZERO_RX_DMA_POST_COUNT must be below the AXI DMA RX ring size");
++BUILD_ASSERT(EMZ_TX_BUF_COUNT < CONFIG_DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX,
++	     "ETH_EMACZERO_TX_BUFFER_COUNT must be below the AXI DMA TX ring size");
++BUILD_ASSERT(EMZ_RX_POST_COUNT < EMZ_RX_BUF_COUNT,
++	     "ETH_EMACZERO_RX_DMA_POST_COUNT must be below ETH_EMACZERO_RX_BUFFER_COUNT");
++
++struct emz_rx_buf {
++	void *fifo_reserved;
++	uint8_t *data;
++	size_t len;
++};
++
++/* user data of a net_buf that lends an RX buffer to the network stack */
++struct emz_rx_lend {
++	const struct device *dev;
++	struct emz_rx_buf *rx;
++};
++
++struct emz_config {
++	mem_addr_t base;
++	const struct device *dma;
++	const struct device *phy;
++	struct net_eth_mac_config mac_cfg;
++	uint8_t (*rx_storage)[EMZ_BUF_SIZE];
++	uint8_t (*tx_storage)[EMZ_BUF_SIZE];
++	struct net_buf_pool *rx_lend_pool;
++	struct net_buf_pool *rx_copy_pool;
++	k_thread_stack_t *rx_stack;
++	size_t rx_stack_size;
++};
++
++struct emz_data {
++	const struct device *dev;
++	struct net_if *iface;
++	uint8_t mac[NET_ETH_ADDR_LEN];
++
++	struct emz_rx_buf rx_buf[EMZ_RX_BUF_COUNT];
++	/* rx_lock orders S2MM descriptors with the rx_posted entries naming them */
++	struct k_spinlock rx_lock;
++	struct k_fifo rx_free;
++	struct k_fifo rx_posted;
++	struct k_fifo rx_ready;
++	unsigned int rx_posted_count;
++	bool rx_dma_configured;
++	/* RX buffers currently lent to the network stack */
++	atomic_t rx_lent;
++	struct k_thread rx_thread;
++
++	struct k_mutex tx_lock;
++	/* free TX buffers; given back by the MM2S completion callback */
++	struct k_sem tx_free;
++	size_t tx_next;
++	bool tx_dma_configured;
++
++	/* set from a DMA halt until emz_dma_recover() has rebuilt both channels */
++	atomic_t dma_recover_pending;
++	struct k_work_delayable dma_recover_work;
++
++#if defined(CONFIG_NET_STATISTICS_ETHERNET)
++	struct net_stats_eth stats;
++	uint32_t rx_dropped;
++#endif
++};
++
++static void emz_rx_refill(const struct device *dev);
++
++static uint32_t emz_read(const struct emz_config *cfg, mem_addr_t reg)
++{
++	return sys_read32(cfg->base + reg);
++}
++
++static void emz_write(const struct emz_config *cfg, mem_addr_t reg, uint32_t val)
++{
++	sys_write32(val, cfg->base + reg);
++}
++
++static void emz_update_ctrl(const struct emz_config *cfg, uint32_t clear, uint32_t set)
++{
++	emz_write(cfg, EMZ_REG_CTRL, (emz_read(cfg, EMZ_REG_CTRL) & ~clear) | set);
++}
++
++static void emz_set_mac(const struct emz_config *cfg, const uint8_t *mac)
++{
++	emz_write(cfg, EMZ_REG_MAC_LO, sys_get_be32(&mac[2]));
++	emz_write(cfg, EMZ_REG_MAC_HI, sys_get_be16(&mac[0]));
++}
++
++static void emz_count_rx_drop(struct emz_data *data)
++{
++#if defined(CONFIG_NET_STATISTICS_ETHERNET)
++	data->rx_dropped++;
++#else
++	ARG_UNUSED(data);
++#endif
++}
++
++/*
++ * One halt can reach us more than once: a descriptor flagged with the error
++ * and then the halt itself. The first report counts the failure against its
++ * channel and schedules one recovery pass; later ones fold into it.
++ */
++static void emz_dma_request_recover(struct emz_data *data, bool rx)
++{
++	if (!atomic_cas(&data->dma_recover_pending, 0, 1)) {
++		return;
++	}
++
++#if defined(CONFIG_NET_STATISTICS_ETHERNET)
++	if (rx) {
++		data->stats.error_details.rx_dma_failed++;
++	} else {
++		data->stats.error_details.tx_dma_failed++;
++	}
++#else
++	ARG_UNUSED(rx);
++#endif
++	(void)k_work_reschedule(&data->dma_recover_work, K_NO_WAIT);
++}
++
++static void emz_dma_rx_callback(const struct device *dma, void *user_data, uint32_t channel,
++				int status)
++{
++	const struct device *dev = user_data;
++	struct emz_data *data = dev->data;
++	struct emz_rx_buf *rx;
++	k_spinlock_key_t key;
++
++	ARG_UNUSED(channel);
++
++	/*
++	 * Any error halts S2MM. Completions reported after it are ignored:
++	 * emz_dma_recover() takes back every buffer still on rx_posted.
++	 */
++	if (status < 0) {
++		LOG_ERR("RX DMA error %d", status);
++		emz_dma_request_recover(data, true);
++		return;
++	}
++	if (atomic_get(&data->dma_recover_pending) != 0) {
++		return;
++	}
++
++	/* S2MM completes descriptors in ring order, the order rx_posted holds */
++	key = k_spin_lock(&data->rx_lock);
++	rx = k_fifo_get(&data->rx_posted, K_NO_WAIT);
++	if (rx != NULL) {
++		data->rx_posted_count--;
++	}
++	k_spin_unlock(&data->rx_lock, key);
++
++	if (rx == NULL) {
++		LOG_ERR("RX DMA completion without a posted buffer");
++		return;
++	}
++
++	rx->len = dma_xilinx_axi_dma_last_received_frame_length(dma);
++	k_fifo_put(&data->rx_ready, rx);
++}
++
++/*
++ * Queue one RX buffer on S2MM. The engine sees it at the next dma_start().
++ * The first post after init or recovery configures the channel, which resets
++ * the DMA core and may sleep.
++ */
++static int emz_rx_post(const struct device *dev, struct emz_rx_buf *rx)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	int ret;
++
++	if (!data->rx_dma_configured) {
++		struct dma_block_config block = {
++			.dest_address = (uintptr_t)rx->data,
++			.block_size = EMZ_BUF_SIZE,
++		};
++		struct dma_config dma_cfg = {
++			.channel_direction = PERIPHERAL_TO_MEMORY,
++			.complete_callback_en = 1,
++			.block_count = 1,
++			.head_block = &block,
++			.user_data = (void *)dev,
++			.dma_callback = emz_dma_rx_callback,
++			.linked_channel = XILINX_AXI_DMA_LINKED_CHANNEL_NO_CSUM_OFFLOAD,
++		};
++
++		ret = dma_config(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM, &dma_cfg);
++		if (ret == 0) {
++			data->rx_dma_configured = true;
++		}
++	} else {
++		ret = dma_reload(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM, 0, (uintptr_t)rx->data,
++				 EMZ_BUF_SIZE);
++	}
++	if (ret != 0) {
++		return ret;
++	}
++
++	k_fifo_put(&data->rx_posted, rx);
++	data->rx_posted_count++;
++	return 0;
++}
++
++/*
++ * (Re)start S2MM with a single buffer, outside rx_lock because configuring the
++ * channel may sleep. Refill and the RX callback must be idle: at init nothing
++ * runs yet, and during recovery dma_recover_pending holds them off.
++ */
++static int emz_rx_start(const struct device *dev)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	struct emz_rx_buf *rx;
++	int ret;
++
++	rx = k_fifo_get(&data->rx_free, K_NO_WAIT);
++	if (rx == NULL) {
++		return -ENOBUFS;
++	}
++
++	ret = emz_rx_post(dev, rx);
++	if (ret == 0) {
++		ret = dma_start(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
++	}
++	if (ret != 0 && data->rx_posted_count == 0) {
++		k_fifo_put(&data->rx_free, rx);
++	}
++
++	return ret;
++}
++
++static void emz_rx_refill(const struct device *dev)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	struct emz_rx_buf *rx;
++	k_spinlock_key_t key;
++	bool queued = false;
++	int ret;
++
++	/*
++	 * Refills come from the RX thread and from wherever the network stack
++	 * releases a buffer, so they can interleave. Holding rx_lock across the
++	 * batch and the dma_start() keeps each tail-pointer write ahead of the
++	 * previous one and covering only buffers already on rx_posted.
++	 */
++	key = k_spin_lock(&data->rx_lock);
++
++	/* mid-recovery, emz_dma_recover() restarts the channel itself */
++	if (atomic_get(&data->dma_recover_pending) == 0) {
++		while (data->rx_posted_count < EMZ_RX_POST_COUNT) {
++			rx = k_fifo_get(&data->rx_free, K_NO_WAIT);
++			if (rx == NULL) {
++				break;
++			}
++
++			ret = emz_rx_post(dev, rx);
++			if (ret != 0) {
++				LOG_ERR("RX DMA post failed: %d", ret);
++				k_fifo_put(&data->rx_free, rx);
++				break;
++			}
++			queued = true;
++		}
++
++		if (queued) {
++			ret = dma_start(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
++			if (ret != 0) {
++				LOG_ERR("RX DMA start failed: %d", ret);
++			}
++		}
++	}
++
++	k_spin_unlock(&data->rx_lock, key);
++}
++
++static void emz_rx_release(const struct device *dev, struct emz_rx_buf *rx)
++{
++	struct emz_data *data = dev->data;
++
++	k_fifo_put(&data->rx_free, rx);
++	emz_rx_refill(dev);
++}
++
++static void emz_rx_lend_destroy(struct net_buf *buf)
++{
++	struct emz_rx_lend *lend = net_buf_user_data(buf);
++	const struct device *dev = lend->dev;
++	struct emz_rx_buf *rx = lend->rx;
++	struct emz_data *data = dev->data;
++
++	net_buf_destroy(buf);
++	atomic_dec(&data->rx_lent);
++	emz_rx_release(dev, rx);
++}
++
++/*
++ * Wrap a received frame for the network stack: lend it the DMA buffer while
++ * fewer than CONFIG_ETH_EMACZERO_RX_ZERO_COPY_MAX are out, otherwise copy it
++ * so that a stack holding on to packets cannot starve S2MM.
++ */
++static struct net_buf *emz_rx_frag(const struct device *dev, struct emz_rx_buf *rx, bool *lent)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	struct net_buf *frag = NULL;
++
++	*lent = false;
++	if (atomic_get(&data->rx_lent) < CONFIG_ETH_EMACZERO_RX_ZERO_COPY_MAX) {
++		frag = net_buf_alloc_with_data(cfg->rx_lend_pool, rx->data, rx->len, K_NO_WAIT);
++	}
++
++	if (frag != NULL) {
++		struct emz_rx_lend *lend = net_buf_user_data(frag);
++
++		lend->dev = dev;
++		lend->rx = rx;
++		atomic_inc(&data->rx_lent);
++		*lent = true;
++		return frag;
++	}
++
++	frag = net_buf_alloc(cfg->rx_copy_pool, K_NO_WAIT);
++	if (frag != NULL) {
++		net_buf_add_mem(frag, rx->data, rx->len);
++	}
++
++	return frag;
++}
++
++static void emz_rx_deliver(const struct device *dev, struct emz_rx_buf *rx)
++{
++	struct emz_data *data = dev->data;
++	struct net_pkt *pkt;
++	struct net_buf *frag;
++	bool lent;
++
++	if (data->iface == NULL || !net_if_is_up(data->iface)) {
++		emz_rx_release(dev, rx);
++		return;
++	}
++
++	if (rx->len == 0 || rx->len > EMZ_MAX_FRAME_SIZE) {
++		LOG_WRN("RX frame with bad length %zu", rx->len);
++		goto drop;
++	}
++
++	pkt = net_pkt_rx_alloc_on_iface(data->iface, K_NO_WAIT);
++	if (pkt == NULL) {
++		goto drop;
++	}
++
++	frag = emz_rx_frag(dev, rx, &lent);
++	if (frag == NULL) {
++		net_pkt_unref(pkt);
++		goto drop;
++	}
++
++	net_pkt_append_buffer(pkt, frag);
++	if (!lent) {
++		emz_rx_release(dev, rx);
++	}
++
++	/* a lent buffer comes back through emz_rx_lend_destroy() */
++	if (net_recv_data(data->iface, pkt) < 0) {
++		net_pkt_unref(pkt);
++		emz_count_rx_drop(data);
++	}
++	return;
++
++drop:
++	emz_count_rx_drop(data);
++	emz_rx_release(dev, rx);
++}
++
++static void emz_rx_thread(void *p1, void *p2, void *p3)
++{
++	const struct device *dev = p1;
++	struct emz_data *data = dev->data;
++
++	ARG_UNUSED(p2);
++	ARG_UNUSED(p3);
++
++	while (true) {
++		emz_rx_deliver(dev, k_fifo_get(&data->rx_ready, K_FOREVER));
++	}
++}
++
++static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint32_t channel,
++				int status)
++{
++	const struct device *dev = user_data;
++	struct emz_data *data = dev->data;
++
++	ARG_UNUSED(dma);
++	ARG_UNUSED(channel);
++
++	/* MM2S halted; emz_dma_recover() rebuilds the TX buffer accounting */
++	if (status < 0) {
++		LOG_ERR("TX DMA error %d", status);
++		if (data->iface != NULL) {
++			eth_stats_update_errors_tx(data->iface);
++		}
++		emz_dma_request_recover(data, false);
++		return;
++	}
++
++	k_sem_give(&data->tx_free);
++}
++
++static int emz_tx_post(const struct device *dev, const uint8_t *buf, size_t len)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	int ret;
++
++	if (!data->tx_dma_configured) {
++		struct dma_block_config block = {
++			.source_address = (uintptr_t)buf,
++			.block_size = len,
++		};
++		struct dma_config dma_cfg = {
++			.channel_direction = MEMORY_TO_PERIPHERAL,
++			.complete_callback_en = 1,
++			.block_count = 1,
++			.head_block = &block,
++			.user_data = (void *)dev,
++			.dma_callback = emz_dma_tx_callback,
++			.linked_channel = XILINX_AXI_DMA_LINKED_CHANNEL_NO_CSUM_OFFLOAD,
++		};
++
++		ret = dma_config(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM, &dma_cfg);
++		if (ret == 0) {
++			data->tx_dma_configured = true;
++		}
++		return ret;
++	}
++
++	return dma_reload(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM, (uintptr_t)buf, 0, len);
++}
++
++static int emz_send(const struct device *dev, struct net_pkt *pkt)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	size_t len = net_pkt_get_len(pkt);
++	uint8_t *buf;
++	int ret;
++
++	if (len > EMZ_MAX_FRAME_SIZE) {
++		return -EMSGSIZE;
++	}
++
++	k_mutex_lock(&data->tx_lock, K_FOREVER);
++
++	/* a frame posted now would be thrown away with the ring */
++	if (atomic_get(&data->dma_recover_pending) != 0) {
++		ret = -ENETDOWN;
++		goto unlock;
++	}
++
++	/* MM2S returns buffers within a few frame times: wait for one */
++	if (k_sem_take(&data->tx_free, EMZ_TX_TIMEOUT) != 0) {
++		ret = -ENOBUFS;
++		goto unlock;
++	}
++
++	buf = cfg->tx_storage[data->tx_next];
++	ret = net_pkt_read(pkt, buf, len);
++	if (ret == 0) {
++		ret = emz_tx_post(dev, buf, len);
++	}
++	if (ret != 0) {
++		k_sem_give(&data->tx_free);
++		goto unlock;
++	}
++
++	/* posted: the buffer stays claimed until MM2S completes it */
++	data->tx_next = (data->tx_next + 1) % EMZ_TX_BUF_COUNT;
++	ret = dma_start(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM);
++
++unlock:
++	k_mutex_unlock(&data->tx_lock);
++	return ret;
++}
++
++/*
++ * An AXI DMA error halts the channel until dma_stop() and then dma_config(),
++ * whose soft reset covers the whole core and sleeps. Rebuild TX and RX
++ * together from the system work queue.
++ */
++static void emz_dma_recover(struct k_work *work)
++{
++	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
++	struct emz_data *data = CONTAINER_OF(dwork, struct emz_data, dma_recover_work);
++	const struct device *dev = data->dev;
++	const struct emz_config *cfg = dev->config;
++	struct emz_rx_buf *rx;
++	k_spinlock_key_t key;
++	int ret;
++
++	/* keeps senders off MM2S; a waiting sender gives up within EMZ_TX_TIMEOUT */
++	k_mutex_lock(&data->tx_lock, K_FOREVER);
++	(void)dma_stop(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
++	(void)dma_stop(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM);
++
++	/* frames queued on MM2S are lost; the next send reconfigures the channel */
++	data->tx_dma_configured = false;
++	data->tx_next = 0;
++	k_sem_reset(&data->tx_free);
++	for (int i = 0; i < EMZ_TX_BUF_COUNT; i++) {
++		k_sem_give(&data->tx_free);
++	}
++
++	/* take back every buffer still posted to S2MM */
++	key = k_spin_lock(&data->rx_lock);
++	while ((rx = k_fifo_get(&data->rx_posted, K_NO_WAIT)) != NULL) {
++		k_fifo_put(&data->rx_free, rx);
++	}
++	data->rx_posted_count = 0;
++	data->rx_dma_configured = false;
++	k_spin_unlock(&data->rx_lock, key);
++
++	ret = emz_rx_start(dev);
++	k_mutex_unlock(&data->tx_lock);
++
++	if (ret != 0) {
++		/* -ENOBUFS: the stack holds every RX buffer; retry once it frees one */
++		if (ret != -ENOBUFS) {
++			LOG_ERR("RX DMA restart failed: %d", ret);
++		}
++		(void)k_work_reschedule(&data->dma_recover_work, K_MSEC(1));
++		return;
++	}
++
++	LOG_WRN("DMA recovered");
++	atomic_clear(&data->dma_recover_pending);
++	emz_rx_refill(dev);
++}
++
++static void emz_phy_link_changed(const struct device *phy, struct phy_link_state *state,
++				 void *user_data)
++{
++	const struct device *dev = user_data;
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++
++	ARG_UNUSED(phy);
++
++	if (state->is_up) {
++		uint32_t speed;
++		uint32_t ctrl;
++
++		if (PHY_LINK_IS_SPEED_1000M(state->speed)) {
++			speed = EMZ_CTRL_SPEED_1000;
++		} else if (PHY_LINK_IS_SPEED_100M(state->speed)) {
++			speed = EMZ_CTRL_SPEED_100;
++		} else {
++			speed = EMZ_CTRL_SPEED_10;
++		}
++
++		ctrl = FIELD_PREP(EMZ_CTRL_SPEED_MASK, speed);
++		if (PHY_LINK_IS_FULL_DUPLEX(state->speed)) {
++			ctrl |= EMZ_CTRL_FULL_DUPLEX;
++		}
++
++		emz_update_ctrl(cfg, EMZ_CTRL_SPEED_MASK | EMZ_CTRL_FULL_DUPLEX, ctrl);
++	}
++
++	net_eth_carrier_set(data->iface, state->is_up);
++}
++
++static void emz_iface_init(struct net_if *iface)
++{
++	const struct device *dev = net_if_get_device(iface);
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	int ret;
++
++	data->iface = iface;
++	net_if_set_link_addr(iface, data->mac, sizeof(data->mac), NET_LINK_ETHERNET);
++	ethernet_init(iface);
++
++	/* carrier follows the PHY */
++	net_eth_carrier_off(iface);
++	ret = phy_link_callback_set(cfg->phy, emz_phy_link_changed, (void *)dev);
++	if (ret != 0) {
++		LOG_ERR("Could not set PHY link callback: %d", ret);
++	}
++}
++
++static int emz_start(const struct device *dev, struct net_if *iface)
++{
++	ARG_UNUSED(iface);
++
++	emz_update_ctrl(dev->config, 0, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN);
++	return 0;
++}
++
++static int emz_stop(const struct device *dev, struct net_if *iface)
++{
++	ARG_UNUSED(iface);
++
++	emz_update_ctrl(dev->config, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN, 0);
++	return 0;
++}
++
++static enum ethernet_hw_caps emz_get_capabilities(const struct device *dev, struct net_if *iface)
++{
++	ARG_UNUSED(dev);
++	ARG_UNUSED(iface);
++
++	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE
++#if defined(CONFIG_NET_PROMISCUOUS_MODE)
++	       | ETHERNET_PROMISC_MODE
++#endif
++		;
++}
++
++static int emz_set_config(const struct device *dev, struct net_if *iface,
++			  enum ethernet_config_type type, const struct ethernet_config *config)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++
++	switch (type) {
++	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
++		memcpy(data->mac, config->mac_address.addr, sizeof(data->mac));
++		emz_set_mac(cfg, data->mac);
++		net_if_set_link_addr(iface, data->mac, sizeof(data->mac), NET_LINK_ETHERNET);
++		return 0;
++#if defined(CONFIG_NET_PROMISCUOUS_MODE)
++	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
++		emz_update_ctrl(cfg, EMZ_CTRL_PROMISC, config->promisc_mode ? EMZ_CTRL_PROMISC : 0);
++		return 0;
++#endif
++	default:
++		return -ENOTSUP;
++	}
++}
++
++static const struct device *emz_get_phy(const struct device *dev, struct net_if *iface)
++{
++	const struct emz_config *cfg = dev->config;
++
++	ARG_UNUSED(iface);
++
++	return cfg->phy;
++}
++
++#if defined(CONFIG_NET_STATISTICS_ETHERNET)
++static struct net_stats_eth *emz_get_stats(const struct device *dev, struct net_if *iface)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++
++	ARG_UNUSED(iface);
++
++	data->stats.pkts.tx = emz_read(cfg, EMZ_REG_TX_FRAME);
++	data->stats.bytes.sent = emz_read(cfg, EMZ_REG_TX_BYTE);
++	data->stats.pkts.rx = emz_read(cfg, EMZ_REG_RX_FRAME);
++	data->stats.bytes.received = emz_read(cfg, EMZ_REG_RX_BYTE);
++	data->stats.broadcast.rx = emz_read(cfg, EMZ_REG_RX_BCAST);
++	data->stats.multicast.rx = emz_read(cfg, EMZ_REG_RX_MCAST);
++	data->stats.error_details.rx_frame_errors = emz_read(cfg, EMZ_REG_RX_ERR_SYMBOL);
++	data->stats.error_details.rx_over_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERFLOW);
++	data->stats.error_details.rx_long_length_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERSIZE);
++	/* frames the MAC rejected plus frames the driver had to drop */
++	data->stats.errors.rx = emz_read(cfg, EMZ_REG_RX_ERR) + data->rx_dropped;
++
++	return &data->stats;
++}
++#endif
++
++static int emz_init(const struct device *dev)
++{
++	const struct emz_config *cfg = dev->config;
++	struct emz_data *data = dev->data;
++	uint32_t version = emz_read(cfg, EMZ_REG_VERSION);
++	int ret;
++
++	if (FIELD_GET(EMZ_VERSION_ID_MASK, version) != EMZ_VERSION_ID) {
++		LOG_ERR("No emacZero at 0x%lx (VERSION 0x%08x)", (unsigned long)cfg->base, version);
++		return -ENODEV;
++	}
++	if (!device_is_ready(cfg->dma) || !device_is_ready(cfg->phy)) {
++		LOG_ERR("DMA or PHY device not ready");
++		return -ENODEV;
++	}
++
++	ret = net_eth_mac_load(&cfg->mac_cfg, data->mac);
++	if (ret == -ENODATA) {
++		LOG_ERR("No MAC address: set local-mac-address or zephyr,random-mac-address");
++		return -EINVAL;
++	} else if (ret < 0) {
++		return ret;
++	}
++
++	data->dev = dev;
++	k_mutex_init(&data->tx_lock);
++	k_sem_init(&data->tx_free, EMZ_TX_BUF_COUNT, EMZ_TX_BUF_COUNT);
++	k_work_init_delayable(&data->dma_recover_work, emz_dma_recover);
++	k_fifo_init(&data->rx_free);
++	k_fifo_init(&data->rx_posted);
++	k_fifo_init(&data->rx_ready);
++	for (int i = 0; i < EMZ_RX_BUF_COUNT; i++) {
++		data->rx_buf[i].data = cfg->rx_storage[i];
++		k_fifo_put(&data->rx_free, &data->rx_buf[i]);
++	}
++
++	/* MAC stays off until the interface comes up; the PHY sets the speed */
++	emz_write(cfg, EMZ_REG_CTRL,
++		  FIELD_PREP(EMZ_CTRL_SPEED_MASK, EMZ_CTRL_SPEED_100) | EMZ_CTRL_FULL_DUPLEX);
++	emz_set_mac(cfg, data->mac);
++	emz_write(cfg, EMZ_REG_IRQ_EN, 0);
++	emz_write(cfg, EMZ_REG_IRQ_STATUS, EMZ_IRQ_ALL);
++
++	k_thread_create(&data->rx_thread, cfg->rx_stack, cfg->rx_stack_size, emz_rx_thread,
++			(void *)dev, NULL, NULL,
++			K_PRIO_COOP(CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY), 0, K_NO_WAIT);
++	k_thread_name_set(&data->rx_thread, "emaczero_rx");
++
++	ret = emz_rx_start(dev);
++	if (ret != 0) {
++		LOG_ERR("RX DMA start failed: %d", ret);
++		return ret;
++	}
++	emz_rx_refill(dev);
++
++	return 0;
++}
++
++static const struct ethernet_api emz_api = {
++	.iface_api.init = emz_iface_init,
++#if defined(CONFIG_NET_STATISTICS_ETHERNET)
++	.get_stats = emz_get_stats,
++#endif
++	.start = emz_start,
++	.stop = emz_stop,
++	.get_capabilities = emz_get_capabilities,
++	.set_config = emz_set_config,
++	.get_phy = emz_get_phy,
++	.send = emz_send,
++};
++
++/* packet buffers go in the memory-region's linker section when one is given */
++#define EMZ_BUF_SECTION(inst)                                                                      \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, memory_region),                                    \
++		    (Z_GENERIC_SECTION(                                                            \
++			    LINKER_DT_NODE_REGION_NAME(DT_INST_PHANDLE(inst, memory_region)))),    \
++		    ())
++
++#define EMZ_INIT(inst)                                                                             \
++	static uint8_t emz_rx_storage_##inst[EMZ_RX_BUF_COUNT][EMZ_BUF_SIZE] EMZ_BUF_SECTION(inst) \
++		__aligned(EMZ_BUF_ALIGN);                                                          \
++	static uint8_t emz_tx_storage_##inst[EMZ_TX_BUF_COUNT][EMZ_BUF_SIZE] EMZ_BUF_SECTION(inst) \
++		__aligned(EMZ_BUF_ALIGN);                                                          \
++	/* lending net_bufs point at RX storage; their own data pool is unused */                  \
++	NET_BUF_POOL_FIXED_DEFINE(emz_rx_lend_pool_##inst,                                         \
++				  MAX(CONFIG_ETH_EMACZERO_RX_ZERO_COPY_MAX, 1), 1,                 \
++				  sizeof(struct emz_rx_lend), emz_rx_lend_destroy);                \
++	NET_BUF_POOL_FIXED_DEFINE(emz_rx_copy_pool_##inst,                                         \
++				  CONFIG_ETH_EMACZERO_RX_COPY_BUFFER_COUNT, EMZ_BUF_SIZE, 0,       \
++				  NULL);                                                           \
++	K_KERNEL_STACK_DEFINE(emz_rx_stack_##inst, CONFIG_ETH_EMACZERO_RX_THREAD_STACK_SIZE);      \
++                                                                                                   \
++	static struct emz_data emz_data_##inst;                                                    \
++	static const struct emz_config emz_config_##inst = {                                       \
++		.base = DT_INST_REG_ADDR(inst),                                                    \
++		.dma = DEVICE_DT_GET(DT_INST_PHANDLE(inst, axistream_connected)),                  \
++		.phy = DEVICE_DT_GET(DT_INST_PHANDLE(inst, phy_handle)),                           \
++		.mac_cfg = NET_ETH_MAC_DT_INST_CONFIG_INIT(inst),                                  \
++		.rx_storage = emz_rx_storage_##inst,                                               \
++		.tx_storage = emz_tx_storage_##inst,                                               \
++		.rx_lend_pool = &emz_rx_lend_pool_##inst,                                          \
++		.rx_copy_pool = &emz_rx_copy_pool_##inst,                                          \
++		.rx_stack = emz_rx_stack_##inst,                                                   \
++		.rx_stack_size = K_KERNEL_STACK_SIZEOF(emz_rx_stack_##inst),                       \
++	};                                                                                         \
++                                                                                                   \
++	ETH_NET_DEVICE_DT_INST_DEFINE(inst, emz_init, NULL, &emz_data_##inst, &emz_config_##inst,  \
++				      CONFIG_ETH_INIT_PRIORITY, &emz_api, NET_ETH_MTU);
++
++DT_INST_FOREACH_STATUS_OKAY(EMZ_INIT)
+diff --git a/dts/bindings/ethernet/bard0,emaczero.yaml b/dts/bindings/ethernet/bard0,emaczero.yaml
+new file mode 100644
+index 00000000000..a3f1ec2a79d
+--- /dev/null
++++ b/dts/bindings/ethernet/bard0,emaczero.yaml
+@@ -0,0 +1,55 @@
++# Copyright (c) 2026 Leonardo Capossio - bard0 design
++# SPDX-License-Identifier: Apache-2.0
++
++description: |
++  bard0 emacZero Ethernet MAC.
++
++  emacZero is an open-source 10/100/1000 Ethernet MAC for FPGAs
++  (https://github.com/lcapossio/emacZero). Frames move through a Xilinx AXI
++  DMA connected over AXI-Stream: MM2S feeds the MAC's TX stream and S2MM
++  receives its RX stream.
++
++  Link state, speed and duplex come from the PHY referenced by phy-handle.
++  Use an ethernet-phy-fixed-link node when the PHY is not managed by
++  software.
++
++  Example:
++
++    eth_phy: ethernet-phy {
++      compatible = "ethernet-phy-fixed-link";
++      default-speeds = "100BASE Full-Duplex";
++    };
++
++    ethernet@44a00000 {
++      compatible = "bard0,emaczero";
++      reg = <0x44a00000 0x100>;
++      axistream-connected = <&axi_dma0>;
++      phy-handle = <&eth_phy>;
++      local-mac-address = [02 00 00 00 00 01];
++    };
++
++compatible: "bard0,emaczero"
++
++include: ethernet-controller.yaml
++
++properties:
++  reg:
++    required: true
++
++  phy-handle:
++    required: true
++
++  axistream-connected:
++    type: phandle
++    required: true
++    description: |
++      Xilinx AXI DMA ("xlnx,axi-dma-1.00.a" or "xlnx,eth-dma") whose MM2S
++      and S2MM streams are connected to this MAC.
++
++  memory-region:
++    type: phandle
++    description: |
++      Optional "zephyr,memory-region" node whose linker section holds the
++      RX and TX packet buffers. The DMA engine reads and writes them
++      directly, so on targets with a data cache, point this at an uncached
++      memory window or enable CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY.
+diff --git a/dts/bindings/vendor-prefixes.txt b/dts/bindings/vendor-prefixes.txt
+index 29ccc37de92..787c7bf3a4c 100644
+--- a/dts/bindings/vendor-prefixes.txt
++++ b/dts/bindings/vendor-prefixes.txt
+@@ -100,6 +100,7 @@ azoteq	Azoteq (Pty) Ltd
+ azw	Shenzhen AZW Technology Co., Ltd.
+ baikal	BAIKAL ELECTRONICS, JSC
+ bananapi	BIPAI KEJI LIMITED
++bard0	bard0 design
+ bbc	BBC
+ bcdevices	Blue Clover Devices
+ beacon	Compass Electronics Group, LLC

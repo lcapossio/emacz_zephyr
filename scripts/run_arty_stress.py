@@ -14,18 +14,23 @@ from dataclasses import dataclass
 
 import emacz_config as config
 
+# eth_err is the driver's Ethernet errors.rx: frames the MAC rejected plus
+# frames the driver dropped. dma_err counts AXI DMA halts, RX and TX.
 ERROR_COUNTERS = (
     "sink_err",
     "mac_err",
     "gate_bad",
     "gate_ovf",
     "tready",
+    "eth_err",
     "dma_err",
-    "bd_err",
-    "invalid",
-    "alloc",
-    "recv_fail",
-    "nofree",
+)
+# The stack's own drops, reported only: the host's background broadcast and
+# multicast traffic for other addresses and ports lands here too. Loss of
+# test traffic in the stack still fails the delivery check.
+INFO_COUNTERS = (
+    "ip_drop",
+    "udp_drop",
 )
 
 
@@ -49,7 +54,7 @@ def parse_snapshot(data: bytes) -> dict[str, int | str]:
         fields[name] = value if name == "magic" else int(value, 10)
     if fields.get("magic") != "EZRX":
         raise ValueError("board did not return an EZRX acceptance snapshot")
-    required = {"uptime", "sink_p", "sink_b", "mac_rx", "dma", *ERROR_COUNTERS}
+    required = {"uptime", "sink_p", "sink_b", "mac_rx", *ERROR_COUNTERS, *INFO_COUNTERS}
     missing = required.difference(fields)
     if missing:
         raise ValueError(f"snapshot is missing fields: {', '.join(sorted(missing))}")
@@ -158,7 +163,7 @@ def evaluate(before: dict[str, int | str], after: dict[str, int | str],
     nonzero = {name: value for name, value in error_deltas.items() if value != 0}
     if nonzero:
         details = ", ".join(f"{name}=+{value}" for name, value in nonzero.items())
-        raise RuntimeError(f"hardware/driver error counters advanced: {details}")
+        raise RuntimeError(f"MAC/driver/stack error counters advanced: {details}")
     expected_bytes = sink_packets * (sent_bytes // sent_packets) if sent_packets else 0
     if sink_bytes != expected_bytes:
         raise RuntimeError(f"sink byte accounting mismatch: {sink_bytes} != {expected_bytes}")
@@ -190,7 +195,7 @@ def main() -> int:
     parser.add_argument("--gateway", type=ipaddress.IPv4Address,
                         default=ipaddress.IPv4Address("0.0.0.0"))
     parser.add_argument("--duration", type=float, default=600.0)
-    parser.add_argument("--rate-mbps", type=float, default=95.0)
+    parser.add_argument("--rate-mbps", type=float, default=5.0)
     parser.add_argument("--packet-size", type=int, default=1472)
     parser.add_argument("--port", type=int, default=5001)
     parser.add_argument("--control-port", type=int, default=5002)
@@ -227,6 +232,8 @@ def main() -> int:
     print(f"sink_packets={result.sink_packets} sink_bytes={result.sink_bytes} "
           f"sink_mbps={sink_rate:.3f} delivery_pct={result.delivery_pct:.6f}")
     print("error_deltas=" + " ".join(f"{key}:{value}" for key, value in result.error_deltas.items()))
+    print("info_deltas=" + " ".join(
+        f"{key}:{int(after[key]) - int(before[key])}" for key in INFO_COUNTERS))
     print("post_stress_discovery=pass")
     print("stress_result=pass")
     return 0

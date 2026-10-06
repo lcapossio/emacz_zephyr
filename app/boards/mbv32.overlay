@@ -7,13 +7,45 @@
 	/delete-node/ memory@80000000;
 
 	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
-	 * scatter-gather descriptor rings. The emacZero frame buffers use the
-	 * rest of the DMA window (CONFIG_ETH_EMACZERO_DMA_MEMORY_BASE).
+	 * scatter-gather descriptor rings.
 	 */
 	dma_desc: memory@9f000000 {
 		compatible = "zephyr,memory-region";
 		reg = <0x9f000000 0x10000>;
 		zephyr,memory-region = "DMA_DESC";
+	};
+
+	/* emacZero RX and TX packet buffers, in the same uncached window. It
+	 * stops where emz_hostio starts.
+	 */
+	emz_bufs: memory@9f010000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f010000 0xfee000>;
+		zephyr,memory-region = "EMZ_BUFFERS";
+	};
+
+	/* Host-visible page at fixed addresses the host tools reach over
+	 * JTAG-AXI: the provisioning mailbox, then the app's perf stats.
+	 */
+	emz_hostio: memory@9fffe000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9fffe000 0x2000>;
+		zephyr,memory-region = "EMZ_HOSTIO";
+	};
+
+	/* The MII PHY is not managed by software; the link is fixed at
+	 * 100 Mbit/s full duplex. The parent node only supplies the address
+	 * cells for the PHY's reg.
+	 */
+	emz_phy_bus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		emz_phy: ethernet-phy@0 {
+			compatible = "ethernet-phy";
+			reg = <0>;
+			fixed-link = "100BASE-T Full-Duplex";
+		};
 	};
 
 	ram0: memory@90000000 {
@@ -82,7 +114,8 @@
 		axistream-connected = <&axi_dma0>;
 		local-mac-address = [02 00 00 00 00 01];
 		phy-connection-type = "mii";
-		link-speed = <100>;
+		phy-handle = <&emz_phy>;
+		memory-region = <&emz_bufs>;
 	};
 
 	axi_dma0: dma@41e00000 {
