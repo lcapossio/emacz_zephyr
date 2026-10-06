@@ -9,7 +9,9 @@
 // =============================================================================
 
 module emaczero_axi_mii_wrapper #(
-    parameter MII_DEBUG = 1
+    parameter MII_DEBUG   = 1,
+    // Frequency of clk; must match FREQ_HZ on the clk interface below
+    parameter CLK_FREQ_HZ = 100_000_000
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
     (* X_INTERFACE_PARAMETER = "FREQ_HZ 100000000, ASSOCIATED_BUSIF S_AXI:S_AXIS:M_AXIS, ASSOCIATED_RESET rst_n" *)
@@ -378,7 +380,8 @@ module emaczero_axi_mii_wrapper #(
 
     eth_mac_sys #(
         .PHY_INTERFACE("MII"),
-        .MII_DEBUG(MII_DEBUG)
+        .MII_DEBUG(MII_DEBUG),
+        .CLK_FREQ_HZ(CLK_FREQ_HZ)
     ) u_mac (
         .clk            (clk),
         .rst_n          (mac_rst_n),
@@ -428,6 +431,14 @@ module emaczero_axi_mii_wrapper #(
         .rgmii_rxd      (4'd0),
         .rgmii_rx_ctl   (1'b0),
         .rgmii_rxc      (1'b0),
+        .phy_gmii_txd   (),
+        .phy_gmii_tx_en (),
+        .phy_gmii_tx_er (),
+        .phy_gmii_txc   (),
+        .phy_gmii_rx_clk(1'b0),
+        .phy_gmii_rxd   (8'd0),
+        .phy_gmii_rx_dv (1'b0),
+        .phy_gmii_rx_er (1'b0),
         .mdc            (eth_mdc),
         .mdio_i         (mdio_i),
         .mdio_o         (mdio_o),

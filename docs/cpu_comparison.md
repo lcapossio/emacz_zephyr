@@ -7,10 +7,13 @@ What differs is only the CPU macro and the AXI plumbing around it.
 
 Bitstream provenance:
 - **mbv**: `build/vivado/arty_a7_100t_mbv/arty_a7_100t_mbv_wrapper.bit`
-  (Aug 2, 2026 — MicroBlaze V, LMB BRAM + DDR)
+  (Oct 6, 2026 — MicroBlaze V, LMB BRAM + DDR, emacZero 1d105f2)
 - **vex**: `build/vivado/arty_a7_100t_vex/arty_a7_100t_vex_wrapper.bit`
-  built by commit 088ac8f (Aug 30, 2026 — VexRiscv-full, 16 KiB I$/D$,
-  DYNAMIC_TARGET branch predictor, earlyBranch, R-slice on DBUS)
+  (Oct 6, 2026 — VexRiscv-full, 16 KiB I$/D$, DYNAMIC_TARGET branch
+  predictor, earlyBranch, R-slice on DBUS, emacZero 1d105f2)
+
+Throughput was also measured on the previous (Aug/Sep) bitstreams, with
+the same results.
 
 ## Throughput (delivered rate)
 
@@ -51,10 +54,10 @@ difference, so the deltas below reflect CPU cost.
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,688 (54.71%) | 28,907 (45.59%) | **−5,781 (−16.7%)** |
-| &nbsp;&nbsp;LUT as Logic | 29,103 (45.90%) | 23,156 (36.52%) | −5,947 (−20.4%) |
+| Slice LUTs | 34,669 (54.68%) | 28,897 (45.58%) | **−5,772 (−16.6%)** |
+| &nbsp;&nbsp;LUT as Logic | 29,084 (45.87%) | 23,146 (36.51%) | −5,938 (−20.4%) |
 | &nbsp;&nbsp;LUT as Memory | 5,585 (29.39%) | 5,751 (30.27%) | +166 (+3.0%) |
-| Slice Registers (FFs) | 46,199 (36.43%) | 29,451 (23.23%) | **−16,748 (−36.3%)** |
+| Slice Registers (FFs) | 46,102 (36.36%) | 29,363 (23.16%) | **−16,739 (−36.3%)** |
 | F7 Muxes | 2,699 (8.51%) | 509 (1.61%) | −2,190 (−81.1%) |
 | F8 Muxes | 1,339 (8.45%) | 227 (1.43%) | −1,112 (−83.0%) |
 | BRAM Tile | 44 (32.59%) | 36 (26.67%) | **−8 tiles (−18.2%)** |
@@ -84,10 +87,10 @@ resource table above.
 |---|---|---|
 | CPU + SoC fabric clock | `mig_ddr/ui_clk` **81.25 MHz** | `sys_clk` **100 MHz** |
 | DDR UI clock | same 81.25 MHz domain (no CDC) | 81.25 MHz, isolated behind ddr_smartconnect CDC |
-| Setup WNS | +0.630 ns | +0.187 ns |
-| Hold WHS | +0.056 ns | +0.012 ns |
+| Setup WNS | +0.147 ns | +0.196 ns |
+| Hold WHS | +0.012 ns | +0.008 ns |
 | Failing endpoints | 0 | 0 |
-| Total endpoints | ~similar | 114,852 |
+| Total endpoints | 124,685 | 114,575 |
 
 The MBV shell clocks the CPU and every AXI/AXI-Lite fabric directly from
 MIG's `ui_clk`. With the shared MIG config (`hardware/mig/arty_a7_100t_mig.prj`,
@@ -95,9 +98,10 @@ PHY ratio 4:1 at 325 MHz DDR) that is 81.25 MHz. The Vex shell instead runs
 a 100 MHz `sys_clk` from the MMCM and treats `ui_clk` as a private
 downstream domain, crossing into it inside the DDR SmartConnect.
 
-So Vex delivers the smaller footprint *and* a 23% higher core clock. Its
-thinner setup margin is expected: widened caches + predictor + R-slice at
-a shorter target period push routing harder on the CPU core.
+So Vex delivers the smaller footprint *and* a 23% higher core clock. Both
+setup margins are thin (under 0.2 ns) and move with placement from build
+to build; `build_arty_a7_vex.py` refuses to write a bitstream with a
+negative routed WNS or WHS.
 
 ## Reproducing these numbers
 

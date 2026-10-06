@@ -11,7 +11,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from emaczero_rtl import emaczero_rtl
 
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PART = "xc7a100tcsg324-1"
 TOP = "arty_a7_100t_mbv"
 BUILD_DIR = Path("build") / "vivado" / TOP
@@ -26,26 +29,7 @@ SCRATCH_BRAM_RANGE = "0x00008000"
 SCRATCH_BRAM_WORDS = 8192
 
 
-EMACZERO_RTL = [
-    "external/emacZero/rtl/crc32.v",
-    "external/emacZero/rtl/async_fifo.v",
-    "external/emacZero/rtl/sync_fifo.v",
-    "external/emacZero/rtl/mii_if.v",
-    "external/emacZero/rtl/mii_tx_saf.v",
-    "external/emacZero/rtl/axil_arb2.v",
-    "external/emacZero/rtl/eth_mac_rx.v",
-    "external/emacZero/rtl/eth_mac_tx.v",
-    "external/emacZero/rtl/eth_mac.v",
-    "external/emacZero/rtl/mdio_master.v",
-    "external/emacZero/rtl/eth_stats.v",
-    "external/emacZero/rtl/eth_pause.v",
-    "external/emacZero/rtl/axilite_regs.v",
-    "external/emacZero/rtl/ddr_output.v",
-    "external/emacZero/rtl/ddr_input.v",
-    "external/emacZero/rtl/rgmii_if.v",
-    "external/emacZero/rtl/gmii_cdc.v",
-    "external/emacZero/rtl/net/tx_csum_off.v",
-    "external/emacZero/rtl/eth_mac_sys.v",
+EMACZERO_RTL = emaczero_rtl(REPO_ROOT) + [
     "hardware/rtl/axis_frame_error_drop.v",
     "hardware/rtl/axis_elastic_fifo.v",
     "hardware/rtl/axis_async_fifo.v",
