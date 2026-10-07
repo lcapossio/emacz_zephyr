@@ -99,7 +99,8 @@ proc stage_mbv_elf {{}} {{
 create_project $top . -part $part -force
 set_property target_language Verilog [current_project]
 set_property simulator_language Verilog [current_project]
-set_property verilog_define XILINX_7SERIES [current_fileset]
+# XILINX_XPM puts the local FIFOs and frame store on AMD's XPM macros
+set_property verilog_define {{XILINX_7SERIES XILINX_XPM}} [current_fileset]
 
 set rtl_files [list {rel_list(EMACZERO_RTL + LOCAL_DEBUG_RTL)}]
 foreach f $rtl_files {{

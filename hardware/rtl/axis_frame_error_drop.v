@@ -87,7 +87,7 @@ module axis_frame_error_drop #(
 
     integer i;
 
-`ifdef XILINX_7SERIES
+`ifdef XILINX_XPM
     // Force the frame store into BRAM. Vivado's generic inference can otherwise
     // try to legalize the 4-slot store as LUTRAM and spend minutes going nowhere.
     xpm_memory_sdpram #(

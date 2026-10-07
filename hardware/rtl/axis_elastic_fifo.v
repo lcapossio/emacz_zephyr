@@ -31,7 +31,8 @@ module axis_elastic_fifo #(
     wire        fifo_full;
     wire        fifo_empty;
 
-`ifdef XILINX_7SERIES
+    // XILINX_XPM: the build has AMD's XPM library (any 7-series or newer part)
+`ifdef XILINX_XPM
     xpm_fifo_sync #(
         .CASCADE_HEIGHT(0),
         .DOUT_RESET_VALUE("0"),
@@ -77,36 +78,47 @@ module axis_elastic_fifo #(
         .dbiterr()
     );
 `else
+    // First-word fall-through on a registered-read (block RAM) store: every
+    // edge reads the word that heads the FIFO after that edge, so dout always
+    // holds the current head. The RAM reads before it writes, so a word is
+    // readable only from the edge after the one that wrote it: ready_count
+    // takes in each write one edge late, and only it gates m_axis_tvalid.
     reg [10:0] mem [0:DEPTH-1];
     reg [ADDR_WIDTH-1:0] wr_ptr;
     reg [ADDR_WIDTH-1:0] rd_ptr;
-    reg [ADDR_WIDTH:0] count;
+    reg [ADDR_WIDTH:0] ready_count;
+    reg written;
     reg [10:0] fifo_dout_r;
 
-    assign fifo_full = (count == DEPTH_COUNT);
-    assign fifo_empty = (count == {ADDR_WIDTH+1{1'b0}});
+    wire push = s_axis_tvalid && s_axis_tready;
+    wire pop = m_axis_tvalid && m_axis_tready;
+    wire [ADDR_WIDTH-1:0] rd_ptr_next = rd_ptr + {{ADDR_WIDTH-1{1'b0}}, pop};
+
+    assign fifo_full = (ready_count + {{ADDR_WIDTH{1'b0}}, written}) == DEPTH_COUNT;
+    assign fifo_empty = (ready_count == {ADDR_WIDTH+1{1'b0}});
     assign fifo_dout = fifo_dout_r;
+
+    always @(posedge clk) begin
+        if (push) begin
+            mem[wr_ptr] <= fifo_din;
+        end
+        fifo_dout_r <= mem[rd_ptr_next];
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_ptr <= {ADDR_WIDTH{1'b0}};
             rd_ptr <= {ADDR_WIDTH{1'b0}};
-            count <= {ADDR_WIDTH+1{1'b0}};
-            fifo_dout_r <= 11'd0;
+            ready_count <= {ADDR_WIDTH+1{1'b0}};
+            written <= 1'b0;
         end else begin
-            if (s_axis_tvalid && s_axis_tready) begin
-                mem[wr_ptr] <= fifo_din;
+            if (push) begin
                 wr_ptr <= wr_ptr + 1'b1;
             end
-            if (m_axis_tvalid && m_axis_tready) begin
-                rd_ptr <= rd_ptr + 1'b1;
-            end
-            case ({s_axis_tvalid && s_axis_tready, m_axis_tvalid && m_axis_tready})
-                2'b10: count <= count + 1'b1;
-                2'b01: count <= count - 1'b1;
-                default: count <= count;
-            endcase
-            fifo_dout_r <= mem[rd_ptr];
+            rd_ptr <= rd_ptr_next;
+            written <= push;
+            ready_count <= ready_count + {{ADDR_WIDTH{1'b0}}, written} -
+                           {{ADDR_WIDTH{1'b0}}, pop};
         end
     end
 `endif

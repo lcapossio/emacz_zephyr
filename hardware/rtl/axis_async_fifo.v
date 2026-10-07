@@ -42,7 +42,7 @@ module axis_async_fifo #(
     wire       fifo_full;
     wire       fifo_empty;
 
-`ifdef XILINX_7SERIES
+`ifdef XILINX_XPM
     wire wr_rst_busy;
     wire rd_rst_busy;
 
@@ -108,12 +108,12 @@ module axis_async_fifo #(
 `endif
 
     assign s_axis_tready = !fifo_full
-`ifdef XILINX_7SERIES
+`ifdef XILINX_XPM
 			   && !wr_rst_busy
 `endif
 			   ;
     assign m_axis_tvalid = !fifo_empty
-`ifdef XILINX_7SERIES
+`ifdef XILINX_XPM
 			   && !rd_rst_busy
 `endif
 			   ;
