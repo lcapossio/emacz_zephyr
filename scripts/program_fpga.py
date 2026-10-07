@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""Program the Arty A7-100T with a shell bitstream through Vivado's hardware manager.
+"""Program a board with a shell bitstream through Vivado's hardware manager.
 
-The default bitstream is the one hardware/scripts/build_arty_a7_<shell>.py
-writes. Needs vivado on PATH and the board's JTAG cable connected.
+The default bitstream is the one the shell's build script writes
+(hardware/scripts/build_arty_a7_<shell>.py, or build_zcu106.py --variant vex
+for zcu106_vex). Needs vivado on PATH and the board's JTAG cable connected.
+The ZCU106 R5 shell is not programmed here: its PL must come up together
+with the PS, which scripts/load_zynqmp_r5.py does.
 """
 
 from __future__ import annotations
@@ -17,25 +20,47 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PART = "xc7a100t"
+
+# shell -> (Vivado top, hw_device filter). On the ZCU106 the JTAG chain also
+# holds the ARM DAP, so the FPGA is picked by name.
+SHELLS = {
+    "mbv": ("arty_a7_100t_mbv", 'PART == "xc7a100t"'),
+    "vex": ("arty_a7_100t_vex", 'PART == "xc7a100t"'),
+    "zcu106_vex": ("zcu106_vex", "NAME =~ xczu7*"),
+}
 
 
 def default_bitstream(shell: str) -> Path:
-    top = f"arty_a7_100t_{shell}"
+    top = SHELLS[shell][0]
     return ROOT / "build" / "vivado" / top / f"{top}_wrapper.bit"
 
 
-def program_tcl(bit: Path) -> str:
+def program_tcl(bit: Path, device_filter: str) -> str:
     return f"""\
 open_hw_manager
 connect_hw_server -allow_non_jtag
-open_hw_target
-set devices [get_hw_devices -filter {{PART == "{PART}"}}]
-if {{[llength $devices] != 1}} {{
-    puts "ERROR: expected one {PART}, found [llength $devices]: $devices"
+# open_hw_target alone opens only the first cable, and other boards may
+# share the hw_server, so look for the device on every cable. A cable
+# whose board is off fails to open, but stays open, and is skipped.
+set filter {{{device_filter}}}
+set found {{}}
+foreach target [get_hw_targets] {{
+    if {{[catch {{open_hw_target $target}}]}} {{
+        catch {{close_hw_target $target}}
+        continue
+    }}
+    foreach dev [get_hw_devices -quiet -of_objects $target -filter $filter] {{
+        lappend found [list $target $dev]
+    }}
+    close_hw_target $target
+}}
+if {{[llength $found] != 1}} {{
+    puts "ERROR: expected one device matching $filter, found [llength $found]: $found"
     exit 1
 }}
-set dev [lindex $devices 0]
+lassign [lindex $found 0] target name
+open_hw_target $target
+set dev [get_hw_devices -of_objects $target $name]
 current_hw_device $dev
 refresh_hw_device $dev
 set_property PROGRAM.FILE {{{bit.as_posix()}}} $dev
@@ -50,7 +75,7 @@ close_hw_manager
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--shell", choices=("mbv", "vex"), required=True)
+    parser.add_argument("--shell", choices=sorted(SHELLS), required=True)
     parser.add_argument("--bit", type=Path, help="bitstream (default: the shell's build output)")
     args = parser.parse_args()
 
@@ -70,7 +95,7 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tcl = Path(tmp) / "program.tcl"
-        tcl.write_text(program_tcl(bit), encoding="utf-8")
+        tcl.write_text(program_tcl(bit, SHELLS[args.shell][1]), encoding="utf-8")
         result = subprocess.run(
             [vivado, "-mode", "batch", "-nojournal", "-nolog", "-source", str(tcl)],
             cwd=workdir, capture_output=True, text=True, check=False,

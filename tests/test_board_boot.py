@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+
+def load(name: str):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+import fcapz_jtag  # noqa: E402
+
+r5 = load("load_zynqmp_r5")
+suite = load("run_board_suite")
+
+
+def r5_script(url: str | None = None) -> str:
+    return r5.xsdb_script(Path("shell.bit"), Path("fsbl.elf"), Path("zephyr.elf"),
+                          "xczu7", url)
+
+
+def test_r5_script_fills_every_field():
+    script = r5_script()
+    assert not re.search(r"@[A-Z_]+@", script)
+    assert "set cable [board_cable xczu7]" in script
+    assert "mwr 0xff5e0200 0x100" in script
+    assert "\n    connect\n" in script
+
+
+def test_r5_script_connects_to_a_remote_hw_server():
+    assert "connect -url tcp:lab:3121" in r5_script("tcp:lab:3121")
+
+
+def test_r5_script_selects_every_target_on_the_board_cable():
+    script = r5_script()
+    steps = script[script.index("step connect"):]
+    # Every target switch goes through the cable-pinned select, the FPGA
+    # one included, before anything is written or reset
+    assert "targets -set" not in steps
+    order = [steps.index(f"select {name}") for name in ("PSU", "{PS TAP}", "*R5*#0")]
+    assert order == sorted(order)
+    assert steps.index("select PSU") < steps.index("rst -system")
+
+
+def test_r5_script_runs_the_fsbl_after_the_bitstream_and_before_zephyr():
+    script = r5_script()
+    fpga, fsbl, zephyr = (script.index(f"step {name}") for name in ("fpga", "fsbl", "r5-load"))
+    assert fpga < fsbl < zephyr
+    # the done flag is cleared before the FSBL starts, then polled
+    body = script[fsbl:zephyr]
+    assert body.index("& ~0x1") < body.index("dow {") < body.index("while {")
+
+
+def suite_args(**values) -> argparse.Namespace:
+    defaults = {"shell": "vex", "bit": None, "image": None}
+    defaults.update(values)
+    return argparse.Namespace(**defaults)
+
+
+def test_suite_loads_soft_cpu_shells_into_ram():
+    command = suite.load_command(suite_args(image=Path("z.bin")), suite.SHELLS["vex"])
+    assert Path(command[1]).name == "load_zephyr_bram.py"
+    assert command[2:] == ["--shell", "vex", "--file", "z.bin"]
+
+
+def test_suite_boots_the_r5_shell_through_the_ps():
+    shell = suite.SHELLS["zcu106_r5"]
+    command = suite.load_command(
+        suite_args(shell="zcu106_r5", bit=Path("r5.bit"), image=Path("zephyr.elf")), shell)
+    assert Path(command[1]).name == "load_zynqmp_r5.py"
+    assert command[2:] == ["--tap", "xczu7", "--bit", "r5.bit", "--elf", "zephyr.elf"]
+    assert shell.ps_boot and not suite.SHELLS["zcu106_vex"].ps_boot
+
+
+def test_bursts_never_cross_a_4k_page():
+    addr = 0x90000FC0
+    spans = list(fcapz_jtag.bursts(addr, 64, 15))
+    assert sum(count for _, count in spans) == 64
+    offset = 0
+    for start, count in spans:
+        assert start == offset and 1 <= count <= 15
+        first = addr + start * 4
+        assert first // 0x1000 == (first + count * 4 - 1) // 0x1000
+        offset += count
+    # the burst before the page boundary is cut short to end on it
+    assert spans[:2] == [(0, 15), (15, 1)]
+
+
+def test_bursts_reject_unaligned_addresses():
+    with pytest.raises(ValueError):
+        list(fcapz_jtag.bursts(0x90000002, 4, 15))

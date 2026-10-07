@@ -6,7 +6,8 @@ CPU options: AMD MicroBlaze V (`mbv32`) and SpinalHDL VexRiscv-full. Both
 run the same Zephyr app, driver, and emacZero MAC — the MBV shell clocks
 CPU and peripherals from MIG's 81.25 MHz `ui_clk`, while the Vex shell runs
 its SoC at 100 MHz `sys_clk` and treats `ui_clk` as a downstream DDR-only
-domain.
+domain. The same app also targets the AMD ZCU106 over SFP, on a VexRiscv
+in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
 
 - [Features](#features)
 - [Repository Layout](#repository-layout)
@@ -14,6 +15,7 @@ domain.
 - [Build](#build)
 - [Host-configured IPv4](#host-configured-ipv4)
 - [Arty A7-100T SoC](#arty-a7-100t-soc)
+- [ZCU106](#zcu106)
 - [Resource Usage and Frequency](#resource-usage-and-frequency)
 - [Throughput](#throughput)
 - [Verification](#verification)
@@ -27,6 +29,9 @@ domain.
   SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
   earlyBranch, R-slice on DBUS). Same emacZero MAC and Zephyr app on
   both.
+- AMD ZCU106 shells, 1000BASE-X on SFP0: the Vex CPU complex in the PL
+  (`zcu106_vex`) or Cortex-R5 #0 in the PS (`zcu106_r5`). Both pass the
+  board suite.
 - AXI DMA RX through Zephyr's DMA API (upstream Xilinx AXI DMA driver),
   with error recovery and zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
@@ -42,8 +47,11 @@ domain.
 - `fcapz/` — fpgacapZero debug cores and host tools submodule.
 - `patches/zephyr/` — Zephyr patches: AXI DMA driver fixes and the emacZero
   driver.
-- `app/` — minimal Zephyr bring-up app for the Arty A7 example.
-- `hardware/` — Vivado build script, RTL, XDC.
+- `app/` — the Zephyr app, with per-board overlays in `app/boards/`.
+- `boards/bard0/`, `soc/bard0/` — the Zephyr boards defined here
+  (`arty_a7_vex`, `zcu106_vex`, `zcu106_r5`) and the VexRiscv SoC
+  (`vexriscv_axi`) the two Vex boards share.
+- `hardware/` — Vivado build scripts, RTL, XDC.
 - `scripts/` — host tools (loader, provisioning, perf-stats, stress test).
 - `no_commit/BUGS.md` — local bug list required by the project rules.
 
@@ -80,6 +88,10 @@ python3 -m pip install --user west pykwalify
 export ZEPHYR_TOOLCHAIN_VARIANT=cross-compile
 export CROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
+
+The `zcu106_r5` board needs an Arm compiler instead, such as the Zephyr
+SDK's `arm-zephyr-eabi` toolchain, and the CMSIS module that `west update`
+fetches.
 
 ## Build
 
@@ -227,6 +239,102 @@ Top-level RTL diagrams (click for full-size SVG):
 Editable sources: [docs/architecture_mbv.json](docs/architecture_mbv.json),
 [docs/architecture_vex.json](docs/architecture_vex.json).
 
+## ZCU106
+
+Two hardware shells for the AMD ZCU106 (`xczu7ev`) share one PL Ethernet
+subsystem: emacZero in GMII mode behind the AMD 1G/2.5G Ethernet PCS/PMA
+core, 1000BASE-X on SFP cage 0, with the AXI DMA, the RX stream counters, a
+PCS status GPIO and the fcapz JTAG-AXI bridge (USER4, chain 4). The SoC side
+runs at 150 MHz from the 300 MHz `USER_SI570`; emacZero's CDC crosses to
+the transceiver's 125 MHz `userclk2`. `hardware/scripts/build_zcu106.py`
+builds either one.
+
+Both shells meet timing and pass the whole board suite (below) on a ZCU106
+whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
+with every datagram delivered, DMA error recovery and TX. Each shell needs
+its own MAC address when they share a segment with an Arty (`--mac`;
+the overlays use `02:00:00:00:00:02` for Vex and `:03` for the R5).
+
+`zcu106_vex` (`--variant vex`) is the Arty Vex shell's CPU complex and
+address map, with UltraRAM in place of DDR3: 512 KiB at `0x90000000` for
+Zephyr, inside the D-cache aperture, and 512 KiB at `0x9ff80000` outside it
+for the DMA descriptors, frame buffers and the host page, which stays at
+`0x9fffe000`. Its console is the PL UART, the CP2108's third interface.
+
+`zcu106_r5` (`--variant r5`) runs Zephyr on Cortex-R5 #0. The R5 reaches the
+PL blocks through `M_AXI_HPM0_LPD` at `0x80000000` + the Vex offsets (AXI
+DMA `0x81e00000`, emacZero `0x84a00000`), and the DMA reaches PS DDR through
+`S_AXI_HP0_FPD`. Zephyr runs from the bottom 64 MiB of DDR. The frame
+buffers (`0x07c00000`), descriptors (`0x07e00000`) and host page
+(`0x07ffe000`) are non-cacheable MPU regions above it, clear of the TCM
+window at `0x0` that the PL cannot reach. The PL interrupts are GIC SPIs
+89–92. Its console is PS UART0, the CP2108's first interface.
+
+| | `zcu106_vex` | `zcu106_r5` |
+|---|---|---|
+| CLB LUTs | 22,667 (9.8%) | 13,923 (6.0%) |
+| CLB Registers | 26,572 (5.8%) | 18,708 (4.1%) |
+| Block RAM tiles | 27 | 13 |
+| UltraRAM | 33 | 0 |
+| Setup WNS | +0.977 ns | +1.608 ns |
+
+The board needs a 1000BASE-X SFP module in cage 0 and a link partner that
+speaks it, such as a fibre NIC or a switch port. DIP switch `GPIO_DIP_SW0`
+turns auto-negotiation off for partners that do not negotiate, and user LEDs
+0–3 show GT reset done, PCS sync, link up and the `userclk2` heartbeat. JTAG
+and the CP2108 UART both need their USB cables connected.
+
+Build:
+
+```sh
+python hardware/scripts/build_zcu106.py --variant vex --synth
+python hardware/scripts/build_zcu106.py --variant r5 --synth   # bitstream, XSA, FSBL
+python hardware/scripts/build_zcu106.py --variant r5 --fsbl    # just the FSBL, from the XSA
+
+west build -b zcu106_vex -d build-zcu106-vex app --   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
+west build -b zcu106_r5 -d build-zcu106-r5 app --   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile   -DCROSS_COMPILE=<zephyr-sdk>/arm-zephyr-eabi/bin/arm-zephyr-eabi-
+```
+
+Boot:
+
+```sh
+# Vex: bitstream, then the image into UltraRAM over JTAG-AXI
+python scripts/program_fpga.py --shell zcu106_vex
+python scripts/load_zephyr_bram.py --shell zcu106_vex
+
+# R5: one xsdb session puts the PS in JTAG boot mode, resets it, programs
+# the PL, runs the FSBL on R5 #0, then loads and starts zephyr.elf there
+python scripts/load_zynqmp_r5.py
+```
+
+The R5 build makes a Zynq MP FSBL for R5 #0 from the XSA with `xsct`, so it
+needs Vitis installed next to Vivado (or `xsct` on `PATH`). The loader runs
+it before Zephyr, as a normal boot would: it initialises the PS, sizes the
+DDR from the SODIMM's SPD, initialises the TCM ECC and, finding the PL
+configured, lifts the PS-PL isolation and resets the PL. In JTAG boot mode
+it then parks and flags completion in `PMU_GLOBAL.GLOB_GEN_STORAGE5`, which
+the loader waits for. Running only `psu_init` instead leaves R5 reads from
+DDR hanging now and then. `--fsbl` picks another FSBL image.
+
+`load_zynqmp_r5.py` needs `xsdb` (Vivado or Vitis) on `PATH`. It takes every
+xsdb target from the JTAG cable whose FPGA is the `xczu7` (`--tap`), and
+`program_fpga.py` searches every cable for its device, so other boards on
+the same `hw_server` are left alone. The fcapz tools find the FPGA by its
+exact xsdb JTAG name, `xczu7` (`xsdb` then `connect; jtag targets` lists
+it). A board that is missing or named differently fails with "target list
+is empty".
+
+The board suite runs the whole acceptance flow on any shell: boot,
+provisioning, the RX accounting test, DMA error recovery and the TX
+benchmark. It stops at the first step that fails:
+
+```sh
+python scripts/run_board_suite.py --shell zcu106_r5   --interface "<host NIC>" --board-ip <board IPv4> --uart <console port>
+```
+
+`--shell` is one of `mbv`, `vex`, `zcu106_vex` and `zcu106_r5`; `--skip-boot`
+tests a board that is already running.
+
 ## Resource Usage and Frequency
 
 Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, both shells timing
@@ -278,7 +386,7 @@ Short-loop checks:
 
 ```sh
 python scripts/lint.py
-python -m pytest tests/test_apply_zephyr_patches.py \
+python -m pytest tests/test_apply_zephyr_patches.py tests/test_board_boot.py \
   tests/test_emacz_config.py tests/test_run_arty_stress.py -q -p no:cacheprovider
 python scripts/check_env.py
 python hardware/sim/run.py
@@ -304,6 +412,10 @@ Defaults are 600 s at 5 Mbit/s with 1472 B payloads and 100% delivery
 required, below the socket path's ceiling (see
 [Throughput](#throughput)). Exits non-zero on any monitored
 MAC/gate/DMA/driver error delta.
+
+`scripts/run_board_suite.py` (see [ZCU106](#zcu106)) runs boot,
+provisioning, RX accounting, DMA recovery and TX in one go, on the Arty
+shells too.
 
 DMA error recovery (JTAG for the descriptor ring and perf counters;
 `--chain 3` on MBV, `4` on Vex):

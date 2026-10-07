@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""Load a flat binary into the Arty DDR window through fcapz EJTAG-AXI.
+"""Load a flat binary into a soft-CPU shell's RAM through fcapz EJTAG-AXI.
 
 The CPU is held in reset while the image is written and verified, then
-released. The two shells differ only in where that reset lives and which
-BSCAN chain the JTAG-AXI bridge sits on; --shell picks both.
+released. The shells differ only in their FPGA, where that reset lives and
+which BSCAN chain the JTAG-AXI bridge sits on; --shell picks all three.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 from fcapz.eio import EioController  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
 from fcapz.ejtaguart import EjtagUartController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 import fcapz_jtag  # noqa: E402
 
 # The VexRiscv shell's JTAG-AXI bridge returns SLVERR on a 16-beat burst.
@@ -34,8 +33,14 @@ MAX_BURST_WORDS = 15
 # up high), reached through the JTAG-AXI bridge. Vex's debug TAP sits ahead
 # of the bridge in the BSCAN chain, hence chain 4.
 SHELLS = {
-    "mbv": {"chain": 3, "file": "build-mbv-emac/zephyr/zephyr.bin", "reset": "eio"},
-    "vex": {"chain": 4, "file": "build-vex-emac/zephyr/zephyr.bin", "reset": "gpio"},
+    "mbv": {"chain": 3, "tap": "xc7a100t", "file": "build-mbv-emac/zephyr/zephyr.bin",
+            "reset": "eio"},
+    "vex": {"chain": 4, "tap": "xc7a100t", "file": "build-vex-emac/zephyr/zephyr.bin",
+            "reset": "gpio"},
+    # ZCU106 VexRiscv shell: the Arty Vex shell's CPU complex, reset GPIO
+    # and bridge chain, with the image in UltraRAM at the same address
+    "zcu106_vex": {"chain": 4, "tap": "xczu7", "file": "build-zcu106-vex/zephyr/zephyr.bin",
+                   "reset": "gpio"},
 }
 VEX_CPU_RESET_GPIO = 0x40020000
 
@@ -71,7 +76,7 @@ def main() -> int:
     parser.add_argument("--addr", type=lambda value: int(value, 0), default=0x90000000)
     parser.add_argument(
         "--chain", type=int, default=None,
-        help="EJTAG-AXI BSCAN chain (default: 3 for mbv, 4 for vex)",
+        help="EJTAG-AXI BSCAN chain (default: 3 for mbv, 4 for the Vex shells)",
     )
     parser.add_argument(
         "--uart-chain", type=int, default=None,
@@ -81,7 +86,8 @@ def main() -> int:
         "--eio-chain", type=int, default=1,
         help="EIO reset-control chain, mbv only (default 1)",
     )
-    parser.add_argument("--tap", default="xc7a100t")
+    parser.add_argument("--tap", default=None,
+                        help="JTAG target name (default: the shell's FPGA)")
     parser.add_argument(
         "--chunk-words", type=int, default=MAX_BURST_WORDS,
         help=f"words per AXI burst (clamped to {MAX_BURST_WORDS})",
@@ -97,6 +103,8 @@ def main() -> int:
     shell = SHELLS[args.shell]
     if args.chain is None:
         args.chain = shell["chain"]
+    if args.tap is None:
+        args.tap = shell["tap"]
     if args.file is None:
         args.file = shell["file"]
 
@@ -114,16 +122,25 @@ def main() -> int:
         image = ROOT / image
     words = words_from_file(image)
 
-    transport = XilinxHwServerTransport(fpga_name=args.tap)
-    eio = None
-    if not args.no_reset and shell["reset"] == "eio":
-        eio = EioController(transport, chain=args.eio_chain, base_addr=0x8000)
-        eio.connect()
+    def connect() -> tuple[fcapz_jtag.XilinxHwServerTransport, EioController | None,
+                           EjtagAxiController]:
+        transport = fcapz_jtag.transport(args.tap)
+        try:
+            eio = None
+            if not args.no_reset and shell["reset"] == "eio":
+                eio = EioController(transport, chain=args.eio_chain, base_addr=0x8000)
+                eio.connect()
+            axi = EjtagAxiController(transport, chain=args.chain)
+            axi.connect()
+        except Exception:
+            transport.close()
+            raise
+        return transport, eio, axi
+
+    transport, eio, axi = fcapz_jtag.open_session(connect)
+    if eio is not None:
         eio.write_outputs(1)
         print(f"held CPU reset through EIO chain {args.eio_chain}")
-
-    axi = EjtagAxiController(transport, chain=args.chain)
-    axi.connect()
     gpio_reset = not args.no_reset and shell["reset"] == "gpio"
     if gpio_reset:
         axi.axi_write(VEX_CPU_RESET_GPIO, 1)

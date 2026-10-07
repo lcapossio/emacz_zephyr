@@ -19,8 +19,13 @@ PYTHON_SOURCES = (
     "scripts/fcapz_jtag.py",
     "scripts/lint.py",
     "scripts/load_zephyr_bram.py",
+    "scripts/load_zynqmp_r5.py",
+    "scripts/program_fpga.py",
     "scripts/run_arty_stress.py",
+    "scripts/run_board_suite.py",
+    "scripts/run_tx_accounting.py",
     "tests/test_apply_zephyr_patches.py",
+    "tests/test_board_boot.py",
     "tests/test_emacz_config.py",
     "tests/test_run_arty_stress.py",
 )
