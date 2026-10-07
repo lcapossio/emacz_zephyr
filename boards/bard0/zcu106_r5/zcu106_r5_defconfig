@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+# Loaded into DDR over JTAG by scripts/load_zynqmp_r5.py
+CONFIG_XIP=n
+CONFIG_ARM_MPU=y
+CONFIG_ISR_STACK_SIZE=1024
+CONFIG_MAIN_STACK_SIZE=2048
+CONFIG_CONSOLE=y
+CONFIG_SERIAL=y
+CONFIG_UART_CONSOLE=y
+CONFIG_UART_XLNX_PS=y
+CONFIG_SYS_CLOCK_TICKS_PER_SEC=1000

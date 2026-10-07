@@ -1,0 +1,102 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * App-side overlay for zcu106_r5: the Vex shells' emacZero/DMA layout,
+ * reached by Cortex-R5 #0 over M_AXI_HPM0_LPD, with the DMA memory in PS
+ * DDR and the link fixed at 1 Gbit/s (1000BASE-X on SFP0).
+ *
+ * Address map (verified against hardware/scripts/build_zcu106.py):
+ *   PCS/PMA status  @ 0x80010000 (AXI GPIO, read by the host tools)
+ *   AXI DMA         @ 0x81E00000
+ *   axis_rx_stats   @ 0x81F00000
+ *   emacZero        @ 0x84A00000
+ *   PL interrupts   pl_ps_irq0[3:0] = GIC SPI 89..92: pcs_gpio, mm2s,
+ *                   s2mm, emaczero
+ *   DDR (non-cacheable MPU regions, reached by the DMA through
+ *   S_AXI_HP0_FPD): frame buffers at 0x07C00000, SG descriptors at
+ *   0x07E00000, the 8 KiB host page at 0x07FFE000. All of it is above
+ *   the 64 MiB Zephyr RAM and clear of the TCM window at 0x0.
+ *
+ * Each MPU region must be a power of two in size, aligned to its size.
+ * The R5's D-cache is off on zynqmp_rpu (no CACHE_MANAGEMENT), so the DMA
+ * driver needs no cache maintenance; non-cacheable keeps it that way if
+ * the cache is turned on later.
+ */
+
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+
+/ {
+	emz_bufs: memory@7c00000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x07c00000 DT_SIZE_M(2)>;
+		zephyr,memory-region = "EMZ_BUFFERS";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	dma_desc: memory@7e00000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x07e00000 DT_SIZE_K(64)>;
+		zephyr,memory-region = "DMA_DESC";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	/* Host-visible page at fixed addresses the host tools reach over
+	 * JTAG-AXI: the provisioning mailbox, then the app's perf stats.
+	 */
+	emz_hostio: memory@7ffe000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x07ffe000 DT_SIZE_K(8)>;
+		zephyr,memory-region = "EMZ_HOSTIO";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	/* 1000BASE-X has no PHY to manage, and Zephyr has no PCS driver for
+	 * the AMD core: the link is fixed at 1 Gbit/s full duplex. The PCS
+	 * status (link, sync) is in the status GPIO. The parent node only
+	 * supplies the address cells for the PHY's reg.
+	 */
+	emz_phy_bus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		emz_phy: ethernet-phy@0 {
+			compatible = "ethernet-phy";
+			reg = <0>;
+			fixed-link = "1000BASE-T Full-Duplex";
+		};
+	};
+
+	aliases {
+		ethernet0 = &emaczero0;
+	};
+
+	soc {
+		emaczero0: ethernet@84a00000 {
+			compatible = "bard0,emaczero";
+			status = "okay";
+			reg = <0x84a00000 0x100>;
+			interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			axistream-connected = <&axi_dma0>;
+			/* the Arty boards use :01; a ZCU106 may share their segment */
+			local-mac-address = [02 00 00 00 00 03];
+			phy-connection-type = "gmii";
+			phy-handle = <&emz_phy>;
+			memory-region = <&emz_bufs>;
+		};
+
+		axi_dma0: dma@81e00000 {
+			compatible = "xlnx,axi-dma-1.00.a";
+			status = "okay";
+			reg = <0x81e00000 0x10000>;
+			interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+				     <GIC_SPI 91 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "mm2s_introut", "s2mm_introut";
+			#dma-cells = <0>;
+			dma-channels = <2>;
+			xlnx,addrwidth = <32>;
+			memory-region = <&dma_desc>;
+		};
+	};
+};

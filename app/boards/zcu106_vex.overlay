@@ -1,0 +1,97 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * App-side overlay for zcu106_vex: the arty_a7_vex overlay's emacZero/DMA
+ * layout, with the DMA window in the 512 KiB uncached UltraRAM at
+ * 0x9FF80000 and the link fixed at 1 Gbit/s (1000BASE-X on SFP0).
+ *
+ * Address map (verified against hardware/scripts/build_zcu106.py):
+ *   emacZero        @ 0x44A00000
+ *   AXI DMA         @ 0x41E00000
+ *   axis_rx_stats   @ 0x41F00000
+ *   AXI INTC        @ 0x41200000
+ *   UARTLite        @ 0x40600000
+ *   PCS/PMA status  @ 0x40010000 (AXI GPIO, read by the host tools)
+ *   RAM (uncached)  @ 0x9FF80000: 64 KiB SG descriptors, frame buffers,
+ *                     and the 8 KiB host page at 0x9FFFE000 (same address
+ *                     as on the Arty)
+ */
+
+/ {
+	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
+	 * scatter-gather descriptor rings.
+	 */
+	dma_desc: memory@9ff80000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9ff80000 0x10000>;
+		zephyr,memory-region = "DMA_DESC";
+	};
+
+	/* emacZero RX and TX packet buffers, in the same uncached window. It
+	 * stops where emz_hostio starts.
+	 */
+	emz_bufs: memory@9ff90000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9ff90000 0x6e000>;
+		zephyr,memory-region = "EMZ_BUFFERS";
+	};
+
+	/* Host-visible page at fixed addresses the host tools reach over
+	 * JTAG-AXI: the provisioning mailbox, then the app's perf stats.
+	 */
+	emz_hostio: memory@9fffe000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9fffe000 0x2000>;
+		zephyr,memory-region = "EMZ_HOSTIO";
+	};
+
+	/* 1000BASE-X has no PHY to manage, and Zephyr has no PCS driver for
+	 * the AMD core: the link is fixed at 1 Gbit/s full duplex. The PCS
+	 * status (link, sync) is in the status GPIO. The parent node only
+	 * supplies the address cells for the PHY's reg.
+	 */
+	emz_phy_bus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		emz_phy: ethernet-phy@0 {
+			compatible = "ethernet-phy";
+			reg = <0>;
+			fixed-link = "1000BASE-T Full-Duplex";
+		};
+	};
+
+	aliases {
+		ethernet0 = &emaczero0;
+	};
+
+	soc {
+		emaczero0: ethernet@44a00000 {
+			compatible = "bard0,emaczero";
+			status = "okay";
+			reg = <0x44a00000 0x100>;
+			interrupt-parent = <&intc0>;
+			interrupts = <4 2>;
+			axistream-connected = <&axi_dma0>;
+			/* the Arty boards use :01; a ZCU106 may share their segment */
+			local-mac-address = [02 00 00 00 00 02];
+			phy-connection-type = "gmii";
+			phy-handle = <&emz_phy>;
+			memory-region = <&emz_bufs>;
+		};
+
+		axi_dma0: dma@41e00000 {
+			compatible = "xlnx,axi-dma-1.00.a";
+			status = "okay";
+			reg = <0x41e00000 0x10000>;
+			interrupt-parent = <&intc0>;
+			interrupts = <2 2 3 2>;
+			interrupt-names = "mm2s_introut", "s2mm_introut";
+			#dma-cells = <0>;
+			dma-channels = <2>;
+			xlnx,addrwidth = <32>;
+			memory-region = <&dma_desc>;
+		};
+	};
+};
