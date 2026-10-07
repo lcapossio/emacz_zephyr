@@ -133,8 +133,8 @@ def read_stats(
         # mid-read (a torn 64-bit counter is off by 2**32).
         for _ in range(SEQ_RETRIES):
             chunks = []
-            for offset in range(0, words, BURST):
-                chunks.extend(axi.burst_read(addr + offset * 4, min(BURST, words - offset)))
+            for offset, span in fcapz_jtag.bursts(addr, words, BURST):
+                chunks.extend(axi.burst_read(addr + offset * 4, span))
             data = b"".join(w.to_bytes(4, "little") for w in chunks)
             if not sink_consistent:
                 break

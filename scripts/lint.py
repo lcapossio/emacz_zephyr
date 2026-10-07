@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCES = (
     "scripts/apply_zephyr_patches.py",
     "scripts/emacz_config.py",
+    "scripts/fcapz_jtag.py",
     "scripts/lint.py",
+    "scripts/load_zephyr_bram.py",
     "scripts/run_arty_stress.py",
     "tests/test_apply_zephyr_patches.py",
     "tests/test_emacz_config.py",

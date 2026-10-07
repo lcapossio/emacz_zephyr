@@ -22,6 +22,7 @@ from fcapz.eio import EioController  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
 from fcapz.ejtaguart import EjtagUartController  # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+import fcapz_jtag  # noqa: E402
 
 # The VexRiscv shell's JTAG-AXI bridge returns SLVERR on a 16-beat burst.
 # 15 works on both shells, so it is the cap everywhere rather than a
@@ -48,8 +49,7 @@ def words_from_file(path: Path) -> list[int]:
 
 def verify_range(axi, addr: int, words: list[int], count: int, burst: int) -> int:
     """Read back `count` words and report the first mismatch. 0 on success."""
-    for offset in range(0, count, burst):
-        span = min(burst, count - offset)
+    for offset, span in fcapz_jtag.bursts(addr, count, burst):
         got = axi.burst_read(addr + offset * 4, span)
         for i, actual in enumerate(got):
             expected = words[offset + i]
@@ -130,8 +130,8 @@ def main() -> int:
         print(f"held CPU reset through AXI GPIO 0x{VEX_CPU_RESET_GPIO:08X}")
 
     try:
-        for offset in range(0, len(words), burst):
-            chunk = words[offset:offset + burst]
+        for offset, span in fcapz_jtag.bursts(args.addr, len(words), burst):
+            chunk = words[offset:offset + span]
             axi.burst_write(args.addr + offset * 4, chunk)
             print(f"loaded {offset + len(chunk):5d}/{len(words)} words", flush=True)
 

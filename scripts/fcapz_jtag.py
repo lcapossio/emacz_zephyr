@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeVar
 
@@ -66,3 +66,24 @@ def axi(tap: str, chain: int) -> EjtagAxiController:
         return bridge
 
     return open_session(connect)
+
+
+# AXI4 forbids an INCR burst from crossing a 4 KiB boundary (A3.4.1); the
+# fabric may wrap the address inside the page instead of moving on.
+AXI_BOUNDARY = 0x1000
+
+
+def bursts(addr: int, words: int, max_words: int) -> Iterator[tuple[int, int]]:
+    """Split `words` 32-bit words from `addr` into (word offset, count) bursts.
+
+    Each burst holds at most `max_words` beats and stays inside one 4 KiB page.
+    """
+    if addr % 4:
+        raise ValueError(f"burst address 0x{addr:08X} is not word aligned")
+    offset = 0
+    while offset < words:
+        start = addr + offset * 4
+        to_boundary = (AXI_BOUNDARY - start % AXI_BOUNDARY) // 4
+        count = min(max_words, words - offset, to_boundary)
+        yield offset, count
+        offset += count
