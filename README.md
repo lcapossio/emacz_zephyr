@@ -232,11 +232,11 @@ MET at their target frequencies (MBV: 81.25 MHz `ui_clk`; Vex: 100 MHz
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,669 (54.68%) | 28,897 (45.58%) | −5,772 (−16.6%) |
-| Slice Registers | 46,102 (36.36%) | 29,363 (23.16%) | −16,739 (−36.3%) |
+| Slice LUTs | 34,705 (54.74%) | 28,902 (45.59%) | −5,803 (−16.7%) |
+| Slice Registers | 46,110 (36.36%) | 29,373 (23.16%) | −16,737 (−36.3%) |
 | BRAM Tiles | 44 (32.59%) | 36 (26.67%) | −8 (−18.2%) |
 | DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
-| Setup WNS | +0.147 ns | +0.196 ns | — |
+| Setup WNS | +0.680 ns | +0.282 ns | — |
 
 Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
 I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including

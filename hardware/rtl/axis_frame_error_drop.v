@@ -66,13 +66,20 @@ module axis_frame_error_drop #(
     reg [31:0] drain_cycles_current;
     reg [31:0] drain_tready_low_current;
     reg ram_rd_pending;
+    reg [10:0] skid_word;
+    reg skid_valid;
     reg inc_full_count;
     reg dec_full_count;
 
     wire input_accept = s_axis_tvalid && s_axis_tready;
     wire output_accept = m_axis_tvalid && m_axis_tready;
     wire finish_drain = output_accept && m_axis_tlast;
-    wire output_slot_free = !m_axis_tvalid || m_axis_tready;
+    // The drain moves a word per clock: a read is issued whenever the output
+    // register and the skid word behind it can take the word it returns a
+    // clock later, so the RAM latency never idles the output.
+    wire [1:0] drain_held = {1'b0, m_axis_tvalid} + {1'b0, skid_valid} +
+                            {1'b0, ram_rd_pending};
+    wire drain_has_room = (drain_held < 2'd2) || ((drain_held == 2'd2) && output_accept);
     wire slot_available = (full_count < SLOT_COUNT);
     wire write_overflow = input_accept && (wr_ptr == {ADDR_WIDTH{1'b1}}) && !s_axis_tlast;
     wire [MEM_ADDR_WIDTH-1:0] wr_addr = {fill_slot, wr_ptr};
@@ -80,8 +87,8 @@ module axis_frame_error_drop #(
     wire [10:0] ram_din = {s_axis_tsof, s_axis_terror, s_axis_tlast, s_axis_tdata};
     wire [10:0] ram_dout;
     wire ram_wr_en = input_accept && (fill_state == FILL_ACTIVE);
-    wire ram_rd_fire = drain_active && !finish_drain && output_slot_free &&
-                       !ram_rd_pending && (rd_count < drain_len);
+    wire ram_rd_fire = drain_active && !finish_drain && drain_has_room &&
+                       (rd_count < drain_len);
 
     assign s_axis_tready = (fill_state == FILL_DROP) || slot_available;
 
@@ -180,6 +187,8 @@ module axis_frame_error_drop #(
             drain_cycles_current <= 32'd0;
             drain_tready_low_current <= 32'd0;
             ram_rd_pending <= 1'b0;
+            skid_word <= 11'd0;
+            skid_valid <= 1'b0;
             for (i = 0; i < SLOT_COUNT; i = i + 1) begin
                 slot_len[i] <= {ADDR_WIDTH+1{1'b0}};
             end
@@ -232,6 +241,7 @@ module axis_frame_error_drop #(
                 drain_cycles_current <= 32'd0;
                 drain_tready_low_current <= 32'd0;
                 ram_rd_pending <= 1'b0;
+                skid_valid <= 1'b0;
                 m_axis_tvalid <= 1'b0;
                 m_axis_tlast <= 1'b0;
                 m_axis_tsof <= 1'b0;
@@ -242,6 +252,7 @@ module axis_frame_error_drop #(
                     m_axis_tsof <= 1'b0;
                     drain_active <= 1'b0;
                     ram_rd_pending <= 1'b0;
+                    skid_valid <= 1'b0;
                     dec_full_count = 1'b1;
                     drain_slot <= (drain_slot == (SLOT_COUNT-1)) ?
                                   {SLOT_BITS{1'b0}} : drain_slot + 1'b1;
@@ -265,16 +276,26 @@ module axis_frame_error_drop #(
                         drain_ge_500us <= drain_ge_500us + 1'b1;
                     end
                 end else begin
-                    if (output_accept) begin
-                        m_axis_tvalid <= 1'b0;
+                    // The word a read returns (ram_dout, ram_rd_pending) goes
+                    // to the output register when it is free, else behind it
+                    if (output_accept || !m_axis_tvalid) begin
+                        if (skid_valid) begin
+                            {m_axis_tsof, m_axis_terror, m_axis_tlast, m_axis_tdata} <= skid_word;
+                            m_axis_tvalid <= 1'b1;
+                            skid_valid <= ram_rd_pending;
+                            skid_word <= ram_dout;
+                        end else if (ram_rd_pending) begin
+                            {m_axis_tsof, m_axis_terror, m_axis_tlast, m_axis_tdata} <= ram_dout;
+                            m_axis_tvalid <= 1'b1;
+                        end else begin
+                            m_axis_tvalid <= 1'b0;
+                        end
+                    end else if (ram_rd_pending) begin
+                        skid_word <= ram_dout;
+                        skid_valid <= 1'b1;
                     end
-                    if (ram_rd_pending) begin
-                        {m_axis_tsof, m_axis_terror, m_axis_tlast, m_axis_tdata} <= ram_dout;
-                        m_axis_tvalid <= 1'b1;
-                        ram_rd_pending <= 1'b0;
-                    end
+                    ram_rd_pending <= ram_rd_fire;
                     if (ram_rd_fire) begin
-                        ram_rd_pending <= 1'b1;
                         rd_count <= rd_count + 1'b1;
                     end
                 end
