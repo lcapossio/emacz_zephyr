@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCES = (
+    "hardware/scripts/build_zcu106.py",
     "scripts/apply_zephyr_patches.py",
     "scripts/emacz_config.py",
     "scripts/fcapz_jtag.py",
