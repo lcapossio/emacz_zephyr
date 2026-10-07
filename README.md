@@ -65,7 +65,10 @@ the scatter-gather descriptor rings in a given linker region, and 0003
 reports a channel halted by a DMA error to the client callback (`-EIO`) so
 the driver can reset and rebuild both channels. 0004 adds the emacZero
 Ethernet driver and DT binding as submitted to mainline Zephyr, and 0005
-backports it to this tree's older Ethernet API. Re-run after
+backports it to this tree's older Ethernet API. 0006 is upstream
+`ef5b9dc5c1e`, which stops devicetree MPU regions from corrupting their
+memory type on Cortex-R; the ZCU106 R5 build maps the PL window and its
+DMA memory that way. Re-run after
 every `west update`; it skips patches that are already applied and refuses
 to touch locally modified driver files.
 

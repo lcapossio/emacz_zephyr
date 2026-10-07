@@ -1,0 +1,66 @@
+From ef5b9dc5c1e5e8bf7f0bb27c46e5d412470d7b2f Mon Sep 17 00:00:00 2001
+From: Andrei-Edward Popa <andrei.popa105@yahoo.com>
+Date: Thu, 27 Aug 2026 15:05:47 +0300
+Subject: [PATCH] arch: arm: mpu: fix region init for Cortex-R
+
+ARM_MPU_REGION_INIT() currently includes the MPU region size in the region
+attributes for both Cortex-M and Cortex-R.
+
+On Cortex-M, the region attributes and size are both programmed through
+RASR, so this is correct. Cortex-R uses separate registers for region
+access attributes and region size. Including the size in the attributes
+therefore corrupts the memory type attributes programmed into DRACR.
+
+Store the encoded region size in the dedicated size field for Cortex-R
+and exclude it from the region attributes. This fixes devicetree-defined
+MPU regions on Cortex-R, where the region size could alter the TEX, S, C,
+and B attribute bits.
+
+Signed-off-by: Andrei-Edward Popa <andrei.popa105@yahoo.com>
+---
+ arch/arm/core/mpu/arm_mpu.c               |  3 ---
+ include/zephyr/arch/arm/mpu/arm_mpu_v7m.h | 11 +++++++++++
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/core/mpu/arm_mpu.c b/arch/arm/core/mpu/arm_mpu.c
+index a6d3e3723a9e..3eec190ca58a 100644
+--- a/arch/arm/core/mpu/arm_mpu.c
++++ b/arch/arm/core/mpu/arm_mpu.c
+@@ -168,9 +168,6 @@ static int mpu_configure_regions_from_dt(uint8_t *reg_index)
+ 			 */
+ 			continue;
+ 		}
+-#if defined(CONFIG_ARMV7_R)
+-		region_conf.size = size_to_mpu_rasr_size(region[idx].dt_size);
+-#endif
+ 
+ 		if (region_allocate_and_init((*reg_index),
+ 					     (const struct arm_mpu_region *) &region_conf) < 0) {
+diff --git a/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h b/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h
+index eb186a3e6773..acd3c617990e 100644
+--- a/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h
++++ b/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h
+@@ -105,12 +105,23 @@
+ #define REGION_2G   REGION_SIZE(2GB)
+ #define REGION_4G   REGION_SIZE(4GB)
+ 
++#if defined(CONFIG_CPU_AARCH32_CORTEX_R)
++#define ARM_MPU_REGION_INIT(p_name, p_base, p_size, p_attr)                                        \
++	{                                                                                          \
++		.name = p_name,                                                                    \
++		.base = p_base,                                                                    \
++		.size = size_to_mpu_rasr_size(p_size),                                             \
++		.attr = p_attr(0U),                                                                \
++	}
++
++#else
+ #define ARM_MPU_REGION_INIT(p_name, p_base, p_size, p_attr)                                        \
+ 	{                                                                                          \
+ 		.name = p_name,                                                                    \
+ 		.base = p_base,                                                                    \
+ 		.attr = p_attr(size_to_mpu_rasr_size(p_size)),                                     \
+ 	}
++#endif
+ 
+ /* Some helper defines for common regions */
+ 
