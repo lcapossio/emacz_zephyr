@@ -370,8 +370,11 @@ not the core. The emacZero frame buffers sit in uncached DDR, and the
 socket's copy of each payload out of them costs ~1.07 ms of the
 ~1.39 ms per frame on both shells: the UDP payload starts 2 bytes off a
 word boundary, so `memcpy` falls back to byte reads of uncached memory.
-Above the ceiling the MAC and driver drop the excess and count it; DMA
-and the rest of the system stay healthy.
+
+Above the RX ceiling the delivered rate holds: when the stack has no
+packet free, the driver's RX thread waits for one instead of dropping the
+frame, so S2MM runs out of buffers and the excess is dropped in hardware
+and counted, at no CPU cost. DMA and the rest of the system stay healthy.
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.

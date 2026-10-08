@@ -107,10 +107,10 @@ index 00000000000..fdd6298b13d
 +endif # ETH_EMACZERO
 diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
 new file mode 100644
-index 00000000000..685da05233e
+index 00000000000..969cde9a0ab
 --- /dev/null
 +++ b/drivers/ethernet/eth_emaczero.c
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,877 @@
 +/*
 + * Copyright (c) 2026 Leonardo Capossio - bard0 design
 + * SPDX-License-Identifier: Apache-2.0
@@ -190,6 +190,15 @@ index 00000000000..685da05233e
 +
 +/* A full TX ring drains in about 10 ms at 10 Mbit/s */
 +#define EMZ_TX_TIMEOUT K_MSEC(100)
++
++/*
++ * How long the RX thread waits for the network stack to free a packet before
++ * it drops a frame. While it waits, no buffer goes back to S2MM, so excess
++ * frames are dropped in hardware once the posted buffers fill. Dropping them
++ * in software instead keeps this thread busy on every frame of a flood and
++ * starves the threads that would free packets.
++ */
++#define EMZ_RX_ALLOC_TIMEOUT K_MSEC(100)
 +
 +/*
 + * The DMA driver refuses to post into a descriptor that is still in use, so
@@ -517,7 +526,7 @@ index 00000000000..685da05233e
 +		return frag;
 +	}
 +
-+	frag = net_buf_alloc(cfg->rx_copy_pool, K_NO_WAIT);
++	frag = net_buf_alloc(cfg->rx_copy_pool, EMZ_RX_ALLOC_TIMEOUT);
 +	if (frag != NULL) {
 +		net_buf_add_mem(frag, rx->data, rx->len);
 +	}
@@ -542,7 +551,7 @@ index 00000000000..685da05233e
 +		goto drop;
 +	}
 +
-+	pkt = net_pkt_rx_alloc_on_iface(data->iface, K_NO_WAIT);
++	pkt = net_pkt_rx_alloc_on_iface(data->iface, EMZ_RX_ALLOC_TIMEOUT);
 +	if (pkt == NULL) {
 +		goto drop;
 +	}

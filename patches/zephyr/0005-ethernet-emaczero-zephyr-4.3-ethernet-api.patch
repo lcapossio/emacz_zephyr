@@ -6,7 +6,7 @@ once deps/zephyr is 4.5 or newer.
 diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
 --- a/drivers/ethernet/eth_emaczero.c
 +++ b/drivers/ethernet/eth_emaczero.c
-@@ -651,7 +651,11 @@
+@@ -660,7 +660,11 @@
  		emz_update_ctrl(cfg, EMZ_CTRL_SPEED_MASK | EMZ_CTRL_FULL_DUPLEX, ctrl);
  	}
  
@@ -19,7 +19,7 @@ diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
  }
  
  static void emz_iface_init(struct net_if *iface)
-@@ -673,26 +677,23 @@
+@@ -682,26 +686,23 @@
  	}
  }
  
@@ -49,7 +49,7 @@ diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
  
  	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE
  #if defined(CONFIG_NET_PROMISCUOUS_MODE)
-@@ -701,7 +702,7 @@
+@@ -710,7 +711,7 @@
  		;
  }
  
@@ -58,7 +58,7 @@ diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
  			  enum ethernet_config_type type, const struct ethernet_config *config)
  {
  	const struct emz_config *cfg = dev->config;
-@@ -711,7 +712,7 @@
+@@ -720,7 +721,7 @@
  	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
  		memcpy(data->mac, config->mac_address.addr, sizeof(data->mac));
  		emz_set_mac(cfg, data->mac);
@@ -67,7 +67,7 @@ diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
  		return 0;
  #if defined(CONFIG_NET_PROMISCUOUS_MODE)
  	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
-@@ -723,22 +724,20 @@
+@@ -732,22 +733,20 @@
  	}
  }
  
