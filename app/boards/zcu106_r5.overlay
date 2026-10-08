@@ -13,15 +13,17 @@
  *   emacZero        @ 0x84A00000
  *   PL interrupts   pl_ps_irq0[3:0] = GIC SPI 89..92: pcs_gpio, mm2s,
  *                   s2mm, emaczero
- *   DDR (non-cacheable MPU regions, reached by the DMA through
- *   S_AXI_HP0_FPD): frame buffers at 0x07C00000, SG descriptors at
- *   0x07E00000, the 8 KiB host page at 0x07FFE000. All of it is above
- *   the 64 MiB Zephyr RAM and clear of the TCM window at 0x0.
+ *   DDR (MPU regions, reached by the DMA through S_AXI_HP0_FPD): frame
+ *   buffers at 0x07C00000, SG descriptors at 0x07E00000, the 8 KiB host
+ *   page at 0x07FFE000. All of it is above the 64 MiB Zephyr RAM and clear
+ *   of the TCM window at 0x0.
  *
  * Each MPU region must be a power of two in size, aligned to its size.
- * The R5's D-cache is off on zynqmp_rpu (no CACHE_MANAGEMENT), so the DMA
- * driver needs no cache maintenance; non-cacheable keeps it that way if
- * the cache is turned on later.
+ * HP0_FPD does not snoop the R5's D-cache. The frame buffers are cacheable,
+ * so the socket copy out of them reads whole lines, and the AXI DMA driver
+ * cleans and invalidates them around each transfer (zcu106_r5.conf). The
+ * descriptors and the host page, which the host reads over JTAG-AXI, stay
+ * non-cacheable.
  */
 
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
@@ -32,7 +34,7 @@
 		compatible = "zephyr,memory-region";
 		reg = <0x07c00000 DT_SIZE_M(2)>;
 		zephyr,memory-region = "EMZ_BUFFERS";
-		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM)>;
 	};
 
 	dma_desc: memory@7e00000 {

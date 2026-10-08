@@ -11,3 +11,6 @@ CONFIG_SERIAL=y
 CONFIG_UART_CONSOLE=y
 CONFIG_UART_XLNX_PS=y
 CONFIG_SYS_CLOCK_TICKS_PER_SEC=1000
+# The loader's core reset leaves the R5 caches off; with cache management
+# the SoC's early init turns them on.
+CONFIG_CACHE_MANAGEMENT=y

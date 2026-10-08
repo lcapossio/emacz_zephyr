@@ -264,11 +264,14 @@ for the DMA descriptors, frame buffers and the host page, which stays at
 `zcu106_r5` (`--variant r5`) runs Zephyr on Cortex-R5 #0. The R5 reaches the
 PL blocks through `M_AXI_HPM0_LPD` at `0x80000000` + the Vex offsets (AXI
 DMA `0x81e00000`, emacZero `0x84a00000`), and the DMA reaches PS DDR through
-`S_AXI_HP0_FPD`. Zephyr runs from the bottom 64 MiB of DDR. The frame
-buffers (`0x07c00000`), descriptors (`0x07e00000`) and host page
-(`0x07ffe000`) are non-cacheable MPU regions above it, clear of the TCM
-window at `0x0` that the PL cannot reach. The PL interrupts are GIC SPIs
-89–92. Its console is PS UART0, the CP2108's first interface.
+`S_AXI_HP0_FPD`. Zephyr runs from the bottom 64 MiB of DDR with the R5's
+I- and D-caches on. The frame buffers (`0x07c00000`), descriptors
+(`0x07e00000`) and host page (`0x07ffe000`) are MPU regions above it, clear
+of the TCM window at `0x0` that the PL cannot reach. The frame buffers are
+cacheable, with the AXI DMA driver's cache maintenance around each transfer
+(`CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY`); the descriptors and
+host page are non-cacheable. The PL interrupts are GIC SPIs 89–92. Its
+console is PS UART0, the CP2108's first interface.
 
 | | `zcu106_vex` | `zcu106_r5` |
 |---|---|---|
@@ -370,6 +373,18 @@ not the core. The emacZero frame buffers sit in uncached DDR, and the
 socket's copy of each payload out of them costs ~1.07 ms of the
 ~1.39 ms per frame on both shells: the UDP payload starts 2 bytes off a
 word boundary, so `memcpy` falls back to byte reads of uncached memory.
+
+The ZCU106 shells, same tools and payloads over the 1 Gbit/s SFP link,
+RX offered at 20 to 950 Mbit/s for 5 s per point:
+
+| Path | `zcu106_vex` (150 MHz) | `zcu106_r5` |
+|---|---|---|
+| RX, socket sink on port 5001 | 24 Mbit/s (~2,040 frames/s) | 244 Mbit/s (~20,700 frames/s) |
+| TX, `zsock_sendto` loop | 24.9 Mbit/s | 199 Mbit/s |
+
+The R5 runs with its caches on and cacheable frame buffers, so the socket
+copy reads whole cache lines; with the frame buffers uncached its RX
+ceiling is 65 Mbit/s, and with the caches off as well, 53 Mbit/s.
 
 Above the RX ceiling the delivered rate holds: when the stack has no
 packet free, the driver's RX thread waits for one instead of dropping the
