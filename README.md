@@ -328,8 +328,10 @@ it). A board that is missing or named differently fails with "target list
 is empty".
 
 The board suite runs the whole acceptance flow on any shell: boot,
-provisioning, the RX accounting test, DMA error recovery and the TX
-benchmark. It stops at the first step that fails:
+provisioning, the RX accounting test, DMA error recovery, the TX benchmark,
+and RX and TX together (`bidi`: RX at about 40% of the shell's RX ceiling,
+`--bidi-rx-mbps` to change it, while the TX benchmark runs). It stops at
+the first step that fails:
 
 ```sh
 python scripts/run_board_suite.py --shell zcu106_r5   --interface "<host NIC>" --board-ip <board IPv4> --uart <console port>
@@ -361,17 +363,18 @@ LUT-as-memory and F7/F8 wide-mux counts, is in
 
 UDP with 1472 B payloads through Zephyr sockets, delivered rate as counted
 by the board (`scripts/run_udp_accounting.py`, `scripts/run_tx_accounting.py
---rate-mbps 0`):
+--rate-mbps 0`), RX offered at 20 and 95 Mbit/s for 5 s:
 
 | Path | MBV (81.25 MHz) | Vex (100 MHz) |
 |---|---|---|
-| RX, socket sink on port 5001 | 8.5 Mbit/s (~720 frames/s) | 8.5 Mbit/s (~720 frames/s) |
-| TX, `zsock_sendto` loop | 9.5 Mbit/s | 11.7 Mbit/s |
+| RX, socket sink on port 5001 | 9.5 Mbit/s (~800 frames/s) | 9.4 Mbit/s (~800 frames/s) |
+| TX, `zsock_sendto` loop | 9.2 Mbit/s | 11.8 Mbit/s |
+| TX while RX takes 3 Mbit/s | 5.3 Mbit/s | 11.8 Mbit/s |
 
 Both CPUs hit the same RX ceiling because it is set by memory latency,
 not the core. The emacZero frame buffers sit in uncached DDR, and the
 socket's copy of each payload out of them costs ~1.07 ms of the
-~1.39 ms per frame on both shells: the UDP payload starts 2 bytes off a
+~1.25 ms per frame on both shells: the UDP payload starts 2 bytes off a
 word boundary, so `memcpy` falls back to byte reads of uncached memory.
 
 The ZCU106 shells, same tools and payloads over the 1 Gbit/s SFP link,
@@ -381,6 +384,7 @@ RX offered at 20 to 950 Mbit/s for 5 s per point:
 |---|---|---|
 | RX, socket sink on port 5001 | 24 Mbit/s (~2,040 frames/s) | 244 Mbit/s (~20,700 frames/s) |
 | TX, `zsock_sendto` loop | 24.9 Mbit/s | 199 Mbit/s |
+| TX while RX takes 10 / 100 Mbit/s | 10.4 Mbit/s | 116 Mbit/s |
 
 The R5 runs with its caches on and cacheable frame buffers, so the socket
 copy reads whole cache lines; with the frame buffers uncached its RX
@@ -388,8 +392,15 @@ ceiling is 65 Mbit/s, and with the caches off as well, 53 Mbit/s.
 
 Above the RX ceiling the delivered rate holds: when the stack has no
 packet free, the driver's RX thread waits for one instead of dropping the
-frame, so S2MM runs out of buffers and the excess is dropped in hardware
-and counted, at no CPU cost. DMA and the rest of the system stay healthy.
+frame, so S2MM runs out of buffers and the excess is dropped in hardware,
+at no CPU cost. DMA and the rest of the system stay healthy. The MAC
+counts the frames its RX FIFO truncates (`RX_ERR_OVERFLOW`), but not the
+ones it drops whole, which are most of them at line rate: emacZero
+(446a350) has no counter for those.
+
+With both directions loaded, RX takes the CPU first: the driver's RX
+thread and the app's sink thread outrank the thread running the TX
+benchmark, so TX gets what RX leaves (the rows above).
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.
@@ -432,8 +443,8 @@ required, below the socket path's ceiling (see
 MAC/gate/DMA/driver error delta.
 
 `scripts/run_board_suite.py` (see [ZCU106](#zcu106)) runs boot,
-provisioning, RX accounting, DMA recovery and TX in one go, on the Arty
-shells too.
+provisioning, RX accounting, DMA recovery, TX and RX+TX in one go, on the
+Arty shells too.
 
 DMA error recovery (JTAG for the descriptor ring and perf counters;
 `--chain 3` on MBV, `4` on Vex):

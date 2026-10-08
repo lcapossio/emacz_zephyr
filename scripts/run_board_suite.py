@@ -13,6 +13,8 @@ Steps, in order (each one runs only if the previous ones passed):
   rx         UDP sink accounting (run_udp_accounting.py)
   recovery   AXI DMA S2MM halt and driver recovery (run_dma_recovery_test.py)
   tx         board UDP TX benchmark (run_tx_accounting.py)
+  bidi       both at once: RX accounting at the shell's bidi_rx_mbps, with
+             the TX benchmark running inside its send window
 
 The JTAG and address details of each shell come from SHELLS; the host side
 needs only the interface (or address) that faces the board.
@@ -32,6 +34,7 @@ from pathlib import Path
 
 import emacz_config as config
 from run_arty_stress import choose_bind_ip, provision_board
+from run_udp_accounting import SENDING_MARKER
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -44,19 +47,28 @@ class Shell:
     perf_stats: int     # app perf-stats block (host page + 0x1000)
     dma_base: int       # AXI DMA registers, as the JTAG-AXI bridge sees them
     csr_base: int       # emacZero CSRs, as the JTAG-AXI bridge sees them
+    bidi_rx_mbps: float  # bidi step's RX load, ~40% of the shell's RX ceiling
     ps_boot: bool = False  # the PS boots it: load_zynqmp_r5.py, not program+BRAM
 
 
 # The soft-CPU shells share one address map; only the FPGA, the bridge's
 # chain and the CPU reset differ (load_zephyr_bram.py knows the reset).
+# RX ceilings (README, Throughput): 8.5 Mbit/s on both Arty shells, 24 on
+# zcu106_vex, 244 on zcu106_r5.
 SHELLS = {
-    "mbv": Shell("xc7a100t", 3, 0x9FFFF000, 0x41E00000, 0x44A00000),
-    "vex": Shell("xc7a100t", 4, 0x9FFFF000, 0x41E00000, 0x44A00000),
-    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000),
+    "mbv": Shell("xc7a100t", 3, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
+    "vex": Shell("xc7a100t", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
+    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 10.0),
     # Cortex-R5 #0 in the PS: the blocks sit in the HPM0_LPD window, the
     # host page in PS DDR (app/boards/zcu106_r5.overlay)
-    "zcu106_r5": Shell("xczu7", 4, 0x07FFF000, 0x81E00000, 0x84A00000, ps_boot=True),
+    "zcu106_r5": Shell("xczu7", 4, 0x07FFF000, 0x81E00000, 0x84A00000, 100.0,
+                       ps_boot=True),
 }
+
+# The bidi step's RX load outlasts the TX benchmark by this much: the TX
+# script's control check, JTAG reads and reply wait fit inside it, so its
+# last JTAG read ends before the RX script's final one starts.
+BIDI_RX_MARGIN_S = 6.0
 
 LOAD_ATTEMPTS = 3
 
@@ -200,12 +212,51 @@ def test_recovery(args: argparse.Namespace, shell: Shell) -> bool:
     ]) == 0
 
 
-def test_tx(args: argparse.Namespace, shell: Shell) -> bool:
-    return run([
+def tx_command(args: argparse.Namespace, shell: Shell) -> list[str]:
+    return [
         sys.executable, str(SCRIPTS / "run_tx_accounting.py"), *jtag_args(shell),
         "--csr-base", hex(shell.csr_base), "--board", str(args.board_ip), "--bind", args.bind,
         "--rate-mbps", str(args.tx_rate_mbps), "--duration", str(args.tx_duration),
-    ]) == 0
+    ]
+
+
+def test_tx(args: argparse.Namespace, shell: Shell) -> bool:
+    return run(tx_command(args, shell)) == 0
+
+
+def bidi_rx_command(args: argparse.Namespace, shell: Shell) -> list[str]:
+    rate = args.bidi_rx_mbps if args.bidi_rx_mbps is not None else shell.bidi_rx_mbps
+    return [
+        sys.executable, str(SCRIPTS / "run_udp_accounting.py"), *jtag_args(shell),
+        "--addr", hex(shell.perf_stats), "--target", str(args.board_ip), "--bind", args.bind,
+        "--rate-mbps", str(rate), "--duration", str(args.tx_duration + BIDI_RX_MARGIN_S),
+    ]
+
+
+def test_bidi(args: argparse.Namespace, shell: Shell) -> bool:
+    """RX accounting with the TX benchmark inside its send window.
+
+    Both scripts read counters over JTAG; the TX one starts only once the
+    RX one has taken its first reading and is just sending, so the two
+    never drive the JTAG-AXI bridge at the same time.
+    """
+    rx_cmd = bidi_rx_command(args, shell)
+    print("$ " + " ".join(rx_cmd), flush=True)
+    rx = subprocess.Popen(rx_cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True)
+    assert rx.stdout is not None
+    sending = False
+    for line in rx.stdout:
+        sys.stdout.write(line)
+        if line.startswith(SENDING_MARKER):
+            sending = True
+            break
+    tx_ok = sending and test_tx(args, shell)
+    sys.stdout.write(rx.stdout.read())
+    rx_ok = rx.wait() == 0
+    if not sending:
+        print("bidi: the RX test ended before it started sending")
+    return rx_ok and tx_ok
 
 
 def main() -> int:
@@ -233,6 +284,8 @@ def main() -> int:
     parser.add_argument("--rx-duration", type=float, default=10.0)
     parser.add_argument("--tx-rate-mbps", type=float, default=0.0, help="0 is as fast as possible")
     parser.add_argument("--tx-duration", type=float, default=5.0)
+    parser.add_argument("--bidi-rx-mbps", type=float,
+                        help="RX load during the bidi step (default: the shell's)")
     args = parser.parse_args()
 
     config.validate_config(args.board_ip, args.prefix, args.gateway)
@@ -244,6 +297,7 @@ def main() -> int:
         ("rx", lambda: test_rx(args, shell)),
         ("recovery", lambda: test_recovery(args, shell)),
         ("tx", lambda: test_tx(args, shell)),
+        ("bidi", lambda: test_bidi(args, shell)),
     ]
     if not args.skip_boot:
         steps.insert(0, ("boot", lambda: boot(args, shell)))

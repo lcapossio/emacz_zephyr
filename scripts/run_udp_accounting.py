@@ -47,6 +47,10 @@ KEEP = [
 # sink fields are live. Wait this long after sending before the final read.
 SETTLE_S = 1.5
 
+# Printed, with the send duration in seconds, once the first stats read is
+# done and the load starts
+SENDING_MARKER = "sending_s="
+
 
 def delta(after, before, name: str) -> int:
     return int(getattr(after, name)) - int(getattr(before, name))
@@ -124,6 +128,9 @@ def main() -> int:
         print(f"control_check=ok reply_from={reply}")
 
     before = read_stats(args.addr, args.tap, args.chain)
+    # JTAG is idle from here until the final read; a caller that runs another
+    # JTAG tool alongside (run_board_suite.py's bidi step) waits for this line
+    print(f"{SENDING_MARKER}{args.duration:g}", flush=True)
     started = time.time()
     sent_frames = send_fast_sink(args)
     elapsed = time.time() - started

@@ -106,3 +106,32 @@ def test_bursts_never_cross_a_4k_page():
 def test_bursts_reject_unaligned_addresses():
     with pytest.raises(ValueError):
         list(fcapz_jtag.bursts(0x90000002, 4, 15))
+
+
+def bidi_args(**values) -> argparse.Namespace:
+    defaults = {"board_ip": "192.168.237.201", "bind": "192.168.237.1", "tx_rate_mbps": 0.0,
+                "tx_duration": 5.0, "bidi_rx_mbps": None}
+    defaults.update(values)
+    return argparse.Namespace(**defaults)
+
+
+def option(command: list[str], name: str) -> str:
+    return command[command.index(name) + 1]
+
+
+def test_bidi_rx_load_outlasts_the_tx_benchmark():
+    shell = suite.SHELLS["zcu106_r5"]
+    rx = suite.bidi_rx_command(bidi_args(), shell)
+    tx = suite.tx_command(bidi_args(), shell)
+    assert Path(rx[1]).name == "run_udp_accounting.py"
+    assert float(option(rx, "--duration")) == float(option(tx, "--duration")) + \
+        suite.BIDI_RX_MARGIN_S
+    assert option(rx, "--addr") == hex(shell.perf_stats)
+
+
+def test_bidi_rx_rate_is_the_shells_unless_given():
+    shell = suite.SHELLS["zcu106_vex"]
+    assert float(option(suite.bidi_rx_command(bidi_args(), shell), "--rate-mbps")) == \
+        shell.bidi_rx_mbps
+    assert float(option(suite.bidi_rx_command(bidi_args(bidi_rx_mbps=1.5), shell),
+                        "--rate-mbps")) == 1.5
