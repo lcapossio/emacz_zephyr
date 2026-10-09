@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
+import os
 import re
 import sys
 from pathlib import Path
@@ -214,39 +216,90 @@ def option(command: list[str], name: str) -> str:
     return command[command.index(name) + 1]
 
 
-def test_bidi_rx_load_runs_until_stopped():
+def test_bidi_rx_load_is_timed_over_stdin():
     shell = suite.SHELLS["zcu106_r5"]
-    rx = suite.bidi_rx_command(bidi_args(), shell)
+    rx = suite.bidi_rx_command(bidi_args(), shell, 957.1)
     assert Path(rx[1]).name == "run_udp_accounting.py"
-    assert "--until-stdin" in rx
+    assert "--stdin-control" in rx
+    assert float(option(rx, "--rate-mbps")) == 957.1
     assert float(option(rx, "--duration")) == suite.BIDI_RX_CAP_S
     assert option(rx, "--addr") == hex(shell.perf_stats)
 
 
-# Stand-ins for the RX script: one waits for the stop line, as
-# run_udp_accounting.py --until-stdin does; one runs out its duration first
-FAKE_RX_WAITS = ("import sys; print('sending_s=120', flush=True); sys.stdin.readline(); "
-                 "print('stopped_by=stdin')")
-FAKE_RX_ENDS = "print('sending_s=1', flush=True); print('stopped_by=duration')"
+def test_line_rate_is_the_links_payload_rate():
+    # 1472 B of payload per 1538 B on the wire
+    assert suite.line_rate_mbps(suite.SHELLS["vex"]) == 95.7
+    assert suite.line_rate_mbps(suite.SHELLS["zcu106_r5"]) == 957.1
+
+
+# Stand-ins for the two scripts. The RX one follows --stdin-control and logs
+# what it was told; the TX one prints its window markers.
+FAKE_RX = """
+import sys
+print('sending_s=120', flush=True)
+for _ in range(2):
+    line = sys.stdin.readline()
+    print('got=' + (line.strip() or 'eof'), flush=True)
+print('stopped_by=' + ('stdin' if line else 'duration'))
+sys.stdin.read()
+print('final_read')
+"""
+FAKE_RX_CAPPED = FAKE_RX.replace("('stdin' if line else 'duration')", "'duration'")
+FAKE_TX = "print('tx_command_sent', flush=True); print('tx_reply_received'); " \
+          "print('board_payload_mbps=7.5')"
+FAKE_TX_NO_START = "print('control_check=fail'); raise SystemExit(2)"
 
 
 def fake_bidi(monkeypatch, rx_code: str, tx_code: str):
-    monkeypatch.setattr(suite, "bidi_rx_command", lambda _a, _s: [sys.executable, "-c", rx_code])
+    monkeypatch.setattr(suite, "bidi_rx_command",
+                        lambda _a, _s, _r: [sys.executable, "-c", rx_code])
     monkeypatch.setattr(suite, "tx_command", lambda _a, _s: [sys.executable, "-c", tx_code])
-    return suite.run_bidi(bidi_args(), suite.SHELLS["vex"])
+    return suite.run_bidi(bidi_args(), suite.SHELLS["vex"], 95.7)
 
 
-def test_bidi_stops_the_rx_load_after_the_tx_benchmark(monkeypatch):
-    result = fake_bidi(monkeypatch, FAKE_RX_WAITS, "print('board_payload_mbps=7.5')")
+def test_bidi_runs_the_rx_load_over_the_tx_window(monkeypatch):
+    result = fake_bidi(monkeypatch, FAKE_RX, FAKE_TX)
     assert result.error is None and result.rx_ok and result.tx_ok
     assert "board_payload_mbps=7.5" in result.tx_log
-    assert "stopped_by=stdin" in result.rx_log
+    told = [line for line in result.rx_log if line.startswith(("got=", "final_read"))]
+    assert told == ["got=go", "got=stop", "final_read"]
 
 
-def test_bidi_rejects_tx_that_outlasted_the_rx_load(monkeypatch):
-    result = fake_bidi(monkeypatch, FAKE_RX_ENDS, "print('board_payload_mbps=12.2')")
+def test_bidi_rejects_an_rx_load_that_hit_its_cap(monkeypatch):
+    result = fake_bidi(monkeypatch, FAKE_RX_CAPPED, FAKE_TX)
     assert result.error is not None
-    assert not suite.test_bidi(bidi_args(), suite.SHELLS["vex"])
+
+
+def test_bidi_without_a_tx_start_ends_the_rx_script(monkeypatch):
+    result = fake_bidi(monkeypatch, FAKE_RX, FAKE_TX_NO_START)
+    assert result.error is not None and not result.tx_ok
+    assert "got=eof" in result.rx_log and "final_read" in result.rx_log
+
+
+@pytest.mark.parametrize("text", ["go\nstop\n", "go\n", ""])
+def test_stdin_control_releases_every_step_by_eof(monkeypatch, text):
+    udp = load("run_udp_accounting")
+    monkeypatch.setattr(udp.sys, "stdin", io.StringIO(text))
+    control = udp.StdinControl()
+    assert control.eof.wait(5.0)
+    assert control.go.is_set() and control.stop.is_set()
+
+
+def test_stdin_control_waits_for_the_stop_line(monkeypatch):
+    udp = load("run_udp_accounting")
+    reader, writer = os.pipe()
+    monkeypatch.setattr(udp.sys, "stdin", os.fdopen(reader, "r"))
+    with os.fdopen(writer, "w") as feed:
+        control = udp.StdinControl()
+        feed.write("go\n")
+        feed.flush()
+        assert control.go.wait(5.0)
+        assert not control.stop.wait(0.2)
+        feed.write("stop\n")
+        feed.flush()
+        assert control.stop.wait(5.0)
+        assert not control.eof.is_set()
+    assert control.eof.wait(5.0)
 
 
 def test_udp_sender_stops_on_request():
@@ -260,7 +313,5 @@ def test_udp_sender_stops_on_request():
 
 def test_bidi_rx_rate_is_the_shells_unless_given():
     shell = suite.SHELLS["zcu106_vex"]
-    assert float(option(suite.bidi_rx_command(bidi_args(), shell), "--rate-mbps")) == \
-        shell.bidi_rx_mbps
-    assert float(option(suite.bidi_rx_command(bidi_args(bidi_rx_mbps=1.5), shell),
-                        "--rate-mbps")) == 1.5
+    assert suite.bidi_rx_mbps(bidi_args(), shell) == shell.bidi_rx_mbps
+    assert suite.bidi_rx_mbps(bidi_args(bidi_rx_mbps=1.5), shell) == 1.5

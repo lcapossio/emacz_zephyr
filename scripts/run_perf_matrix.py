@@ -11,7 +11,9 @@ and image variants:
              payload (--rx-rates, default 20 and 90: past every soft-CPU
              shell's ceiling, and under the Arty's 100 Mbit/s link)
   tx         board UDP TX benchmark, unthrottled
-  bidi       RX at --bidi-rx-mbps with the TX benchmark inside its window
+  bidi       the TX benchmark with RX at --bidi-rx-mbps over its window
+  duplex     the same with RX at --duplex-rx-mbps, by default the link's
+             payload rate: full duplex at line rate
 
 Each measurement is appended to --out as one JSON line, tagged with
 --label (e.g. "zcu106_vex dcache-off"), and the run ends with a summary.
@@ -28,7 +30,8 @@ from pathlib import Path
 import emacz_config as config
 import run_board_suite as suite
 
-RX_KEYS = ("sink_payload_mbps", "host_to_sink_delivery_pct", "sent_pps", "sink_pps",
+RX_KEYS = ("sink_payload_mbps", "sent_payload_mbps", "host_to_sink_delivery_pct",
+           "sent_pps", "sink_pps",
            "mac_rx_frames_delta", "eth_rx_errors_delta", "net_ipv4_drop_delta",
            "net_udp_drop_delta")
 TX_KEYS = ("board_payload_mbps", "host_payload_mbps_board_window", "tx_frames_delta")
@@ -67,13 +70,15 @@ def measure_tx(args: argparse.Namespace, shell: suite.Shell) -> dict[str, float]
     return values(log, TX_KEYS)
 
 
-def measure_bidi(args: argparse.Namespace, shell: suite.Shell) -> dict[str, float]:
-    """As the suite's bidi step; nothing counts unless TX ran under RX load."""
-    result = suite.run_bidi(args, shell)
+def measure_bidi(args: argparse.Namespace, shell: suite.Shell,
+                 rx_mbps: float) -> dict[str, float | str]:
+    """As the suite's bidi step. If the TX run does not count (see
+    run_bidi), only the RX numbers are kept, with the reason as "error"."""
+    result = suite.run_bidi(args, shell, rx_mbps)
+    rx: dict[str, float | str] = {f"rx_{k}": v for k, v in values(result.rx_log, RX_KEYS).items()}
     if result.error is not None:
-        return {}
-    return {**{f"rx_{k}": v for k, v in values(result.rx_log, RX_KEYS).items()},
-            **{f"tx_{k}": v for k, v in values(result.tx_log, TX_KEYS).items()}}
+        return {**rx, "error": result.error}
+    return {**rx, **{f"tx_{k}": v for k, v in values(result.tx_log, TX_KEYS).items()}}
 
 
 def main() -> int:
@@ -85,6 +90,8 @@ def main() -> int:
     parser.add_argument("--rx-duration", type=float, default=5.0)
     parser.add_argument("--tx-duration", type=float, default=5.0)
     parser.add_argument("--bidi-rx-mbps", type=float, default=3.0)
+    parser.add_argument("--duplex-rx-mbps", type=float,
+                        help="RX load of the duplex test (default: the link's payload rate)")
     args = parser.parse_args()
     args.tx_rate_mbps = 0.0
 
@@ -97,14 +104,17 @@ def main() -> int:
     if not suite.provision(args):
         return 1
 
-    results: dict[str, dict[str, float]] = {}
+    results: dict[str, dict[str, float | str]] = {}
     for rate in args.rx_rates:
         print(f"===== rx@{rate:g}", flush=True)
         results[f"rx@{rate:g}"] = measure_rx(args, shell, rate)
     print("===== tx", flush=True)
     results["tx"] = measure_tx(args, shell)
     print(f"===== bidi (rx@{args.bidi_rx_mbps:g})", flush=True)
-    results["bidi"] = measure_bidi(args, shell)
+    results["bidi"] = measure_bidi(args, shell, args.bidi_rx_mbps)
+    duplex_mbps = args.duplex_rx_mbps or suite.line_rate_mbps(shell)
+    print(f"===== duplex (rx@{duplex_mbps:g})", flush=True)
+    results["duplex"] = measure_bidi(args, shell, duplex_mbps)
 
     stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +135,10 @@ def main() -> int:
             extra = ""
         else:
             mbps = metrics.get("tx_board_payload_mbps")
-            extra = f"rx {metrics.get('rx_sink_payload_mbps', float('nan')):.2f} Mbit/s"
+            extra = (f"rx {metrics.get('rx_sink_payload_mbps', float('nan')):.2f} of "
+                     f"{metrics.get('rx_sent_payload_mbps', float('nan')):.2f} Mbit/s offered")
+            if "error" in metrics:
+                extra += f"; tx: {metrics['error']}"
         complete &= mbps is not None
         shown = f"{mbps:.2f}" if mbps is not None else "n/a"
         print(f"{args.label:24} {test:10} {shown:>8} Mbit/s  {extra}")

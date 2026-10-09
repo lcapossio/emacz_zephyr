@@ -340,11 +340,12 @@ Reads rerun the whole session; a write is never repeated.
 
 The board suite runs the whole acceptance flow on any shell: boot,
 provisioning, the RX accounting test, DMA error recovery, the TX benchmark,
-and RX and TX together (`bidi`: RX at about 40% of the shell's RX ceiling,
-`--bidi-rx-mbps` to change it, while the TX benchmark runs). The bidi step
-starts the TX benchmark once the RX load is flowing and stops that load
-only after the TX script exits, so the board transmits under RX load the
-whole time, and fails if the load ends first. The suite stops at the first
+and RX and TX together (`bidi`: the TX benchmark with RX at about 40% of
+the shell's RX ceiling, `--bidi-rx-mbps` to change it). The bidi step
+sends the board its TX start command before the RX load starts, so the
+load cannot drop it, and stops the load when the board's TX reply comes
+in: RX runs over exactly the board's TX window. The two scripts never
+read counters over JTAG at the same time. The suite stops at the first
 step that fails:
 
 ```sh
@@ -379,22 +380,28 @@ UDP with 1472 B payloads through Zephyr sockets, delivered rate as counted
 by the board. `scripts/run_perf_matrix.py` boots a shell and runs the same
 loads on each: RX offered at 20 and 90 Mbit/s for 5 s
 (`run_udp_accounting.py`; the table gives the 90 Mbit/s point), TX
-unthrottled for 5 s (`run_tx_accounting.py --rate-mbps 0`), and TX while
-RX takes 3 Mbit/s. Every row has uncached frame buffers except the last.
-Rates in Mbit/s:
+unthrottled for 5 s (`run_tx_accounting.py --rate-mbps 0`), then TX
+unthrottled again with RX over the same window: first at 3 Mbit/s, then at
+the link's payload rate (full duplex). Every row has uncached frame buffers
+except the last. Rates in Mbit/s:
 
-| Shell | CPU clock | Caches | RX | TX | TX while RX takes 3 |
-|---|---|---|---|---|---|
-| Arty MBV | 81.25 MHz | on | 9.5 | 9.2 | 5.3 |
-| | | D-cache off | 4.6 | 2.9 | 0.6 |
-| | | off | 1.7 | 0.9 | — |
-| Arty Vex | 100 MHz | on | 9.1 | 11.8 | 6.5 |
-| | | D-cache off | 4.5 | 2.7 | 0.4 |
-| ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.8 |
-| | | D-cache off | 5.1 | 3.1 | 0.8 |
-| ZCU106 R5 | 500 MHz | on | 66.5 | 215.5 | 204.5 |
-| | | off | 54.5 | 142.5 | 134.5 |
-| ZCU106 R5, cacheable frame buffers | 500 MHz | on | 243 (400 offered) | 199.1 | 196.2 |
+| Shell | CPU clock | Caches | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
+|---|---|---|---|---|---|---|
+| Arty MBV | 81.25 MHz | on | 9.5 | 9.2 | 5.3 | 0.00 / 9.2 |
+| | | D-cache off | 4.6 | 2.9 | 0.6 | 0.05 / 4.2 |
+| | | off | 1.7 | 0.9 | 0 ¹ | 0 ¹ / 1.4 |
+| Arty Vex | 100 MHz | on | 9.4 | 11.8 | 6.4 | 0.00 / 9.0 |
+| | | D-cache off | 4.5 | 2.7 | 0.4 | 0 ¹ / 4.2 |
+| ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.7 | 0.00 / 11.4 |
+| | | D-cache off | 5.1 | 3.1 | 0.8 | 0.06 / 4.7 |
+| ZCU106 R5 | 500 MHz | on | 66.5 | 215.3 | 204.1 | 0.01 / 66.2 |
+| | | off | 54.5 | 142.5 | 134.5 | 0.00 / 54.2 |
+| ZCU106 R5, cacheable frame buffers | 500 MHz | on | 244 (400 offered) | 199.1 | 196.3 | 0 ¹ / 244.5 |
+
+Full duplex offers RX at the link's payload rate: 95.7 Mbit/s on the Arty,
+and on the ZCU106 the 948–957 Mbit/s the host's sender reached. ¹ The
+board's 5 s TX run had not finished, so had not replied, 60 s later: under
+that RX load its TX thread got no CPU at all.
 
 The caches:
 
@@ -410,9 +417,8 @@ The caches:
 - *off*: MicroBlaze V built without either cache
   (`build_arty_a7_mbv.py --no-caches`), and the R5 without cache
   management (`app/perf/zcu106_r5_caches_off.conf`), which leaves both of
-  its caches off. Below 3 Mbit/s of RX ceiling, the MBV's bidirectional
-  run drops the TX benchmark's control request with the RX excess, so it
-  has no number.
+  its caches off. With an RX ceiling below 3 Mbit/s, the MBV gives TX no
+  CPU even at that load.
 
 The Arty and ZCU106 Vex shells differ only in the memory path (DDR3
 through MIG at 81.25 MHz behind a CDC, against PS DDR4 through
@@ -448,7 +454,9 @@ ones it drops whole, which are most of them at line rate: emacZero
 
 With both directions loaded, RX takes the CPU first: the driver's RX
 thread and the app's sink thread outrank the thread running the TX
-benchmark, so TX gets what RX leaves (the last column).
+benchmark, so TX gets what RX leaves. At line rate RX leaves nothing: on
+every shell the TX benchmark sends almost nothing while RX holds its
+ceiling, and its 5 s run ends late.
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.

@@ -34,6 +34,12 @@ REGS = {
     "tx_er_frames": 0x1D4,
 }
 
+# Printed, flushed, as the board's TX window opens (the command is sent)
+# and closes (its reply is in), for a caller that runs an RX load inside it
+TX_START_MARKER = "tx_command_sent"
+TX_END_MARKER = "tx_reply_received"
+
+
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
     return fcapz_jtag.read(
         tap, chain, lambda axi: {name: axi.axi_read(base + off) for name, off in REGS.items()})
@@ -103,6 +109,9 @@ def main() -> int:
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--listen-port", type=int, default=5003)
     parser.add_argument("--control-timeout", type=float, default=2.0)
+    parser.add_argument("--reply-timeout", type=float, default=60.0,
+                        help="seconds past --duration to wait for the board's reply; a "
+                             "board busy receiving runs its TX thread late")
     parser.add_argument("--skip-control-check", action="store_true")
     parser.add_argument("--rate-mbps", type=float, default=0.0,
                         help="Payload pacing request; 0 means unthrottled")
@@ -132,10 +141,18 @@ def main() -> int:
     started = time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((args.bind, 0))
-        sock.settimeout(args.duration + 5.0)
+        sock.settimeout(args.duration + args.reply_timeout)
         sock.sendto(command.encode("ascii"), (args.board, args.control_port))
-        data, addr = sock.recvfrom(2048)
+        print(TX_START_MARKER, flush=True)
+        try:
+            data, addr = sock.recvfrom(2048)
+        except TimeoutError:
+            rx.stop.set()
+            print(f"reply=none after {time.time() - started:.1f} s")
+            print("tx_result=fail")
+            return 1
     elapsed = time.time() - started
+    print(TX_END_MARKER, flush=True)
     time.sleep(0.5)
     rx.stop.set()
     rx.join(timeout=2.0)

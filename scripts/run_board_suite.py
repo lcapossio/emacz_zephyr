@@ -14,8 +14,8 @@ Steps, in order (each one runs only if the previous ones passed):
   rx         UDP sink accounting (run_udp_accounting.py)
   recovery   AXI DMA S2MM halt and driver recovery (run_dma_recovery_test.py)
   tx         board UDP TX benchmark (run_tx_accounting.py)
-  bidi       both at once: RX accounting at the shell's bidi_rx_mbps, with
-             the TX benchmark running inside its send window
+  bidi       both at once: the TX benchmark with RX accounting at the
+             shell's bidi_rx_mbps over exactly its window
 
 The JTAG and address details of each shell come from SHELLS; the host side
 needs only the interface (or address) that faces the board.
@@ -35,6 +35,7 @@ from pathlib import Path
 
 import emacz_config as config
 from run_arty_stress import choose_bind_ip, provision_board
+from run_tx_accounting import TX_END_MARKER, TX_START_MARKER
 from run_udp_accounting import SENDING_MARKER, STOPPED_MARKER
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,7 @@ class Shell:
     dma_base: int       # AXI DMA registers, as the JTAG-AXI bridge sees them
     csr_base: int       # emacZero CSRs, as the JTAG-AXI bridge sees them
     bidi_rx_mbps: float  # bidi step's RX load, ~40% of the shell's RX ceiling
+    link_mbps: float     # Ethernet link rate
     ps_boot: bool = False  # the PS boots it: load_zynqmp_r5.py, not program+BRAM
     ps_ddr: bool = False   # its RAM is PS DDR: load_zynqmp_r5.py programs it and
                            # runs the FSBL, then the image goes in as on the Arty
@@ -59,20 +61,24 @@ class Shell:
 # RX ceilings (README, Throughput): 8.5 Mbit/s on both Arty shells, 244 on
 # zcu106_r5; zcu106_vex matches the Arty Vex shell's clock and DDR window.
 SHELLS = {
-    "mbv": Shell("xc7a100t", 3, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
-    "vex": Shell("xc7a100t", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
-    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0,
+    "mbv": Shell("xc7a100t", 3, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0, 100.0),
+    "vex": Shell("xc7a100t", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0, 100.0),
+    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0, 1000.0,
                         ps_ddr=True),
     # Cortex-R5 #0 in the PS: the blocks sit in the HPM0_LPD window, the
     # host page in PS DDR (app/boards/zcu106_r5.overlay)
-    "zcu106_r5": Shell("xczu7", 4, 0x07FFF000, 0x81E00000, 0x84A00000, 100.0,
+    "zcu106_r5": Shell("xczu7", 4, 0x07FFF000, 0x81E00000, 0x84A00000, 100.0, 1000.0,
                        ps_boot=True),
 }
 
-# The bidi step's RX load runs until the TX benchmark is done; this caps it
-# should the stop never come. A ZCU106 JTAG read can take over 10 s, so the
-# TX script's two reads plus its window must fit well inside.
+# The bidi step's RX load runs for the board's TX window; this caps it
+# should the stop never come
 BIDI_RX_CAP_S = 120.0
+
+# Bytes a UDP datagram adds on the wire besides its payload: UDP 8, IPv4 20,
+# Ethernet header 14 and FCS 4, preamble 8, inter-frame gap 12
+WIRE_OVERHEAD_BYTES = 66
+PAYLOAD_BYTES = 1472  # what the RX and TX scripts send by default
 
 LOAD_ATTEMPTS = 3
 
@@ -241,12 +247,20 @@ def test_tx(args: argparse.Namespace, shell: Shell) -> bool:
     return run(tx_command(args, shell)) == 0
 
 
-def bidi_rx_command(args: argparse.Namespace, shell: Shell) -> list[str]:
-    rate = args.bidi_rx_mbps if args.bidi_rx_mbps is not None else shell.bidi_rx_mbps
+def line_rate_mbps(shell: Shell) -> float:
+    """The most UDP payload the shell's link carries, in Mbit/s."""
+    return round(shell.link_mbps * PAYLOAD_BYTES / (PAYLOAD_BYTES + WIRE_OVERHEAD_BYTES), 1)
+
+
+def bidi_rx_mbps(args: argparse.Namespace, shell: Shell) -> float:
+    return args.bidi_rx_mbps if args.bidi_rx_mbps is not None else shell.bidi_rx_mbps
+
+
+def bidi_rx_command(args: argparse.Namespace, shell: Shell, rx_mbps: float) -> list[str]:
     return [
         sys.executable, str(SCRIPTS / "run_udp_accounting.py"), *jtag_args(shell),
         "--addr", hex(shell.perf_stats), "--target", str(args.board_ip), "--bind", args.bind,
-        "--rate-mbps", str(rate), "--duration", str(BIDI_RX_CAP_S), "--until-stdin",
+        "--rate-mbps", str(rx_mbps), "--duration", str(BIDI_RX_CAP_S), "--stdin-control",
     ]
 
 
@@ -256,55 +270,90 @@ class Bidi:
     rx_log: list[str]
     tx_ok: bool
     tx_log: list[str]
-    error: str | None  # why the TX run does not count as under RX load
+    error: str | None  # why the run does not count as TX under RX load
 
 
-def run_bidi(args: argparse.Namespace, shell: Shell) -> Bidi:
-    """The TX benchmark, start to finish, inside the RX script's send window.
+def echo_until(proc: subprocess.Popen, log: list[str], marker: str) -> bool:
+    """Echo and log proc's output up to a line starting with marker."""
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        log.append(line.rstrip())
+        if line.startswith(marker):
+            return True
+    return False
 
-    Both scripts read counters over JTAG. The TX one starts once the RX one
-    has taken its first reading and is just sending; the RX load stops only
-    after the TX script exits. So the board transmits under RX load and the
-    two never drive the JTAG-AXI bridge at the same time.
+
+def echo_rest(proc: subprocess.Popen, log: list[str]) -> bool:
+    """Echo and log the rest of proc's output; return whether it passed."""
+    assert proc.stdout is not None
+    rest = proc.stdout.read()
+    sys.stdout.write(rest)
+    log.extend(rest.splitlines())
+    return proc.wait() == 0
+
+
+def tell(proc: subprocess.Popen, line: str | None) -> None:
+    """Send proc a line, or close its stdin (None)."""
+    assert proc.stdin is not None
+    try:
+        if line is None:
+            proc.stdin.close()
+        else:
+            proc.stdin.write(line + "\n")
+            proc.stdin.flush()
+    except OSError:
+        pass  # it already exited
+
+
+def run_bidi(args: argparse.Namespace, shell: Shell, rx_mbps: float) -> Bidi:
+    """The TX benchmark with an RX load of rx_mbps over exactly its window.
+
+    The RX script takes its first reading and waits. The TX script then
+    takes its own and sends the board its start command, and only then does
+    the RX load start, so even a flood cannot drop that command. The load
+    stops once the board's TX reply is in, and the RX script takes its final
+    reading after the TX script exits: the two scripts never drive the
+    JTAG-AXI bridge at the same time.
     """
-    rx_cmd = bidi_rx_command(args, shell)
+    rx_cmd = bidi_rx_command(args, shell, rx_mbps)
     print("$ " + " ".join(rx_cmd), flush=True)
     rx = subprocess.Popen(rx_cmd, cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True)
-    assert rx.stdin is not None and rx.stdout is not None
     rx_log: list[str] = []
     tx_log: list[str] = []
-    tx_ok = False
-    sending = False
-    for line in rx.stdout:
-        sys.stdout.write(line)
-        rx_log.append(line.rstrip())
-        if line.startswith(SENDING_MARKER):
-            sending = True
-            break
-    if sending:
-        tx_ok = run(tx_command(args, shell), tx_log) == 0
-    try:
-        rx.stdin.write("stop\n")
-        rx.stdin.close()
-    except OSError:
-        pass  # the RX script already exited
-    rest = rx.stdout.read()
-    sys.stdout.write(rest)
-    rx_log.extend(rest.splitlines())
-    rx_ok = rx.wait() == 0
+    tx_ok = started = ended = False
+    ready = echo_until(rx, rx_log, SENDING_MARKER)
+    if ready:
+        tx_cmd = tx_command(args, shell)
+        print("$ " + " ".join(tx_cmd), flush=True)
+        tx = subprocess.Popen(tx_cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+        started = echo_until(tx, tx_log, TX_START_MARKER)
+        if started:
+            tell(rx, "go")
+            ended = echo_until(tx, tx_log, TX_END_MARKER)
+        if ended:
+            tell(rx, "stop")
+        tx_ok = echo_rest(tx, tx_log)
+    tell(rx, None)
+    rx_ok = echo_rest(rx, rx_log)
     error = None
-    if not sending:
-        error = "the RX test ended before it started sending"
+    if not ready:
+        error = "the RX test ended before its first reading"
+    elif not started:
+        error = "the TX benchmark never sent its start command"
+    elif not ended:
+        error = "the TX benchmark got no reply from the board"
     elif f"{STOPPED_MARKER}stdin" not in rx_log:
-        error = "the RX load stopped before the TX benchmark was done"
+        error = "the RX load hit its cap before the board's TX window closed"
     if error is not None:
         print(f"bidi: {error}")
     return Bidi(rx_ok, rx_log, tx_ok, tx_log, error)
 
 
 def test_bidi(args: argparse.Namespace, shell: Shell) -> bool:
-    result = run_bidi(args, shell)
+    result = run_bidi(args, shell, bidi_rx_mbps(args, shell))
     return result.rx_ok and result.tx_ok and result.error is None
 
 

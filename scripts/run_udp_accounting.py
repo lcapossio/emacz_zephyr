@@ -49,10 +49,11 @@ KEEP = [
 SETTLE_S = 1.5
 
 # Printed, with the send duration in seconds, once the first stats read is
-# done and the load starts
+# done; JTAG is idle from here until the final read. The load starts now,
+# or with --stdin-control once the first line arrives.
 SENDING_MARKER = "sending_s="
 
-# Printed when the load ends: "stdin" if --until-stdin got its line, else
+# Printed when the load ends: "stdin" if --stdin-control stopped it, else
 # "duration"
 STOPPED_MARKER = "stopped_by="
 
@@ -70,16 +71,28 @@ def control_check(board: str, bind: str, port: int, timeout: float) -> str:
     return f"{addr[0]}:{addr[1]} {data.decode('ascii', errors='replace').strip()}"
 
 
-def stdin_line() -> threading.Event:
-    """An event set once a line (or EOF) arrives on stdin."""
-    event = threading.Event()
+class StdinControl:
+    """--stdin-control: the first line on stdin starts the load, the second
+    stops it, and EOF releases the final stats read. EOF also counts as
+    any line not yet seen."""
 
-    def wait() -> None:
-        sys.stdin.readline()
-        event.set()
+    def __init__(self) -> None:
+        self.go = threading.Event()
+        self.stop = threading.Event()
+        self.eof = threading.Event()
+        threading.Thread(target=self._read, daemon=True).start()
 
-    threading.Thread(target=wait, daemon=True).start()
-    return event
+    def _read(self) -> None:
+        for event in (self.go, self.stop):
+            if not sys.stdin.readline():
+                break
+            event.set()
+        else:
+            while sys.stdin.readline():
+                pass
+        self.go.set()
+        self.stop.set()
+        self.eof.set()
 
 
 def send_fast_sink(args: argparse.Namespace, stop: threading.Event | None) -> int:
@@ -134,9 +147,9 @@ def main() -> int:
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--rate-mbps", type=float, default=40.0)
     parser.add_argument("--duration", type=float, default=4.0)
-    parser.add_argument("--until-stdin", action="store_true",
-                        help="also stop sending once a line arrives on stdin; "
-                             "--duration is then the cap")
+    parser.add_argument("--stdin-control", action="store_true",
+                        help="start sending on a first line on stdin, stop on a second "
+                             "(--duration is then the cap), take the final read on EOF")
     parser.add_argument("--packet-size", type=int, default=1472)
     parser.add_argument("--timeout", type=float, default=1.0)
     parser.add_argument("--skip-control-check", action="store_true")
@@ -153,15 +166,18 @@ def main() -> int:
         print(f"control_check=ok reply_from={reply}")
 
     before = read_stats(args.addr, args.tap, args.chain)
-    # JTAG is idle from here until the final read; a caller that runs another
-    # JTAG tool alongside (run_board_suite.py's bidi step) waits for this
-    # line, then with --until-stdin ends the load once that tool is done
-    stop = stdin_line() if args.until_stdin else None
+    # A caller that runs another JTAG tool alongside (run_board_suite.py's
+    # bidi step) waits for this line, and with --stdin-control times the load
+    control = StdinControl() if args.stdin_control else None
     print(f"{SENDING_MARKER}{args.duration:g}", flush=True)
+    if control is not None:
+        control.go.wait()
     started = time.time()
-    sent_frames = send_fast_sink(args, stop)
+    sent_frames = send_fast_sink(args, control.stop if control is not None else None)
     elapsed = time.time() - started
     time.sleep(SETTLE_S)
+    if control is not None:
+        control.eof.wait()
     after = read_stats(args.addr, args.tap, args.chain)
 
     print("sender=udp-sink")
@@ -188,6 +204,7 @@ def main() -> int:
     if elapsed > 0:
         print(f"sink_payload_mbps={sink_bytes * 8 / elapsed / 1_000_000:.3f}")
         print(f"sent_pps={sent_frames / elapsed:.1f}")
+        print(f"sent_payload_mbps={sent_frames * args.packet_size * 8 / elapsed / 1_000_000:.3f}")
         print(f"sink_pps={sink_packets / elapsed:.1f}")
     if sent_frames > 0:
         print(f"host_to_sink_delivery_pct={sink_packets * 100.0 / sent_frames:.3f}")
