@@ -244,10 +244,12 @@ Editable sources: [docs/architecture_mbv.json](docs/architecture_mbv.json),
 Two hardware shells for the AMD ZCU106 (`xczu7ev`) share one PL Ethernet
 subsystem: emacZero in GMII mode behind the AMD 1G/2.5G Ethernet PCS/PMA
 core, 1000BASE-X on SFP cage 0, with the AXI DMA, the RX stream counters, a
-PCS status GPIO and the fcapz JTAG-AXI bridge (USER4, chain 4). The SoC side
-runs at 150 MHz from the 300 MHz `USER_SI570`; emacZero's CDC crosses to
-the transceiver's 125 MHz `userclk2`. `hardware/scripts/build_zcu106.py`
-builds either one.
+PCS status GPIO and the fcapz JTAG-AXI bridge (USER4, chain 4). The
+Ethernet side (emacZero, the DMA, the PS-PL ports) runs at 150 MHz from the
+300 MHz `USER_SI570`, since emacZero needs at least 125 MHz in GMII mode;
+its CDC crosses to the transceiver's 125 MHz `userclk2`.
+`hardware/scripts/build_zcu106.py` builds either shell, and for both a Zynq
+MP FSBL that sets up the PS before anything is loaded.
 
 Both shells meet timing and pass the whole board suite (below) on a ZCU106
 whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
@@ -255,11 +257,15 @@ with every datagram delivered, DMA error recovery and TX. Each shell needs
 its own MAC address when they share a segment with an Arty (`--mac`;
 the overlays use `02:00:00:00:00:02` for Vex and `:03` for the R5).
 
-`zcu106_vex` (`--variant vex`) is the Arty Vex shell's CPU complex and
-address map, with UltraRAM in place of DDR3: 512 KiB at `0x90000000` for
-Zephyr, inside the D-cache aperture, and 512 KiB at `0x9ff80000` outside it
-for the DMA descriptors, frame buffers and the host page, which stays at
-`0x9fffe000`. Its console is the PL UART, the CP2108's third interface.
+`zcu106_vex` (`--variant vex`) matches the Arty Vex shell, so the two give
+comparable numbers: the same CPU complex at the same 100 MHz, in its own
+clock domain, and the same address map, with the 256 MiB DDR window at
+`0x90000000` in PS DDR4 instead of DDR3. Zephyr has the 240 MiB inside and
+just above the D-cache aperture; the 16 MiB at `0x9f000000` outside it holds
+the DMA descriptors, frame buffers and the host page (`0x9fffe000`). The CPU
+and DMA reach the window through `S_AXI_HP0_FPD`, which decodes DDR below
+`0x80000000`, so `axi_addr_remap` moves it to `0x10000000`. The PS provides
+only the DDR. Its console is the PL UART, the CP2108's third interface.
 
 `zcu106_r5` (`--variant r5`) runs Zephyr on Cortex-R5 #0. The R5 reaches the
 PL blocks through `M_AXI_HPM0_LPD` at `0x80000000` + the Vex offsets (AXI
@@ -275,11 +281,11 @@ console is PS UART0, the CP2108's first interface.
 
 | | `zcu106_vex` | `zcu106_r5` |
 |---|---|---|
-| CLB LUTs | 22,667 (9.8%) | 13,923 (6.0%) |
-| CLB Registers | 26,572 (5.8%) | 18,708 (4.1%) |
+| CLB LUTs | 22,078 (9.6%) | 13,923 (6.0%) |
+| CLB Registers | 29,418 (6.4%) | 18,708 (4.1%) |
 | Block RAM tiles | 27 | 13 |
-| UltraRAM | 33 | 0 |
-| Setup WNS | +0.977 ns | +1.608 ns |
+| UltraRAM | 1 | 0 |
+| Setup WNS | +3.387 ns | +1.608 ns |
 
 The board needs a 1000BASE-X SFP module in cage 0 and a link partner that
 speaks it, such as a fibre NIC or a switch port. DIP switch `GPIO_DIP_SW0`
@@ -290,7 +296,7 @@ and the CP2108 UART both need their USB cables connected.
 Build:
 
 ```sh
-python hardware/scripts/build_zcu106.py --variant vex --synth
+python hardware/scripts/build_zcu106.py --variant vex --synth  # bitstream, XSA, FSBL
 python hardware/scripts/build_zcu106.py --variant r5 --synth   # bitstream, XSA, FSBL
 python hardware/scripts/build_zcu106.py --variant r5 --fsbl    # just the FSBL, from the XSA
 
@@ -301,8 +307,9 @@ west build -b zcu106_r5 -d build-zcu106-r5 app --   -DZEPHYR_TOOLCHAIN_VARIANT=c
 Boot:
 
 ```sh
-# Vex: bitstream, then the image into UltraRAM over JTAG-AXI
-python scripts/program_fpga.py --shell zcu106_vex
+# Vex: bitstream and FSBL (which sets up the DDR; R5 #0 stays halted), then
+# the image into PS DDR over JTAG-AXI
+python scripts/load_zynqmp_r5.py --shell zcu106_vex
 python scripts/load_zephyr_bram.py --shell zcu106_vex
 
 # R5: one xsdb session puts the PS in JTAG boot mode, resets it, programs
@@ -310,8 +317,8 @@ python scripts/load_zephyr_bram.py --shell zcu106_vex
 python scripts/load_zynqmp_r5.py
 ```
 
-The R5 build makes a Zynq MP FSBL for R5 #0 from the XSA with `xsct`, so it
-needs Vitis installed next to Vivado (or `xsct` on `PATH`). The loader runs
+Both builds make a Zynq MP FSBL for R5 #0 from the XSA with `xsct`, so
+they need Vitis installed next to Vivado (or `xsct` on `PATH`). The loader runs
 it before Zephyr, as a normal boot would: it initialises the PS, sizes the
 DDR from the SODIMM's SPD, initialises the TCM ECC and, finding the PL
 configured, lifts the PS-PL isolation and resets the PL. In JTAG boot mode

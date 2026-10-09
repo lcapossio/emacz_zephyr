@@ -68,8 +68,16 @@ def test_r5_script_runs_the_fsbl_after_the_bitstream_and_before_zephyr():
     assert body.index("& ~0x1") < body.index("dow {") < body.index("while {")
 
 
+def test_ps_script_without_an_image_stops_after_the_fsbl():
+    script = r5.xsdb_script(Path("vex.bit"), Path("fsbl.elf"), None, "xczu7", None)
+    assert not re.search(r"@[A-Z_]+@", script)
+    assert "step fsbl" in script
+    assert "step r5-load" not in script and "step r5-run" not in script
+    assert script.index("step fsbl") < script.index("LOAD_DONE")
+
+
 def suite_args(**values) -> argparse.Namespace:
-    defaults = {"shell": "vex", "bit": None, "image": None}
+    defaults = {"shell": "vex", "bit": None, "image": None, "load_addr": None}
     defaults.update(values)
     return argparse.Namespace(**defaults)
 
@@ -87,6 +95,24 @@ def test_suite_boots_the_r5_shell_through_the_ps():
     assert Path(command[1]).name == "load_zynqmp_r5.py"
     assert command[2:] == ["--tap", "xczu7", "--bit", "r5.bit", "--elf", "zephyr.elf"]
     assert shell.ps_boot and not suite.SHELLS["zcu106_vex"].ps_boot
+    assert suite.program_command(suite_args(shell="zcu106_r5"), shell) is None
+
+
+def test_suite_programs_the_zcu106_vex_shell_through_the_ps():
+    shell = suite.SHELLS["zcu106_vex"]
+    args = suite_args(shell="zcu106_vex", bit=Path("vex.bit"), image=Path("z.bin"))
+    program = suite.program_command(args, shell)
+    assert Path(program[1]).name == "load_zynqmp_r5.py"
+    assert program[2:] == ["--shell", "zcu106_vex", "--tap", "xczu7", "--bit", "vex.bit"]
+    load = suite.load_command(args, shell)
+    assert Path(load[1]).name == "load_zephyr_bram.py"
+    assert load[2:] == ["--shell", "zcu106_vex", "--file", "z.bin"]
+
+
+def test_suite_programs_the_arty_shells_with_vivado():
+    program = suite.program_command(suite_args(shell="mbv"), suite.SHELLS["mbv"])
+    assert Path(program[1]).name == "program_fpga.py"
+    assert program[2:] == ["--shell", "mbv"]
 
 
 def test_bursts_never_cross_a_4k_page():

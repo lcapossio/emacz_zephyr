@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Leonardo Capossio - bard0 design
  *
  * App-side overlay for zcu106_vex: the arty_a7_vex overlay's emacZero/DMA
- * layout, with the DMA window in the 512 KiB uncached UltraRAM at
- * 0x9FF80000 and the link fixed at 1 Gbit/s (1000BASE-X on SFP0).
+ * layout and memory map, with the link fixed at 1 Gbit/s (1000BASE-X on
+ * SFP0).
  *
  * Address map (verified against hardware/scripts/build_zcu106.py):
  *   emacZero        @ 0x44A00000
@@ -13,27 +13,27 @@
  *   AXI INTC        @ 0x41200000
  *   UARTLite        @ 0x40600000
  *   PCS/PMA status  @ 0x40010000 (AXI GPIO, read by the host tools)
- *   RAM (uncached)  @ 0x9FF80000: 64 KiB SG descriptors, frame buffers,
- *                     and the 8 KiB host page at 0x9FFFE000 (same address
- *                     as on the Arty)
+ *   PS DDR4         @ 0x90000000 (240 MiB Zephyr + 16 MiB uncached DMA window
+ *                     at 0x9F000000: 64 KiB SG descriptors, frame buffers,
+ *                     and the 8 KiB host page at 0x9FFFE000)
  */
 
 / {
 	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
 	 * scatter-gather descriptor rings.
 	 */
-	dma_desc: memory@9ff80000 {
+	dma_desc: memory@9f000000 {
 		compatible = "zephyr,memory-region";
-		reg = <0x9ff80000 0x10000>;
+		reg = <0x9f000000 0x10000>;
 		zephyr,memory-region = "DMA_DESC";
 	};
 
 	/* emacZero RX and TX packet buffers, in the same uncached window. It
 	 * stops where emz_hostio starts.
 	 */
-	emz_bufs: memory@9ff90000 {
+	emz_bufs: memory@9f010000 {
 		compatible = "zephyr,memory-region";
-		reg = <0x9ff90000 0x6e000>;
+		reg = <0x9f010000 0xfee000>;
 		zephyr,memory-region = "EMZ_BUFFERS";
 	};
 

@@ -5,5 +5,5 @@ arch: riscv
 toolchain:
   - cross-compile
   - zephyr
-ram: 512
+ram: 245760
 flash: 0

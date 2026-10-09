@@ -37,8 +37,9 @@ SHELLS = {
             "reset": "eio"},
     "vex": {"chain": 4, "tap": "xc7a100t", "file": "build-vex-emac/zephyr/zephyr.bin",
             "reset": "gpio"},
-    # ZCU106 VexRiscv shell: the Arty Vex shell's CPU complex, reset GPIO
-    # and bridge chain, with the image in UltraRAM at the same address
+    # ZCU106 VexRiscv shell: the Arty Vex shell's CPU complex, reset GPIO,
+    # bridge chain and address map, its DDR window in PS DDR (the FSBL has
+    # to have run: load_zynqmp_r5.py --shell zcu106_vex)
     "zcu106_vex": {"chain": 4, "tap": "xczu7", "file": "build-zcu106-vex/zephyr/zephyr.bin",
                    "reset": "gpio"},
 }

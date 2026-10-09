@@ -6,8 +6,9 @@
 Steps, in order (each one runs only if the previous ones passed):
 
   boot       program the bitstream and load the Zephyr image (--skip-boot
-             to test a board that is already running); on the ZCU106 R5
-             shell load_zynqmp_r5.py does both, with the FSBL
+             to test a board that is already running); on the ZCU106
+             load_zynqmp_r5.py programs it and runs the FSBL, and on the
+             R5 shell also loads the image
   provision  give the board its IPv4 address over emacz_config discovery,
              then wait for the UDP control port to answer
   rx         UDP sink accounting (run_udp_accounting.py)
@@ -49,16 +50,19 @@ class Shell:
     csr_base: int       # emacZero CSRs, as the JTAG-AXI bridge sees them
     bidi_rx_mbps: float  # bidi step's RX load, ~40% of the shell's RX ceiling
     ps_boot: bool = False  # the PS boots it: load_zynqmp_r5.py, not program+BRAM
+    ps_ddr: bool = False   # its RAM is PS DDR: load_zynqmp_r5.py programs it and
+                           # runs the FSBL, then the image goes in as on the Arty
 
 
 # The soft-CPU shells share one address map; only the FPGA, the bridge's
 # chain and the CPU reset differ (load_zephyr_bram.py knows the reset).
-# RX ceilings (README, Throughput): 8.5 Mbit/s on both Arty shells, 24 on
-# zcu106_vex, 244 on zcu106_r5.
+# RX ceilings (README, Throughput): 8.5 Mbit/s on both Arty shells, 244 on
+# zcu106_r5; zcu106_vex matches the Arty Vex shell's clock and DDR window.
 SHELLS = {
     "mbv": Shell("xc7a100t", 3, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
     "vex": Shell("xc7a100t", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0),
-    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 10.0),
+    "zcu106_vex": Shell("xczu7", 4, 0x9FFFF000, 0x41E00000, 0x44A00000, 3.0,
+                        ps_ddr=True),
     # Cortex-R5 #0 in the PS: the blocks sit in the HPM0_LPD window, the
     # host page in PS DDR (app/boards/zcu106_r5.overlay)
     "zcu106_r5": Shell("xczu7", 4, 0x07FFF000, 0x81E00000, 0x84A00000, 100.0,
@@ -122,13 +126,24 @@ def load_command(args: argparse.Namespace, shell: Shell) -> list[str]:
     return load
 
 
-def boot(args: argparse.Namespace, shell: Shell) -> bool:
-    if not shell.ps_boot:
+def program_command(args: argparse.Namespace, shell: Shell) -> list[str] | None:
+    """The bitstream step before the image load, if the shell has one."""
+    if shell.ps_boot:
+        return None
+    if shell.ps_ddr:
+        program = [sys.executable, str(SCRIPTS / "load_zynqmp_r5.py"), "--shell", args.shell,
+                   "--tap", shell.tap]
+    else:
         program = [sys.executable, str(SCRIPTS / "program_fpga.py"), "--shell", args.shell]
-        if args.bit:
-            program += ["--bit", str(args.bit)]
-        if run(program) != 0:
-            return False
+    if args.bit:
+        program += ["--bit", str(args.bit)]
+    return program
+
+
+def boot(args: argparse.Namespace, shell: Shell) -> bool:
+    program = program_command(args, shell)
+    if program is not None and run(program) != 0:
+        return False
     # Opening the port before the CPU leaves reset catches the banner
     uart = UartCapture(args.uart, args.baud) if args.uart else None
     if uart:

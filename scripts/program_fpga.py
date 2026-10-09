@@ -4,10 +4,10 @@
 """Program a board with a shell bitstream through Vivado's hardware manager.
 
 The default bitstream is the one the shell's build script writes
-(hardware/scripts/build_arty_a7_<shell>.py, or build_zcu106.py --variant vex
-for zcu106_vex). Needs vivado on PATH and the board's JTAG cable connected.
-The ZCU106 R5 shell is not programmed here: its PL must come up together
-with the PS, which scripts/load_zynqmp_r5.py does.
+(hardware/scripts/build_arty_a7_<shell>.py). Needs vivado on PATH and the
+board's JTAG cable connected. The ZCU106 shells are not programmed here:
+their PL must come up together with the PS, which scripts/load_zynqmp_r5.py
+does.
 """
 
 from __future__ import annotations
@@ -21,12 +21,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# shell -> (Vivado top, hw_device filter). On the ZCU106 the JTAG chain also
-# holds the ARM DAP, so the FPGA is picked by name.
+# shell -> (Vivado top, hw_device filter)
 SHELLS = {
     "mbv": ("arty_a7_100t_mbv", 'PART == "xc7a100t"'),
     "vex": ("arty_a7_100t_vex", 'PART == "xc7a100t"'),
-    "zcu106_vex": ("zcu106_vex", "NAME =~ xczu7*"),
 }
 
 

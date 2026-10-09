@@ -9,20 +9,26 @@ the AMD 1G/2.5G Ethernet PCS/PMA core (1000BASE-X on SFP cage 0, GTH X0Y10,
 demo), an AXI DMA in scatter-gather mode, the RX stream counters, a PCS
 status GPIO and an fcapz JTAG-AXI bridge on USER4.
 
-  vex  VexRiscv-full in the PL, the Arty A7 Vex shell's CPU complex and
-       address map. Memory is UltraRAM: 512 KiB at 0x9000_0000 inside the
-       CPU's D-cache aperture for Zephyr, and 512 KiB at 0x9FF8_0000 outside
-       it for DMA descriptors, frame buffers and the host page, which stays
-       at 0x9FFF_E000 as on the Arty. No PS configuration is needed.
+  vex  VexRiscv-full in the PL, built to match the Arty A7 Vex shell: its CPU
+       complex at 100 MHz and its address map, with the 256 MiB DDR window
+       at 0x9000_0000 (Zephyr in the D-cache aperture, the DMA window at
+       0x9F00_0000 outside it) in PS DDR4, reached over S_AXI_HP0_FPD.
+       S_AXI_HP0_FPD decodes DDR below 0x8000_0000, so axi_addr_remap moves
+       the window to 0x1000_0000. The PS only provides the DDR: the same
+       FSBL as the R5 shell's, run by load_zynqmp_r5.py --shell zcu106_vex,
+       sets it up before the image is loaded over JTAG-AXI.
   r5   The PS: Zephyr on Cortex-R5 #0 reaches the PL over M_AXI_HPM0_LPD at
        0x8000_0000 and the DMA reaches PS DDR over S_AXI_HP0_FPD. The PL
        interrupts go to the GIC on pl_ps_irq0. Its console is PS UART0.
-       The build also makes a Zynq MP FSBL for R5 #0 from the XSA (xsct,
-       from Vitis): the loader runs it before Zephyr to set up the PS.
 
-The SoC side runs at 150 MHz from the 300 MHz USER_SI570 clock: emacZero
-in GMII mode needs at least 125 MHz there (one byte per clock at 1 Gb/s).
-The MAC's own CDC crosses to the 125 MHz transceiver userclk2.
+Both variants build a Zynq MP FSBL for R5 #0 from the XSA (xsct, from
+Vitis); the loader runs it before anything else to set up the PS.
+
+The Ethernet side (emacZero, the DMA and the PS-PL ports) runs at 150 MHz
+from the 300 MHz USER_SI570 clock: emacZero in GMII mode needs at least
+125 MHz there (one byte per clock at 1 Gb/s). The MAC's own CDC crosses to
+the 125 MHz transceiver userclk2. The Vex CPU complex has its own 100 MHz
+clock, the Arty's.
 """
 
 from __future__ import annotations
@@ -47,7 +53,8 @@ AXI_DMA_OFFSET = 0x01E00000
 STREAM_STATS_OFFSET = 0x01F00000
 PCS_GPIO_OFFSET = 0x00010000
 
-# Vex address map: the Arty A7 Vex shell's, with UltraRAM for the MIG
+# Vex address map: the Arty A7 Vex shell's
+VEX_CPU_CLK_HZ = 100_000_000
 VEX_PERIPH_BASE = 0x40000000
 VEX_BOOTROM = (0x00000000, 0x400)
 VEX_MTIMER = (0x02000000, 0x10000)
@@ -58,17 +65,19 @@ VEX_CPU_LIVENESS_GPIO = (0x40030000, 0x10000)
 VEX_CPU_LAST_IBUS_GPIO = (0x40040000, 0x10000)
 VEX_CPU_LAST_DBUS_GPIO = (0x40050000, 0x10000)
 VEX_SCRATCH_BRAM = (0x80040000, 0x8000)
-VEX_RAM_MAIN = (0x90000000, 0x80000)   # cached by the Vex D-cache
-VEX_RAM_DMA = (0x9FF80000, 0x80000)    # outside the D-cache aperture
+# The Arty's DDR window; the Vex caches 0x9000_0000-0x97FF_FFFF of it.
+# It lands in PS DDR at VEX_DDR_BASE.
+VEX_RAM = (0x90000000, 0x10000000)
+VEX_DDR_BASE = 0x10000000
 
 # R5 address map. M_AXI_HPM0_LPD's aperture is 0x8000_0000-0x9FFF_FFFF
 # (512 MiB); the Ethernet blocks sit at its base + offset. S_AXI_HP0_FPD
 # reaches the low 2 GiB of PS DDR.
 R5_PL_BASE = 0x80000000
 R5_DDR = (0x00000000, 0x80000000)
-R5_BOARD_PART = "xilinx.com:zcu106:part0:2.6"
-
-URAM_READ_LATENCY = 3
+# S_AXI_HP0_FPD's view of the low 2 GiB of PS DDR
+HP0_DDR_SEG = "ps/SAXIGP2/HP0_DDR_LOW"
+BOARD_PART = "xilinx.com:zcu106:part0:2.6"
 
 COMMON_RTL = emaczero_rtl(REPO_ROOT) + [
     "hardware/rtl/axis_frame_error_drop.v",
@@ -80,7 +89,7 @@ COMMON_RTL = emaczero_rtl(REPO_ROOT) + [
 ]
 
 VEX_RTL = [
-    "hardware/rtl/uram_bram_port.v",
+    "hardware/rtl/axi_addr_remap.v",
     "hardware/rtl/vexriscv/VexRiscvAxi4.v",
     "hardware/rtl/vexriscv/vexriscv_full_axi_wrapper.v",
     "hardware/rtl/vexriscv/boot_bram_rv32.v",
@@ -148,6 +157,16 @@ proc map_seg {{space seg offset range}} {{
         error "cannot map $seg into $space"
     }}
     assign_bd_address -target_address_space $as -offset $offset -range $range $ss
+}}
+
+# Exclude every HP0 segment but `keep` from a master's address space
+proc exclude_hp0 {{space keep}} {{
+    set as [get_bd_addr_spaces $space]
+    foreach seg [get_bd_addr_segs ps/SAXIGP2/*] {{
+        if {{[lsearch -exact $keep [string trimleft $seg /]] < 0}} {{
+            exclude_bd_addr_seg -target_address_space $as $seg
+        }}
+    }}
 }}
 """
 
@@ -293,9 +312,8 @@ connect_bd_net [get_bd_pins rst/peripheral_reset] [get_bd_pins fcapz_axi/axi_rst
 
 
 def vex_tcl() -> str:
-    """VexRiscv-full CPU complex, UltraRAM memories and the address map."""
-    main_base, main_range = VEX_RAM_MAIN
-    dma_base, dma_range = VEX_RAM_DMA
+    """VexRiscv-full CPU complex at 100 MHz, PS DDR through HP0, the address map."""
+    ram_base, ram_range = VEX_RAM
     eth = {
         "emaczero/S_AXI/reg0": (VEX_PERIPH_BASE + EMACZERO_OFFSET, 0x1000),
         "axi_dma/S_AXI_LITE/Reg": (VEX_PERIPH_BASE + AXI_DMA_OFFSET, 0x10000),
@@ -312,43 +330,87 @@ def vex_tcl() -> str:
         "cpu_last_ibus_gpio/S_AXI/Reg": VEX_CPU_LAST_IBUS_GPIO,
         "cpu_last_dbus_gpio/S_AXI/Reg": VEX_CPU_LAST_DBUS_GPIO,
         **eth,
-        "ram_main_ctrl/S_AXI/Mem0": VEX_RAM_MAIN,
-        "ram_dma_ctrl/S_AXI/Mem0": VEX_RAM_DMA,
-    }
-    rams = {
-        "ram_main_ctrl/S_AXI/Mem0": VEX_RAM_MAIN,
-        "ram_dma_ctrl/S_AXI/Mem0": VEX_RAM_DMA,
+        "ddr_remap/s_axi/reg0": VEX_RAM,
     }
     maps = []
     maps.append(f"map_seg cpu/M_AXI_IBUS bootrom/S_AXI/reg0 {hx(VEX_BOOTROM[0])} {hx(VEX_BOOTROM[1])}")
-    maps.append(f"map_seg cpu/M_AXI_IBUS ram_main_ctrl/S_AXI/Mem0 {hx(main_base)} {hx(main_range)}")
+    maps.append(f"map_seg cpu/M_AXI_IBUS ddr_remap/s_axi/reg0 {hx(ram_base)} {hx(ram_range)}")
     for master in ("cpu/M_AXI_DBUS", "fcapz_axi/m_axi"):
         for seg, (base, size) in periph.items():
             maps.append(f"map_seg {master} {seg} {hx(base)} {hx(size)}")
+    # A module reference's segment has register usage, which Vivado
+    # excludes from the DMA's memory masters as it is assigned
     for master in ("axi_dma/Data_MM2S", "axi_dma/Data_S2MM", "axi_dma/Data_SG"):
-        for seg, (base, size) in rams.items():
-            maps.append(f"map_seg {master} {seg} {hx(base)} {hx(size)}")
-    # IBUS reaches the boot ROM and Zephyr's RAM only
-    maps.append("exclude_bd_addr_seg -target_address_space [get_bd_addr_spaces cpu/M_AXI_IBUS] "
-                "[get_bd_addr_segs ram_dma_ctrl/S_AXI/Mem0]")
+        maps.append(f"map_seg {master} ddr_remap/s_axi/reg0 {hx(ram_base)} {hx(ram_range)}")
+        maps.append(f"include_bd_addr_seg [get_bd_addr_segs -excluded -of_objects "
+                    f"[get_bd_addr_spaces {master}]]")
+    maps.append(f"map_seg ddr_remap/m_axi {HP0_DDR_SEG} {hx(R5_DDR[0])} {hx(R5_DDR[1])}")
+    maps.append(f"exclude_hp0 ddr_remap/m_axi {{{HP0_DDR_SEG}}}")
     address_map = "\n".join(maps)
+    # ctrl_axi_ic's slaves in M00.. order, each with the clock it runs on
+    ctrl_slaves = [
+        ("uart/S_AXI", "cpu"), ("mtimer/S_AXI", "cpu"), ("pcs_gpio/S_AXI", "soc"),
+        ("emaczero/S_AXI", "soc"), ("axi_dma/S_AXI_LITE", "soc"),
+        ("bram_ctrl_cpu/S_AXI", "cpu"), ("s2mm_stream_stats/S_AXI", "soc"),
+        ("cpu_reset_gpio/S_AXI", "cpu"), ("mem_ic/S01_AXI", "soc"),
+        ("cpu_liveness_gpio/S_AXI", "cpu"), ("cpu_last_ibus_gpio/S_AXI", "cpu"),
+        ("cpu_last_dbus_gpio/S_AXI", "cpu"), ("intc/s_axi", "cpu"),
+    ]
+    resets = {"cpu": "rst_cpu", "soc": "rst"}
+    ctrl_ports = "\n".join(
+        f"connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M{i:02d}_AXI] [get_bd_intf_pins {slave}]\n"
+        f"connect_bd_net [get_bd_pins clk_wiz/clk_{clk}] [get_bd_pins ctrl_axi_ic/M{i:02d}_ACLK]\n"
+        f"connect_bd_net [get_bd_pins {resets[clk]}/peripheral_aresetn] "
+        f"[get_bd_pins ctrl_axi_ic/M{i:02d}_ARESETN]"
+        for i, (slave, clk) in enumerate(ctrl_slaves))
 
     return f"""
 create_bd_port -dir O UART_TXD
 create_bd_port -dir I UART_RXD
+
+# -------- CPU clock: clk_cpu, 100 MHz as on the Arty, and its reset --------
+set_property -dict [list \\
+    CONFIG.CLKOUT3_USED true \\
+    CONFIG.CLK_OUT3_PORT clk_cpu \\
+    CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {VEX_CPU_CLK_HZ / 1e6:.3f} \\
+] [get_bd_cells clk_wiz]
+create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_cpu
+connect_bd_net [get_bd_pins clk_wiz/clk_cpu] [get_bd_pins rst_cpu/slowest_sync_clk]
+connect_bd_net [get_bd_ports CPU_RESET] [get_bd_pins rst_cpu/ext_reset_in]
+connect_bd_net [get_bd_pins clk_wiz/locked] [get_bd_pins rst_cpu/dcm_locked]
+
+# -------- PS: only its DDR, reached from the PL over S_AXI_HP0_FPD --------
+create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 ps
+apply_bd_automation -rule xilinx.com:bd_rule:zynq_ultra_ps_e -config {{apply_board_preset "1"}} [get_bd_cells ps]
+set_property -dict [list \\
+    CONFIG.PSU__USE__M_AXI_GP0 0 \\
+    CONFIG.PSU__USE__M_AXI_GP1 0 \\
+    CONFIG.PSU__USE__M_AXI_GP2 0 \\
+    CONFIG.PSU__USE__S_AXI_GP2 1 \\
+    CONFIG.PSU__SAXIGP2__DATA_WIDTH 32 \\
+    CONFIG.PSU__USE__IRQ0 0 \\
+] [get_bd_cells ps]
+create_bd_cell -type module -reference axi_addr_remap ddr_remap
+set_property -dict [list CONFIG.FROM_BASE {hx(ram_base)} CONFIG.TO_BASE {hx(VEX_DDR_BASE)}] [get_bd_cells ddr_remap]
 
 # -------- CPU + boot ROM + machine timer (the Arty A7 Vex complex) --------
 create_bd_cell -type module -reference vexriscv_full_axi_wrapper cpu
 create_bd_cell -type module -reference boot_bram_rv32 bootrom
 create_bd_cell -type module -reference riscv_mtimer mtimer
 
-# ibus_ic: instruction fetch -> boot ROM + main RAM (SmartConnect adapts the
-# read-only master; see build_arty_a7_vex.py).
+# ibus_ic: instruction fetch -> boot ROM + DDR (SmartConnect adapts the
+# read-only master; see build_arty_a7_vex.py). The DDR path crosses to
+# clk_soc in ibus_cdc.
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ibus_ic
 set_property -dict [list CONFIG.NUM_SI 1 CONFIG.NUM_MI 2 CONFIG.NUM_CLKS 1] [get_bd_cells ibus_ic]
-# ctrl_axi_ic: DBUS + fcapz -> peripherals and both RAMs
+# SmartConnects on both sides leave ibus_cdc to be configured by hand:
+# the IBUS path is a read-only 32-bit AXI4 master without IDs
+create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 ibus_cdc
+set_property -dict [list CONFIG.PROTOCOL AXI4 CONFIG.ADDR_WIDTH 32 CONFIG.DATA_WIDTH 32     CONFIG.ID_WIDTH 0 CONFIG.READ_WRITE_MODE READ_ONLY] [get_bd_cells ibus_cdc]
+# ctrl_axi_ic: DBUS + fcapz -> peripherals and DDR. The crossbar runs on
+# clk_cpu, each port on its own master's or slave's clock.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 ctrl_axi_ic
-set_property -dict [list CONFIG.NUM_SI 2 CONFIG.NUM_MI 13] [get_bd_cells ctrl_axi_ic]
+set_property -dict [list CONFIG.NUM_SI 2 CONFIG.NUM_MI {len(ctrl_slaves)}] [get_bd_cells ctrl_axi_ic]
 # R-channel slice on DBUS, as on the Arty (breaks the xbar R-mux ->
 # D-cache -> I-cache tag RAM path)
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 dbus_r_slice
@@ -358,21 +420,9 @@ set_property -dict [list \\
 # dma_axi_ic: the three DMA masters
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 dma_axi_ic
 set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1] [get_bd_cells dma_axi_ic]
-# mem_ic: DMA, DBUS and IBUS paths -> the two UltraRAM memories (64-bit)
+# mem_ic: DMA, DBUS and IBUS paths -> ddr_remap -> HP0
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 mem_ic
-set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 2 CONFIG.NUM_CLKS 1] [get_bd_cells mem_ic]
-
-# -------- UltraRAM memories --------
-foreach {{name size}} {{ram_main {main_range} ram_dma {dma_range}}} {{
-    create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 ${{name}}_ctrl
-    set_property -dict [list CONFIG.SINGLE_PORT_BRAM 1 CONFIG.DATA_WIDTH 64 \\
-        CONFIG.READ_LATENCY {URAM_READ_LATENCY}] [get_bd_cells ${{name}}_ctrl]
-    create_bd_cell -type module -reference uram_bram_port $name
-    set_property -dict [list CONFIG.ADDR_WIDTH [expr {{int(log($size) / log(2))}}] \\
-        CONFIG.DATA_WIDTH 64 CONFIG.READ_LATENCY {URAM_READ_LATENCY}] [get_bd_cells $name]
-    set_property -dict [list CONFIG.MEM_SIZE $size CONFIG.MEM_WIDTH 64] [get_bd_intf_pins $name/BRAM_PORTA]
-    connect_bd_intf_net [get_bd_intf_pins ${{name}}_ctrl/BRAM_PORTA] [get_bd_intf_pins $name/BRAM_PORTA]
-}}
+set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1 CONFIG.NUM_CLKS 1] [get_bd_cells mem_ic]
 
 # -------- scratch BRAM (host-visible, as on the Arty) --------
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 bram_ctrl_cpu
@@ -386,7 +436,8 @@ connect_bd_intf_net [get_bd_intf_pins bram_ctrl_cpu/BRAM_PORTA] [get_bd_intf_pin
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_uartlite:2.0 uart
 set_property -dict [list CONFIG.C_BAUDRATE 115200 CONFIG.C_DATA_BITS 8] [get_bd_cells uart]
 # AXI INTC; each line's edge/level kind follows its source's SENSITIVITY
-# (the uartlite pulse is an edge, the rest are levels).
+# (the uartlite pulse is an edge, the rest are levels). Its inputs keep the
+# default asynchronous synchronisers, which the clk_soc lines need.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_intc:4.1 intc
 set_property CONFIG.C_IRQ_CONNECTION 1 [get_bd_cells intc]
 # Host-writable CPU-only reset; powers up asserted so the CPU cannot run
@@ -408,49 +459,54 @@ set_property -dict [list CONFIG.C_SIZE 1 CONFIG.C_OPERATION and] [get_bd_cells c
 create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 irq_concat
 set_property -dict [list CONFIG.NUM_PORTS 5] [get_bd_cells irq_concat]
 
-# -------- clocks --------
-foreach p {{cpu/aclk bootrom/aclk mtimer/aclk ibus_ic/aclk mem_ic/aclk dbus_r_slice/aclk
-           ram_main_ctrl/s_axi_aclk ram_dma_ctrl/s_axi_aclk bram_ctrl_cpu/s_axi_aclk
-           uart/s_axi_aclk intc/s_axi_aclk cpu_reset_gpio/s_axi_aclk
+# -------- clocks: clk_cpu for the CPU complex, clk_soc for the memory path --------
+foreach p {{cpu/aclk bootrom/aclk mtimer/aclk ibus_ic/aclk ibus_cdc/s_axi_aclk dbus_r_slice/aclk
+           bram_ctrl_cpu/s_axi_aclk uart/s_axi_aclk intc/s_axi_aclk cpu_reset_gpio/s_axi_aclk
            cpu_liveness_gpio/s_axi_aclk cpu_last_ibus_gpio/s_axi_aclk
-           cpu_last_dbus_gpio/s_axi_aclk cpu_liveness_probe/aclk}} {{
+           cpu_last_dbus_gpio/s_axi_aclk cpu_liveness_probe/aclk
+           ctrl_axi_ic/ACLK ctrl_axi_ic/S00_ACLK}} {{
+    connect_bd_net [get_bd_pins clk_wiz/clk_cpu] [get_bd_pins $p]
+}}
+foreach p {{ibus_cdc/m_axi_aclk mem_ic/aclk ddr_remap/aclk ps/saxihp0_fpd_aclk
+           ctrl_axi_ic/S01_ACLK dma_axi_ic/ACLK}} {{
     connect_bd_net [get_bd_pins clk_wiz/clk_soc] [get_bd_pins $p]
 }}
-foreach ic {{ctrl_axi_ic dma_axi_ic}} {{
-    connect_bd_net [get_bd_pins clk_wiz/clk_soc] [get_bd_pins $ic/ACLK]
-    foreach p [get_bd_pins $ic/*ACLK] {{
-        if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
-            connect_bd_net [get_bd_pins clk_wiz/clk_soc] $p
-        }}
+foreach p [get_bd_pins dma_axi_ic/*ACLK] {{
+    if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
+        connect_bd_net [get_bd_pins clk_wiz/clk_soc] $p
     }}
 }}
 
 # -------- resets --------
-foreach p {{bootrom/aresetn mtimer/aresetn ibus_ic/aresetn mem_ic/aresetn dbus_r_slice/aresetn
-           ram_main_ctrl/s_axi_aresetn ram_dma_ctrl/s_axi_aresetn bram_ctrl_cpu/s_axi_aresetn
-           uart/s_axi_aresetn intc/s_axi_aresetn cpu_reset_gpio/s_axi_aresetn
+foreach p {{bootrom/aresetn mtimer/aresetn ibus_ic/aresetn ibus_cdc/s_axi_aresetn
+           dbus_r_slice/aresetn bram_ctrl_cpu/s_axi_aresetn uart/s_axi_aresetn
+           intc/s_axi_aresetn cpu_reset_gpio/s_axi_aresetn
            cpu_liveness_gpio/s_axi_aresetn cpu_last_ibus_gpio/s_axi_aresetn
-           cpu_last_dbus_gpio/s_axi_aresetn cpu_liveness_probe/aresetn}} {{
+           cpu_last_dbus_gpio/s_axi_aresetn cpu_liveness_probe/aresetn ctrl_axi_ic/S00_ARESETN}} {{
+    connect_bd_net [get_bd_pins rst_cpu/peripheral_aresetn] [get_bd_pins $p]
+}}
+connect_bd_net [get_bd_pins rst_cpu/interconnect_aresetn] [get_bd_pins ctrl_axi_ic/ARESETN]
+foreach p {{ibus_cdc/m_axi_aresetn ddr_remap/aresetn ctrl_axi_ic/S01_ARESETN}} {{
     connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins $p]
 }}
-foreach ic {{ctrl_axi_ic dma_axi_ic}} {{
-    connect_bd_net [get_bd_pins rst/interconnect_aresetn] [get_bd_pins $ic/ARESETN]
-    foreach p [get_bd_pins $ic/*ARESETN] {{
-        if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
-            connect_bd_net [get_bd_pins rst/peripheral_aresetn] $p
-        }}
+connect_bd_net [get_bd_pins rst/interconnect_aresetn] [get_bd_pins mem_ic/aresetn]
+connect_bd_net [get_bd_pins rst/interconnect_aresetn] [get_bd_pins dma_axi_ic/ARESETN]
+foreach p [get_bd_pins dma_axi_ic/*ARESETN] {{
+    if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
+        connect_bd_net [get_bd_pins rst/peripheral_aresetn] $p
     }}
 }}
 # CPU reset = peripheral_aresetn AND NOT(host bit)
-connect_bd_net [get_bd_pins cpu_reset_gpio/gpio_io_o] [get_bd_pins host_reset_inv/Op1]
-connect_bd_net [get_bd_pins rst/peripheral_aresetn]   [get_bd_pins cpu_reset_and/Op1]
-connect_bd_net [get_bd_pins host_reset_inv/Res]       [get_bd_pins cpu_reset_and/Op2]
-connect_bd_net [get_bd_pins cpu_reset_and/Res]        [get_bd_pins cpu/aresetn]
+connect_bd_net [get_bd_pins cpu_reset_gpio/gpio_io_o]   [get_bd_pins host_reset_inv/Op1]
+connect_bd_net [get_bd_pins rst_cpu/peripheral_aresetn] [get_bd_pins cpu_reset_and/Op1]
+connect_bd_net [get_bd_pins host_reset_inv/Res]         [get_bd_pins cpu_reset_and/Op2]
+connect_bd_net [get_bd_pins cpu_reset_and/Res]          [get_bd_pins cpu/aresetn]
 
 # -------- AXI plumbing --------
 connect_bd_intf_net [get_bd_intf_pins cpu/M_AXI_IBUS] [get_bd_intf_pins ibus_ic/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins ibus_ic/M00_AXI] [get_bd_intf_pins bootrom/S_AXI]
-connect_bd_intf_net [get_bd_intf_pins ibus_ic/M01_AXI] [get_bd_intf_pins mem_ic/S02_AXI]
+connect_bd_intf_net [get_bd_intf_pins ibus_ic/M01_AXI] [get_bd_intf_pins ibus_cdc/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ibus_cdc/M_AXI] [get_bd_intf_pins mem_ic/S02_AXI]
 
 connect_bd_intf_net [get_bd_intf_pins cpu/M_AXI_DBUS]     [get_bd_intf_pins dbus_r_slice/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins dbus_r_slice/M_AXI] [get_bd_intf_pins ctrl_axi_ic/S00_AXI]
@@ -461,18 +517,10 @@ connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXI_S2MM] [get_bd_intf_pins dma_
 connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXI_SG]   [get_bd_intf_pins dma_axi_ic/S02_AXI]
 connect_bd_intf_net [get_bd_intf_pins dma_axi_ic/M00_AXI] [get_bd_intf_pins mem_ic/S00_AXI]
 
-connect_bd_intf_net [get_bd_intf_pins mem_ic/M00_AXI] [get_bd_intf_pins ram_main_ctrl/S_AXI]
-connect_bd_intf_net [get_bd_intf_pins mem_ic/M01_AXI] [get_bd_intf_pins ram_dma_ctrl/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins mem_ic/M00_AXI] [get_bd_intf_pins ddr_remap/s_axi]
+connect_bd_intf_net [get_bd_intf_pins ddr_remap/m_axi] [get_bd_intf_pins ps/S_AXI_HP0_FPD]
 
-set ctrl_slaves {{uart/S_AXI mtimer/S_AXI pcs_gpio/S_AXI emaczero/S_AXI axi_dma/S_AXI_LITE
-                 bram_ctrl_cpu/S_AXI s2mm_stream_stats/S_AXI cpu_reset_gpio/S_AXI
-                 mem_ic/S01_AXI cpu_liveness_gpio/S_AXI cpu_last_ibus_gpio/S_AXI
-                 cpu_last_dbus_gpio/S_AXI intc/s_axi}}
-set mi 0
-foreach s $ctrl_slaves {{
-    connect_bd_intf_net [get_bd_intf_pins [format ctrl_axi_ic/M%02d_AXI $mi]] [get_bd_intf_pins $s]
-    incr mi
-}}
+{ctrl_ports}
 
 # CPU liveness probe on the wrapper's dbg_* outputs
 foreach {{src dst}} {{
@@ -519,7 +567,7 @@ def r5_tcl() -> str:
         "s2mm_stream_stats/S_AXI/reg0": (R5_PL_BASE + STREAM_STATS_OFFSET, 0x10000),
         "pcs_gpio/S_AXI/Reg": (R5_PL_BASE + PCS_GPIO_OFFSET, 0x10000),
     }
-    ddr_seg = "ps/SAXIGP2/HP0_DDR_LOW"
+    ddr_seg = HP0_DDR_SEG
     maps = []
     for master in ("ps/Data", "fcapz_axi/m_axi"):
         for seg, (base, size) in eth.items():
@@ -606,26 +654,16 @@ connect_bd_net [get_bd_pins emaczero/irq]         [get_bd_pins irq_concat/In3]
 connect_bd_net [get_bd_pins irq_concat/dout]      [get_bd_pins ps/pl_ps_irq0]
 
 # -------- address map --------
-# Exclude every HP0 segment but `keep` from a master's address space
-proc exclude_hp0 {{space keep}} {{
-    set as [get_bd_addr_spaces $space]
-    foreach seg [get_bd_addr_segs ps/SAXIGP2/*] {{
-        if {{[lsearch -exact $keep [string trimleft $seg /]] < 0}} {{
-            exclude_bd_addr_seg -target_address_space $as $seg
-        }}
-    }}
-}}
 {address_map}
 """
 
 
-def finish_tcl(xsa_required: bool = False) -> str:
+def finish_tcl() -> str:
     """Wrapper, synthesis, implementation, bitstream and the XSA.
 
-    With xsa_required (the R5 shell) a failed write_hw_platform fails the
-    build, since the FSBL is built from the XSA.
+    A failed write_hw_platform fails the build, since the FSBL is built from
+    the XSA.
     """
-    on_xsa_error = "exit 1" if xsa_required else "# the XSA is optional here"
     return """
 validate_bd_design
 save_bd_design
@@ -663,19 +701,20 @@ if {$synth_impl} {
     # implementation run, and this flow implements in memory
     if {[catch {write_hw_platform -fixed -force -file ${top}.xsa} hw_err]} {
         puts "WARNING: write_hw_platform failed: $hw_err"
-        ON_XSA_ERROR
+        exit 1
     }
 }
-""".replace("ON_XSA_ERROR", on_xsa_error)
+"""
 
 
 def make_tcl(variant: str, synth: bool) -> str:
     top = f"zcu106_{variant}"
     if variant == "vex":
-        return project_tcl(top, COMMON_RTL + VEX_RTL, synth) + eth_tcl() + vex_tcl() + finish_tcl()
+        return (project_tcl(top, COMMON_RTL + VEX_RTL, synth, BOARD_PART) + eth_tcl() +
+                vex_tcl() + finish_tcl())
     if variant == "r5":
-        return (project_tcl(top, COMMON_RTL, synth, R5_BOARD_PART) + eth_tcl() + r5_tcl() +
-                finish_tcl(xsa_required=True))
+        return (project_tcl(top, COMMON_RTL, synth, BOARD_PART) + eth_tcl() + r5_tcl() +
+                finish_tcl())
     raise SystemExit(f"ERROR: unknown variant {variant}")
 
 
@@ -721,19 +760,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--variant", choices=("vex", "r5"), required=True)
     parser.add_argument("--synth", action="store_true",
-                        help="run synthesis, implementation and bitstream (and, for r5, "
-                             "the FSBL)")
+                        help="run synthesis, implementation and bitstream, then the FSBL")
     parser.add_argument("--fsbl", action="store_true",
-                        help="r5 only: just build the FSBL from the existing XSA")
+                        help="just build the FSBL from the existing XSA")
     args = parser.parse_args()
-    if args.fsbl and args.variant != "r5":
-        parser.error("--fsbl applies to --variant r5")
 
     top = f"zcu106_{args.variant}"
     build_dir = REPO_ROOT / "build" / "vivado" / top
     vivado = shutil.which("vivado")
-    xsct = find_xsct(vivado) if args.variant == "r5" and (args.synth or args.fsbl) else None
-    if args.variant == "r5" and (args.synth or args.fsbl) and xsct is None:
+    xsct = find_xsct(vivado) if args.synth or args.fsbl else None
+    if (args.synth or args.fsbl) and xsct is None:
         raise SystemExit("ERROR: xsct (Vitis) was not found in PATH or next to Vivado")
     if args.fsbl:
         return build_fsbl(build_dir, top, xsct)
