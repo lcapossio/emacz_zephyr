@@ -73,6 +73,13 @@ def make_tcl(args: argparse.Namespace) -> str:
     synth_impl = "1" if args.synth else "0"
     jobs = max(1, args.jobs)
     elf = Path(args.elf).resolve().as_posix() if args.elf else ""
+    # Without caches the CPU reaches DDR through M_AXI_IP/DP and ctrl_axi_ic
+    # only; M_AXI_IC/DC and their ddr_axi_ic ports go away
+    use_cache = 0 if args.no_caches else 1
+    ddr_si = 2 if args.no_caches else 4
+    cache_ports = "" if args.no_caches else (
+        "connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_IC] [get_bd_intf_pins ddr_axi_ic/S02_AXI]\n"
+        "connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_DC] [get_bd_intf_pins ddr_axi_ic/S03_AXI]")
     return f"""
 set repo_root [file normalize [file join [pwd] .. .. ..]]
 set part {PART}
@@ -173,12 +180,12 @@ set_property -dict [list \\
     CONFIG.C_D_LMB 1 \\
     CONFIG.C_I_AXI 1 \\
     CONFIG.C_D_AXI 1 \\
-    CONFIG.C_USE_ICACHE 1 \\
+    CONFIG.C_USE_ICACHE {use_cache} \\
     CONFIG.C_ICACHE_BASEADDR 0x0000000090000000 \\
     CONFIG.C_ICACHE_HIGHADDR 0x000000009fffffff \\
     CONFIG.C_ICACHE_BYTE_SIZE 16384 \\
     CONFIG.C_ICACHE_LINE_LEN 4 \\
-    CONFIG.C_USE_DCACHE 1 \\
+    CONFIG.C_USE_DCACHE {use_cache} \\
     CONFIG.C_DCACHE_BASEADDR 0x0000000090000000 \\
     CONFIG.C_DCACHE_HIGHADDR 0x0000000097ffffff \\
     CONFIG.C_DCACHE_BYTE_SIZE 16384 \\
@@ -200,7 +207,7 @@ set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 10] [get_bd_cells ctrl_ax
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 dma_axi_ic
 set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1] [get_bd_cells dma_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_axi_ic
-set_property -dict [list CONFIG.NUM_SI 4 CONFIG.NUM_MI 1] [get_bd_cells ddr_axi_ic]
+set_property -dict [list CONFIG.NUM_SI {ddr_si} CONFIG.NUM_MI 1] [get_bd_cells ddr_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 emac_axi_cc
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 bram_ctrl_cpu
 set_property -dict [list CONFIG.SINGLE_PORT_BRAM 1 CONFIG.DATA_WIDTH 32] [get_bd_cells bram_ctrl_cpu]
@@ -387,8 +394,7 @@ connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M07_AXI] [get_bd_intf_pins lmb
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M08_AXI] [get_bd_intf_pins ddr_axi_ic/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M09_AXI] [get_bd_intf_pins s2mm_stream_stats/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins dma_axi_ic/M00_AXI] [get_bd_intf_pins ddr_axi_ic/S01_AXI]
-connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_IC] [get_bd_intf_pins ddr_axi_ic/S02_AXI]
-connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_DC] [get_bd_intf_pins ddr_axi_ic/S03_AXI]
+{cache_ports}
 connect_bd_intf_net [get_bd_intf_pins ddr_axi_ic/M00_AXI] [get_bd_intf_pins mig_ddr/S_AXI]
 
 connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXIS_MM2S] [get_bd_intf_pins tx_axis_cc/S_AXIS]
@@ -638,15 +644,19 @@ def main() -> int:
     parser.add_argument("--synth", action="store_true", help="run synthesis/implementation/bitstream")
     parser.add_argument("--jobs", type=int, default=2, help="Vivado implementation jobs")
     parser.add_argument("--elf", help="optional ELF to embed in the MicroBlaze V BRAM bitstream")
+    parser.add_argument("--no-caches", action="store_true",
+                        help="build without the I- and D-cache (for cache-off measurements), "
+                             f"into {BUILD_DIR}_nocache")
     args = parser.parse_args()
+    build_dir = BUILD_DIR.with_name(f"{TOP}_nocache") if args.no_caches else BUILD_DIR
 
     vivado = shutil.which("vivado")
     if vivado is None:
         raise SystemExit("ERROR: vivado was not found in PATH")
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    (BUILD_DIR / "reports").mkdir(exist_ok=True)
-    tcl = BUILD_DIR / "build.tcl"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "reports").mkdir(exist_ok=True)
+    tcl = build_dir / "build.tcl"
     tcl.write_text(make_tcl(args), encoding="utf-8")
 
     cmd = [vivado, "-mode", "batch", "-source", str(tcl.name)]
@@ -654,7 +664,7 @@ def main() -> int:
     env["XILINX_TCLAPP_REPO"] = str(
         (Path("no_commit") / "force_vivado_install_tclstore_missing").resolve()
     )
-    rc = subprocess.call(cmd, cwd=BUILD_DIR, env=env)
+    rc = subprocess.call(cmd, cwd=build_dir, env=env)
     return rc
 
 

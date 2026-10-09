@@ -123,6 +123,8 @@ def load_command(args: argparse.Namespace, shell: Shell) -> list[str]:
     load = [sys.executable, str(SCRIPTS / "load_zephyr_bram.py"), "--shell", args.shell]
     if args.image:
         load += ["--file", str(args.image)]
+    if args.load_addr is not None:
+        load += ["--addr", hex(args.load_addr)]
     return load
 
 
@@ -274,12 +276,15 @@ def test_bidi(args: argparse.Namespace, shell: Shell) -> bool:
     return rx_ok and tx_ok
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def add_board_arguments(parser: argparse.ArgumentParser) -> None:
+    """The boot and provisioning options, shared with run_perf_matrix.py."""
     parser.add_argument("--shell", choices=sorted(SHELLS), required=True)
     parser.add_argument("--bit", type=Path, help="bitstream (default: the shell's build output)")
     parser.add_argument("--image", type=Path, help="Zephyr image: zephyr.bin, or zephyr.elf for zcu106_r5 "
                         "(default: the loader's)")
+    parser.add_argument("--load-addr", type=lambda value: int(value, 0),
+                        help="soft-CPU shells: the image's link address, if not 0x90000000 "
+                             "(e.g. 0x98000000 for app/perf/dcache_off.overlay)")
     parser.add_argument("--skip-boot", action="store_true", help="the board is already running")
     parser.add_argument("--uart", help="console UART to capture during boot, e.g. COM4 or /dev/ttyUSB1")
     parser.add_argument("--baud", type=int, default=115200)
@@ -295,6 +300,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=2.0, help="discovery reply timeout")
     parser.add_argument("--provision-timeout", type=float, default=30.0)
     parser.add_argument("--control-port", type=int, default=5002)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_board_arguments(parser)
     parser.add_argument("--rx-rate-mbps", type=float, default=5.0)
     parser.add_argument("--rx-duration", type=float, default=10.0)
     parser.add_argument("--tx-rate-mbps", type=float, default=0.0, help="0 is as fast as possible")

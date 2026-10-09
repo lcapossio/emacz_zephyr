@@ -44,6 +44,18 @@ SHELLS = {
                    "reset": "gpio"},
 }
 VEX_CPU_RESET_GPIO = 0x40020000
+# Every shell's CPU starts at 0x9000_0000 (the Vex boot ROM jumps there,
+# MicroBlaze V's reset vector is there). An image linked elsewhere, such as
+# above the D-cache aperture, gets a jump to it written there.
+BOOT_ENTRY = 0x90000000
+
+
+def jump_stub(target: int) -> list[int]:
+    """RV32: lui t0, %hi(target); jalr x0, 0(t0). target is 4 KiB aligned."""
+    if target & 0xFFF:
+        raise ValueError(f"load address 0x{target:08X} is not 4 KiB aligned")
+    t0 = 5
+    return [target | (t0 << 7) | 0x37, (t0 << 15) | 0x67]
 
 
 def words_from_file(path: Path) -> list[int]:
@@ -74,7 +86,9 @@ def main() -> int:
     parser.add_argument("--shell", choices=sorted(SHELLS), default="mbv",
                         help="CPU shell in the bitstream (default mbv)")
     parser.add_argument("--file", help="image to load (default: the shell's build dir)")
-    parser.add_argument("--addr", type=lambda value: int(value, 0), default=0x90000000)
+    parser.add_argument("--addr", type=lambda value: int(value, 0), default=BOOT_ENTRY,
+                        help="load address; any other than 0x90000000 also gets a jump "
+                             "there from 0x90000000")
     parser.add_argument(
         "--chain", type=int, default=None,
         help="EJTAG-AXI BSCAN chain (default: 3 for mbv, 4 for the Vex shells)",
@@ -159,6 +173,12 @@ def main() -> int:
         print(f"verified {verify_count}/{len(words)} words", flush=True)
 
         print(f"loaded {len(words) * 4} bytes to 0x{args.addr:08X}")
+        if args.addr != BOOT_ENTRY:
+            stub = jump_stub(args.addr)
+            axi.burst_write(BOOT_ENTRY, stub)
+            if verify_range(axi, BOOT_ENTRY, stub, len(stub), burst) != 0:
+                return 1
+            print(f"wrote a jump to 0x{args.addr:08X} at 0x{BOOT_ENTRY:08X}")
         uart = None
         if args.monitor > 0:
             uart = EjtagUartController(transport, chain=uart_chain)

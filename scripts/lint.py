@@ -23,6 +23,7 @@ PYTHON_SOURCES = (
     "scripts/program_fpga.py",
     "scripts/run_arty_stress.py",
     "scripts/run_board_suite.py",
+    "scripts/run_perf_matrix.py",
     "scripts/run_tx_accounting.py",
     "tests/test_apply_zephyr_patches.py",
     "tests/test_board_boot.py",

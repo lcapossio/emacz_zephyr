@@ -47,7 +47,8 @@ in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
 - `fcapz/` — fpgacapZero debug cores and host tools submodule.
 - `patches/zephyr/` — Zephyr patches: AXI DMA driver fixes and the emacZero
   driver.
-- `app/` — the Zephyr app, with per-board overlays in `app/boards/`.
+- `app/` — the Zephyr app, with per-board overlays in `app/boards/` and the
+  cache-off measurement variants in `app/perf/`.
 - `boards/bard0/`, `soc/bard0/` — the Zephyr boards defined here
   (`arty_a7_vex`, `zcu106_vex`, `zcu106_r5`) and the VexRiscv SoC
   (`vexriscv_axi`) the two Vex boards share.
@@ -372,33 +373,67 @@ LUT-as-memory and F7/F8 wide-mux counts, is in
 ## Throughput
 
 UDP with 1472 B payloads through Zephyr sockets, delivered rate as counted
-by the board (`scripts/run_udp_accounting.py`, `scripts/run_tx_accounting.py
---rate-mbps 0`), RX offered at 20 and 95 Mbit/s for 5 s:
+by the board. `scripts/run_perf_matrix.py` boots a shell and runs the same
+loads on each: RX offered at 20 and 90 Mbit/s for 5 s
+(`run_udp_accounting.py`; the table gives the 90 Mbit/s point), TX
+unthrottled for 5 s (`run_tx_accounting.py --rate-mbps 0`), and TX while
+RX takes 3 Mbit/s. Every row has uncached frame buffers except the last.
+Rates in Mbit/s:
 
-| Path | MBV (81.25 MHz) | Vex (100 MHz) |
-|---|---|---|
-| RX, socket sink on port 5001 | 9.5 Mbit/s (~800 frames/s) | 9.4 Mbit/s (~800 frames/s) |
-| TX, `zsock_sendto` loop | 9.2 Mbit/s | 11.8 Mbit/s |
-| TX while RX takes 3 Mbit/s | 5.3 Mbit/s | 11.8 Mbit/s |
+| Shell | CPU clock | Caches | RX | TX | TX while RX takes 3 |
+|---|---|---|---|---|---|
+| Arty MBV | 81.25 MHz | on | 9.5 | 9.2 | 5.3 |
+| | | D-cache off | 4.6 | 2.9 | 0.6 |
+| | | off | 1.7 | 0.9 | — |
+| Arty Vex | 100 MHz | on | 9.1 | 11.8 | 6.5 |
+| | | D-cache off | 4.5 | 2.7 | 0.7 |
+| ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.8 |
+| | | D-cache off | 5.1 | 3.1 | 0.8 |
+| ZCU106 R5 | 500 MHz | on | 66.5 | 215.5 | 204.5 |
+| | | off | 54.5 | 142.5 | 134.5 |
+| ZCU106 R5, cacheable frame buffers | 500 MHz | on | 243 (400 offered) | 199.1 | 196.2 |
 
-Both CPUs hit the same RX ceiling because it is set by memory latency,
-not the core. The emacZero frame buffers sit in uncached DDR, and the
-socket's copy of each payload out of them costs ~1.07 ms of the
-~1.25 ms per frame on both shells: the UDP payload starts 2 bytes off a
-word boundary, so `memcpy` falls back to byte reads of uncached memory.
+The caches:
 
-The ZCU106 shells, same tools and payloads over the 1 Gbit/s SFP link,
-RX offered at 20 to 950 Mbit/s for 5 s per point:
+- *on*: each shell as built. The soft CPUs' frame buffers sit in the DMA
+  window above their D-cache aperture; the R5 variant makes its buffer
+  region non-cacheable (`app/perf/zcu106_r5_uncached_bufs.*`).
+- *D-cache off*: the image is built with `app/perf/dcache_off.overlay`,
+  which links Zephyr at `0x98000000`, above the D-cache aperture, so every
+  data access goes to DDR. It is loaded with `--load-addr 0x98000000`, which
+  puts a jump there at the CPU's `0x90000000` entry. Instruction fetch
+  stays cached: VexRiscv's I-cache caches every fetch and has no switch, so
+  this is the cache-off point for the Vex shells.
+- *off*: MicroBlaze V built without either cache
+  (`build_arty_a7_mbv.py --no-caches`), and the R5 without cache
+  management (`app/perf/zcu106_r5_caches_off.conf`), which leaves both of
+  its caches off. Below 3 Mbit/s of RX ceiling, the MBV's bidirectional
+  run drops the TX benchmark's control request with the RX excess, so it
+  has no number.
 
-| Path | `zcu106_vex` (150 MHz) | `zcu106_r5` |
-|---|---|---|
-| RX, socket sink on port 5001 | 24 Mbit/s (~2,040 frames/s) | 244 Mbit/s (~20,700 frames/s) |
-| TX, `zsock_sendto` loop | 24.9 Mbit/s | 199 Mbit/s |
-| TX while RX takes 10 / 100 Mbit/s | 10.4 Mbit/s | 116 Mbit/s |
+The Arty and ZCU106 Vex shells differ only in the memory path (DDR3
+through MIG at 81.25 MHz behind a CDC, against PS DDR4 through
+`S_AXI_HP0_FPD`) and the link (100 Mbit/s MII, 1 Gbit/s SFP), which neither
+rate comes near. On the Arty, MBV runs at MIG's 81.25 MHz.
 
-The R5 runs with its caches on and cacheable frame buffers, so the socket
-copy reads whole cache lines; with the frame buffers uncached its RX
-ceiling is 65 Mbit/s, and with the caches off as well, 53 Mbit/s.
+On the soft CPUs the RX ceiling is set by memory latency, not the core.
+The socket's copy of each payload out of the uncached frame buffers costs
+~1.07 ms of the ~1.25 ms per frame on both Arty shells: the UDP payload
+starts 2 bytes off a word boundary, so `memcpy` falls back to byte reads of
+uncached memory. The same copy limits the R5 to 66.5 Mbit/s with uncached
+buffers; cacheable ones, with the AXI DMA driver's cache maintenance around
+each transfer (`CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY`), let it
+read whole lines. That is how `zcu106_r5` is built: 243 Mbit/s RX, while TX
+pays for the cache clean of each buffer.
+
+To measure a shell (an image variant is built with the overlay or conf as
+`-DEXTRA_DTC_OVERLAY_FILE` / `-DEXTRA_CONF_FILE`):
+
+```sh
+python scripts/run_perf_matrix.py --shell zcu106_vex --label "zcu106_vex on" --interface "<host NIC>" --board-ip <board IPv4>
+```
+
+Each measurement is appended to `no_commit/perf_matrix.jsonl` (`--out`).
 
 Above the RX ceiling the delivered rate holds: when the stack has no
 packet free, the driver's RX thread waits for one instead of dropping the
@@ -410,7 +445,7 @@ ones it drops whole, which are most of them at line rate: emacZero
 
 With both directions loaded, RX takes the CPU first: the driver's RX
 thread and the app's sink thread outrank the thread running the TX
-benchmark, so TX gets what RX leaves (the rows above).
+benchmark, so TX gets what RX leaves (the last column).
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.

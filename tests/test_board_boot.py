@@ -88,6 +88,19 @@ def test_suite_loads_soft_cpu_shells_into_ram():
     assert command[2:] == ["--shell", "vex", "--file", "z.bin"]
 
 
+def test_suite_loads_an_image_linked_above_the_dcache_window():
+    command = suite.load_command(suite_args(load_addr=0x98000000), suite.SHELLS["vex"])
+    assert command[-2:] == ["--addr", "0x98000000"]
+
+
+def test_bram_loader_jump_stub_is_lui_jalr():
+    bram = load("load_zephyr_bram")
+    # GNU as: lui t0,0x98000 / jr t0
+    assert bram.jump_stub(0x98000000) == [0x980002B7, 0x00028067]
+    with pytest.raises(ValueError):
+        bram.jump_stub(0x98000004)
+
+
 def test_suite_boots_the_r5_shell_through_the_ps():
     shell = suite.SHELLS["zcu106_r5"]
     command = suite.load_command(
