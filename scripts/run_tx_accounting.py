@@ -20,8 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-import fcapz_jtag  # noqa: E402
-
+import fcapz_jtag
 
 REGS = {
     "tx_frames": 0x028,
@@ -81,7 +80,7 @@ class Receiver(threading.Thread):
             while not self.stop.is_set():
                 try:
                     data, _addr = sock.recvfrom(65535)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     self.errors += 1
@@ -111,8 +110,8 @@ def main() -> int:
     parser.add_argument("--packet-size", type=int, default=1472)
     args = parser.parse_args()
 
-    rate_x1000 = max(0, int(round(args.rate_mbps * 1000.0)))
-    duration_ms = max(1, int(round(args.duration * 1000.0)))
+    rate_x1000 = max(0, round(args.rate_mbps * 1000.0))
+    duration_ms = max(1, round(args.duration * 1000.0))
     command = f"t {duration_ms} {args.packet_size} {rate_x1000} {args.listen_port}"
 
     if not args.skip_control_check:

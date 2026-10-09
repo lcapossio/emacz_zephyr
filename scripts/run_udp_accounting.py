@@ -20,7 +20,6 @@ import time
 
 from read_perf_stats import read_stats
 
-
 KEEP = [
     "mac_rx_frames",
     "gate_good_frames",

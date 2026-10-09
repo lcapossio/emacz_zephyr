@@ -21,9 +21,9 @@ sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
 # _chain_shape_kwargs is the CLI's part-family table; emacZero's ZCU106
 # scripts use it the same way.
-from fcapz.cli import _chain_shape_kwargs  # noqa: E402
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+from fcapz.cli import _chain_shape_kwargs
+from fcapz.ejtagaxi import EjtagAxiController
+from fcapz.transport import XilinxHwServerTransport
 
 # Errors hw_server gives now and then, in spells, when a new xsdb session
 # starts: an empty target list on connect, and "JTAG node is not accessible"

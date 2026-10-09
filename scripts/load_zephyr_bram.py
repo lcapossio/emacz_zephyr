@@ -18,10 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-from fcapz.eio import EioController  # noqa: E402
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.ejtaguart import EjtagUartController  # noqa: E402
-import fcapz_jtag  # noqa: E402
+import fcapz_jtag
+from fcapz.eio import EioController
+from fcapz.ejtagaxi import EjtagAxiController
+from fcapz.ejtaguart import EjtagUartController
 
 # The VexRiscv shell's JTAG-AXI bridge returns SLVERR on a 16-beat burst.
 # 15 works on both shells, so it is the cap everywhere rather than a

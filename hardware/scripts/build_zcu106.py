@@ -40,7 +40,6 @@ from pathlib import Path
 
 from emaczero_rtl import emaczero_rtl
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PART = "xczu7ev-ffvc1156-2-e"
 SOC_CLK_HZ = 150_000_000

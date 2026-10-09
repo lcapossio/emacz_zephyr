@@ -19,8 +19,8 @@ jobs:
 
       - name: Install Python tools
         run: |
-          python3 -m pip install --user \
-            west pykwalify yamllint ruff clang-format pytest psutil
+          python3 -m pip install --user -r requirements-lint.txt \
+            west pykwalify yamllint pytest psutil
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Lint YAML

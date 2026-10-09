@@ -106,7 +106,7 @@ def main() -> int:
     print(f"===== bidi (rx@{args.bidi_rx_mbps:g})", flush=True)
     results["bidi"] = measure_bidi(args, shell)
 
-    stamp = datetime.datetime.now().isoformat(timespec="seconds")
+    stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("a", encoding="utf-8") as out:
         for test, metrics in results.items():

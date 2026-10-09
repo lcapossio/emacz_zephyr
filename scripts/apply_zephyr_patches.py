@@ -70,7 +70,7 @@ def patch_paths(patches: list[Path]) -> list[str]:
     paths: set[str] = set()
     for patch in patches:
         for line in patch.read_text(encoding="utf-8").splitlines():
-            if line.startswith("--- a/") or line.startswith("+++ b/"):
+            if line.startswith(("--- a/", "+++ b/")):
                 paths.add(line[6:])
     return sorted(paths)
 

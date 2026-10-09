@@ -474,7 +474,9 @@ for board in mbv32 arty_a7_vex; do
 done
 ```
 
-`scripts/lint.py` resolves `ruff` and `clang-format` from `PATH`. Local
+`scripts/lint.py` resolves `ruff` and `clang-format` from `PATH` and
+needs the versions CI uses, pinned in `requirements-lint.txt`
+(`python -m pip install -r requirements-lint.txt`). Local
 CMake/Ninja builds must use no more than half the host's logical CPUs.
 
 Automated hardware acceptance (portable UDP, no JTAG/Npcap needed):

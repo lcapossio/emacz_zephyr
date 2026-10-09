@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Tool versions, as CI installs them; another version may judge differently
+REQUIREMENTS = ROOT / "requirements-lint.txt"
 PYTHON_SOURCES = (
     "hardware/scripts/build_zcu106.py",
     "scripts/apply_zephyr_patches.py",
@@ -54,6 +56,26 @@ def require_tool(name: str) -> str:
     return path
 
 
+def pinned_versions() -> dict[str, str]:
+    versions = {}
+    for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines():
+        name, sep, version = line.partition("==")
+        if sep and not name.startswith("#"):
+            versions[name.strip()] = version.strip()
+    return versions
+
+
+def require_version(path: str, name: str, version: str) -> None:
+    """Fail unless `path --version` reports exactly `version`."""
+    output = subprocess.run([path, "--version"], capture_output=True, text=True,
+                            check=True).stdout
+    found = re.search(r"\d+\.\d+\.\d+", output)
+    if found is None or found.group() != version:
+        have = found.group() if found else output.strip()
+        raise RuntimeError(f"{name} {have} found, lint needs {version}: "
+                           f"python -m pip install -r {REQUIREMENTS.name}")
+
+
 def run(command: list[str]) -> None:
     print("+ " + " ".join(command), flush=True)
     subprocess.run(command, cwd=ROOT, check=True)
@@ -76,8 +98,11 @@ def check_source_policy() -> None:
 def main() -> int:
     try:
         check_source_policy()
+        versions = pinned_versions()
         ruff = require_tool("ruff")
         clang_format = require_tool("clang-format")
+        require_version(ruff, "ruff", versions["ruff"])
+        require_version(clang_format, "clang-format", versions["clang-format"])
         run([ruff, "check", *PYTHON_SOURCES])
         run([clang_format, "--dry-run", "--Werror", *C_SOURCES])
     except (RuntimeError, subprocess.CalledProcessError) as exc:

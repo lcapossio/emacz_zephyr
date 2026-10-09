@@ -25,7 +25,7 @@ def load(name: str):
     return module
 
 
-import fcapz_jtag  # noqa: E402
+import fcapz_jtag
 
 r5 = load("load_zynqmp_r5")
 suite = load("run_board_suite")
