@@ -108,6 +108,62 @@ def test_bursts_reject_unaligned_addresses():
         list(fcapz_jtag.bursts(0x90000002, 4, 15))
 
 
+def flaky(failures: list[str]):
+    """A session that raises each of `failures` in turn, then returns its call count."""
+    calls = []
+
+    def session():
+        calls.append(None)
+        if len(calls) <= len(failures):
+            raise RuntimeError(f"xsdb: {failures[len(calls) - 1]}")
+        return len(calls)
+
+    return session
+
+
+def test_open_session_reruns_through_transient_xsdb_errors(monkeypatch):
+    monkeypatch.setattr(fcapz_jtag.time, "sleep", lambda _s: None)
+    session = flaky(["target list is empty", "JTAG node is not accessible"])
+    assert fcapz_jtag.open_session(session) == 3
+
+
+def test_open_session_gives_up_after_its_tries(monkeypatch):
+    monkeypatch.setattr(fcapz_jtag.time, "sleep", lambda _s: None)
+    session = flaky(["JTAG node is not accessible"] * fcapz_jtag.XSDB_TRIES)
+    with pytest.raises(RuntimeError, match="not accessible"):
+        fcapz_jtag.open_session(session)
+
+
+def test_open_session_does_not_rerun_other_errors(monkeypatch):
+    monkeypatch.setattr(fcapz_jtag.time, "sleep", lambda _s: None)
+    session = flaky(["expected 4 raw scan results, got 3", "target list is empty"])
+    with pytest.raises(RuntimeError, match="got 3"):
+        fcapz_jtag.open_session(session)
+
+
+class FakeBridge:
+    def __init__(self, fail: bool):
+        self.fail = fail
+        self.closed = False
+
+    def axi_read(self, _addr: int) -> int:
+        if self.fail:
+            raise RuntimeError("xsdb: JTAG node is not accessible")
+        return 7
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_read_reruns_the_whole_session_after_a_failed_scan(monkeypatch):
+    monkeypatch.setattr(fcapz_jtag.time, "sleep", lambda _s: None)
+    bridges = [FakeBridge(fail=True), FakeBridge(fail=False)]
+    opened = iter(bridges)
+    monkeypatch.setattr(fcapz_jtag, "_connect_axi", lambda _tap, _chain: next(opened))
+    assert fcapz_jtag.read("xczu7", 4, lambda axi: axi.axi_read(0x0)) == 7
+    assert all(bridge.closed for bridge in bridges)
+
+
 def bidi_args(**values) -> argparse.Namespace:
     defaults = {"board_ip": "192.168.237.201", "bind": "192.168.237.1", "tx_rate_mbps": 0.0,
                 "tx_duration": 5.0, "bidi_rx_mbps": None}

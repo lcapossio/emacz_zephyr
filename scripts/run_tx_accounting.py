@@ -36,11 +36,8 @@ REGS = {
 }
 
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
-    axi = fcapz_jtag.axi(tap, chain)
-    try:
-        return {name: axi.axi_read(base + off) for name, off in REGS.items()}
-    finally:
-        axi.close()
+    return fcapz_jtag.read(
+        tap, chain, lambda axi: {name: axi.axi_read(base + off) for name, off in REGS.items()})
 
 
 def parse_reply(text: str) -> dict[str, int]:

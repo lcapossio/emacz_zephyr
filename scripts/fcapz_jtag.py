@@ -25,10 +25,12 @@ from fcapz.cli import _chain_shape_kwargs  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
-# xsdb sometimes reports "target list is empty" when a JTAG session opens
-# right after the previous one closed; one retry after a pause gets through.
-XSDB_RACE = "target list is empty"
-XSDB_RACE_PAUSE_S = 2.0
+# Errors hw_server gives now and then, in spells, when a new xsdb session
+# starts: an empty target list on connect, and "JTAG node is not accessible"
+# on connect or on a later scan. A fresh session after a pause gets through.
+XSDB_TRANSIENT = ("target list is empty", "JTAG node is not accessible")
+XSDB_RETRY_PAUSE_S = 2.0
+XSDB_TRIES = 3
 
 T = TypeVar("T")
 
@@ -39,33 +41,55 @@ def transport(tap: str, **kwargs) -> XilinxHwServerTransport:
     return XilinxHwServerTransport(fpga_name=name, **_chain_shape_kwargs(name), **kwargs)
 
 
-def open_session(connect: Callable[[], T]) -> T:
-    """Run connect(), once more if xsdb lost its target list.
+def open_session(session: Callable[[], T]) -> T:
+    """Run session(), again after a pause while xsdb fails transiently.
 
-    connect() must open its own transport and close it if it fails.
+    session() must open its own transport and close it before it returns or
+    raises, and must be safe to run again after a failure.
     """
+    for attempt in range(1, XSDB_TRIES + 1):
+        try:
+            return session()
+        except RuntimeError as exc:
+            if attempt == XSDB_TRIES or not any(s in str(exc) for s in XSDB_TRANSIENT):
+                raise
+        time.sleep(XSDB_RETRY_PAUSE_S)
+    raise AssertionError("unreachable")
+
+
+def _connect_axi(tap: str, chain: int) -> EjtagAxiController:
+    link = transport(tap)
+    bridge = EjtagAxiController(link, chain=chain)
     try:
-        return connect()
-    except RuntimeError as exc:
-        if XSDB_RACE not in str(exc):
-            raise
-    time.sleep(XSDB_RACE_PAUSE_S)
-    return connect()
+        bridge.connect()
+    except Exception:
+        link.close()
+        raise
+    return bridge
 
 
 def axi(tap: str, chain: int) -> EjtagAxiController:
-    """Return a connected JTAG-AXI bridge; close() it to end the session."""
-    def connect() -> EjtagAxiController:
-        link = transport(tap)
-        bridge = EjtagAxiController(link, chain=chain)
-        try:
-            bridge.connect()
-        except Exception:
-            link.close()
-            raise
-        return bridge
+    """Return a connected JTAG-AXI bridge; close() it to end the session.
 
-    return open_session(connect)
+    Only the connect is retried. For reads, read() also retries the scans.
+    """
+    return open_session(lambda: _connect_axi(tap, chain))
+
+
+def read(tap: str, chain: int, op: Callable[[EjtagAxiController], T]) -> T:
+    """Run op on a JTAG-AXI session of its own and return its result.
+
+    A transient xsdb failure, on connect or inside op, reruns the whole
+    session, so op must only read.
+    """
+    def session() -> T:
+        bridge = _connect_axi(tap, chain)
+        try:
+            return op(bridge)
+        finally:
+            bridge.close()
+
+    return open_session(session)
 
 
 # AXI4 forbids an INCR burst from crossing a 4 KiB boundary (A3.4.1); the

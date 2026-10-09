@@ -325,7 +325,10 @@ xsdb target from the JTAG cable whose FPGA is the `xczu7` (`--tap`), and
 the same `hw_server` are left alone. The fcapz tools find the FPGA by its
 exact xsdb JTAG name, `xczu7` (`xsdb` then `connect; jtag targets` lists
 it). A board that is missing or named differently fails with "target list
-is empty".
+is empty". hw_server also gives that error, and "JTAG node is not
+accessible", now and then for a working board when a new xsdb session
+starts, so the fcapz tools try a session up to three times, 2 s apart.
+Reads rerun the whole session; a write is never repeated.
 
 The board suite runs the whole acceptance flow on any shell: boot,
 provisioning, the RX accounting test, DMA error recovery, the TX benchmark,

@@ -124,8 +124,8 @@ def read_stats(
     offsets, total_bytes = field_offsets()
     words = (total_bytes + 3) // 4
     seq_addr = addr + offsets["sink_seq"]
-    axi = fcapz_jtag.axi(tap, chain)
-    try:
+
+    def copy(axi) -> bytes:
         # The firmware updates the sink_* block under a seqlock while we read
         # it beat by beat. Bursts walk ascending addresses and sink_seq sits
         # below the block, so the copy inside `data` was read first; re-read
@@ -137,17 +137,16 @@ def read_stats(
                 chunks.extend(axi.burst_read(addr + offset * 4, span))
             data = b"".join(w.to_bytes(4, "little") for w in chunks)
             if not sink_consistent:
-                break
+                return data
             seq_before = struct.unpack_from("<I", data, offsets["sink_seq"])[0]
             seq_after = axi.burst_read(seq_addr, 1)[0]
             if seq_before % 2 == 0 and seq_before == seq_after:
-                break
-        else:
-            raise RuntimeError(
-                f"sink_* block never read consistently in {SEQ_RETRIES} attempts"
-            )
-    finally:
-        axi.close()
+                return data
+        raise RuntimeError(
+            f"sink_* block never read consistently in {SEQ_RETRIES} attempts"
+        )
+
+    data = fcapz_jtag.read(tap, chain, copy)
 
     values = {}
     for name, kind in FIELDS:

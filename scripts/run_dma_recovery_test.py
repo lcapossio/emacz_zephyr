@@ -55,6 +55,8 @@ def jtag(args: argparse.Namespace) -> EjtagAxiController:
 
 def inject(args: argparse.Namespace) -> int | None:
     """Zero the CONTROL word of S2MM's tail descriptor; return its address."""
+    # Not fcapz_jtag.read(): rerunning after a failed write could find the
+    # descriptor already zeroed, so only the connect is retried
     axi = jtag(args)
     try:
         desc = axi.axi_read(args.dma_base + S2MM_TAILDESC)
@@ -69,11 +71,8 @@ def inject(args: argparse.Namespace) -> int | None:
 
 
 def s2mm_status(args: argparse.Namespace) -> int:
-    axi = jtag(args)
-    try:
-        return axi.axi_read(args.dma_base + S2MM_DMASR)
-    finally:
-        axi.close()
+    return fcapz_jtag.read(args.tap, args.chain,
+                           lambda axi: axi.axi_read(args.dma_base + S2MM_DMASR))
 
 
 def control(args: argparse.Namespace, command: str) -> str | None:
