@@ -35,7 +35,7 @@ from pathlib import Path
 
 import emacz_config as config
 from run_arty_stress import choose_bind_ip, provision_board
-from run_udp_accounting import SENDING_MARKER
+from run_udp_accounting import SENDING_MARKER, STOPPED_MARKER
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -69,10 +69,10 @@ SHELLS = {
                        ps_boot=True),
 }
 
-# The bidi step's RX load outlasts the TX benchmark by this much: the TX
-# script's control check, JTAG reads and reply wait fit inside it, so its
-# last JTAG read ends before the RX script's final one starts.
-BIDI_RX_MARGIN_S = 6.0
+# The bidi step's RX load runs until the TX benchmark is done; this caps it
+# should the stop never come. A ZCU106 JTAG read can take over 10 s, so the
+# TX script's two reads plus its window must fit well inside.
+BIDI_RX_CAP_S = 120.0
 
 LOAD_ATTEMPTS = 3
 
@@ -246,34 +246,66 @@ def bidi_rx_command(args: argparse.Namespace, shell: Shell) -> list[str]:
     return [
         sys.executable, str(SCRIPTS / "run_udp_accounting.py"), *jtag_args(shell),
         "--addr", hex(shell.perf_stats), "--target", str(args.board_ip), "--bind", args.bind,
-        "--rate-mbps", str(rate), "--duration", str(args.tx_duration + BIDI_RX_MARGIN_S),
+        "--rate-mbps", str(rate), "--duration", str(BIDI_RX_CAP_S), "--until-stdin",
     ]
 
 
-def test_bidi(args: argparse.Namespace, shell: Shell) -> bool:
-    """RX accounting with the TX benchmark inside its send window.
+@dataclass
+class Bidi:
+    rx_ok: bool
+    rx_log: list[str]
+    tx_ok: bool
+    tx_log: list[str]
+    error: str | None  # why the TX run does not count as under RX load
 
-    Both scripts read counters over JTAG; the TX one starts only once the
-    RX one has taken its first reading and is just sending, so the two
-    never drive the JTAG-AXI bridge at the same time.
+
+def run_bidi(args: argparse.Namespace, shell: Shell) -> Bidi:
+    """The TX benchmark, start to finish, inside the RX script's send window.
+
+    Both scripts read counters over JTAG. The TX one starts once the RX one
+    has taken its first reading and is just sending; the RX load stops only
+    after the TX script exits. So the board transmits under RX load and the
+    two never drive the JTAG-AXI bridge at the same time.
     """
     rx_cmd = bidi_rx_command(args, shell)
     print("$ " + " ".join(rx_cmd), flush=True)
-    rx = subprocess.Popen(rx_cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True)
-    assert rx.stdout is not None
+    rx = subprocess.Popen(rx_cmd, cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True)
+    assert rx.stdin is not None and rx.stdout is not None
+    rx_log: list[str] = []
+    tx_log: list[str] = []
+    tx_ok = False
     sending = False
     for line in rx.stdout:
         sys.stdout.write(line)
+        rx_log.append(line.rstrip())
         if line.startswith(SENDING_MARKER):
             sending = True
             break
-    tx_ok = sending and test_tx(args, shell)
-    sys.stdout.write(rx.stdout.read())
+    if sending:
+        tx_ok = run(tx_command(args, shell), tx_log) == 0
+    try:
+        rx.stdin.write("stop\n")
+        rx.stdin.close()
+    except OSError:
+        pass  # the RX script already exited
+    rest = rx.stdout.read()
+    sys.stdout.write(rest)
+    rx_log.extend(rest.splitlines())
     rx_ok = rx.wait() == 0
+    error = None
     if not sending:
-        print("bidi: the RX test ended before it started sending")
-    return rx_ok and tx_ok
+        error = "the RX test ended before it started sending"
+    elif f"{STOPPED_MARKER}stdin" not in rx_log:
+        error = "the RX load stopped before the TX benchmark was done"
+    if error is not None:
+        print(f"bidi: {error}")
+    return Bidi(rx_ok, rx_log, tx_ok, tx_log, error)
+
+
+def test_bidi(args: argparse.Namespace, shell: Shell) -> bool:
+    result = run_bidi(args, shell)
+    return result.rx_ok and result.tx_ok and result.error is None
 
 
 def add_board_arguments(parser: argparse.ArgumentParser) -> None:

@@ -25,6 +25,7 @@ PYTHON_SOURCES = (
     "scripts/run_board_suite.py",
     "scripts/run_perf_matrix.py",
     "scripts/run_tx_accounting.py",
+    "scripts/run_udp_accounting.py",
     "tests/test_apply_zephyr_patches.py",
     "tests/test_board_boot.py",
     "tests/test_emacz_config.py",

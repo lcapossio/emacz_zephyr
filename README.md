@@ -341,8 +341,11 @@ Reads rerun the whole session; a write is never repeated.
 The board suite runs the whole acceptance flow on any shell: boot,
 provisioning, the RX accounting test, DMA error recovery, the TX benchmark,
 and RX and TX together (`bidi`: RX at about 40% of the shell's RX ceiling,
-`--bidi-rx-mbps` to change it, while the TX benchmark runs). It stops at
-the first step that fails:
+`--bidi-rx-mbps` to change it, while the TX benchmark runs). The bidi step
+starts the TX benchmark once the RX load is flowing and stops that load
+only after the TX script exits, so the board transmits under RX load the
+whole time, and fails if the load ends first. The suite stops at the first
+step that fails:
 
 ```sh
 python scripts/run_board_suite.py --shell zcu106_r5   --interface "<host NIC>" --board-ip <board IPv4> --uart <console port>
@@ -386,7 +389,7 @@ Rates in Mbit/s:
 | | | D-cache off | 4.6 | 2.9 | 0.6 |
 | | | off | 1.7 | 0.9 | — |
 | Arty Vex | 100 MHz | on | 9.1 | 11.8 | 6.5 |
-| | | D-cache off | 4.5 | 2.7 | 0.7 |
+| | | D-cache off | 4.5 | 2.7 | 0.4 |
 | ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.8 |
 | | | D-cache off | 5.1 | 3.1 | 0.8 |
 | ZCU106 R5 | 500 MHz | on | 66.5 | 215.5 | 204.5 |

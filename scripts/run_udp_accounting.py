@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
+import threading
 import time
 
 from read_perf_stats import read_stats
@@ -51,6 +53,10 @@ SETTLE_S = 1.5
 # done and the load starts
 SENDING_MARKER = "sending_s="
 
+# Printed when the load ends: "stdin" if --until-stdin got its line, else
+# "duration"
+STOPPED_MARKER = "stopped_by="
+
 
 def delta(after, before, name: str) -> int:
     return int(getattr(after, name)) - int(getattr(before, name))
@@ -65,8 +71,20 @@ def control_check(board: str, bind: str, port: int, timeout: float) -> str:
     return f"{addr[0]}:{addr[1]} {data.decode('ascii', errors='replace').strip()}"
 
 
-def send_fast_sink(args: argparse.Namespace) -> int:
-    """Send the load and return how many datagrams went out."""
+def stdin_line() -> threading.Event:
+    """An event set once a line (or EOF) arrives on stdin."""
+    event = threading.Event()
+
+    def wait() -> None:
+        sys.stdin.readline()
+        event.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    return event
+
+
+def send_fast_sink(args: argparse.Namespace, stop: threading.Event | None) -> int:
+    """Send the load, until the duration or stop, and return the datagram count."""
     rate_bps = args.rate_mbps * 1_000_000.0
     interval = (args.packet_size * 8.0) / rate_bps if rate_bps > 0 else 0.0
     payload = bytes((i & 0xff) for i in range(args.packet_size))
@@ -81,7 +99,11 @@ def send_fast_sink(args: argparse.Namespace) -> int:
         packets = 0
         while True:
             now = time.perf_counter()
+            if stop is not None and stop.is_set():
+                stopped = "stdin"
+                break
             if now - start >= args.duration:
+                stopped = "duration"
                 break
             if interval > 0 and now < next_send:
                 time.sleep(min(next_send - now, 0.001))
@@ -97,6 +119,7 @@ def send_fast_sink(args: argparse.Namespace) -> int:
         f"sender=udp-sink packets={packets} bytes={sent_bytes} "
         f"time={elapsed:.3f}s rate={rate:.3f} Mbits/sec"
     )
+    print(f"{STOPPED_MARKER}{stopped}")
     return packets
 
 
@@ -112,6 +135,9 @@ def main() -> int:
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--rate-mbps", type=float, default=40.0)
     parser.add_argument("--duration", type=float, default=4.0)
+    parser.add_argument("--until-stdin", action="store_true",
+                        help="also stop sending once a line arrives on stdin; "
+                             "--duration is then the cap")
     parser.add_argument("--packet-size", type=int, default=1472)
     parser.add_argument("--timeout", type=float, default=1.0)
     parser.add_argument("--skip-control-check", action="store_true")
@@ -129,10 +155,12 @@ def main() -> int:
 
     before = read_stats(args.addr, args.tap, args.chain)
     # JTAG is idle from here until the final read; a caller that runs another
-    # JTAG tool alongside (run_board_suite.py's bidi step) waits for this line
+    # JTAG tool alongside (run_board_suite.py's bidi step) waits for this
+    # line, then with --until-stdin ends the load once that tool is done
+    stop = stdin_line() if args.until_stdin else None
     print(f"{SENDING_MARKER}{args.duration:g}", flush=True)
     started = time.time()
-    sent_frames = send_fast_sink(args)
+    sent_frames = send_fast_sink(args, stop)
     elapsed = time.time() - started
     time.sleep(SETTLE_S)
     after = read_stats(args.addr, args.tap, args.chain)

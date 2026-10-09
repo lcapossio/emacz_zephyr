@@ -22,13 +22,11 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import emacz_config as config
 import run_board_suite as suite
-from run_udp_accounting import SENDING_MARKER
 
 RX_KEYS = ("sink_payload_mbps", "host_to_sink_delivery_pct", "sent_pps", "sink_pps",
            "mac_rx_frames_delta", "eth_rx_errors_delta", "net_ipv4_drop_delta",
@@ -70,26 +68,12 @@ def measure_tx(args: argparse.Namespace, shell: suite.Shell) -> dict[str, float]
 
 
 def measure_bidi(args: argparse.Namespace, shell: suite.Shell) -> dict[str, float]:
-    """As the suite's bidi step: TX starts once RX has its first reading."""
-    rx_cmd = suite.bidi_rx_command(args, shell)
-    print("$ " + " ".join(rx_cmd), flush=True)
-    rx = subprocess.Popen(rx_cmd, cwd=suite.ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True)
-    assert rx.stdout is not None
-    rx_log: list[str] = []
-    tx: dict[str, float] = {}
-    for line in rx.stdout:
-        sys.stdout.write(line)
-        rx_log.append(line.rstrip())
-        if line.startswith(SENDING_MARKER):
-            tx = measure_tx(args, shell)
-            break
-    rest = rx.stdout.read()
-    sys.stdout.write(rest)
-    rx_log.extend(rest.splitlines())
-    rx.wait()
-    return {**{f"rx_{k}": v for k, v in values(rx_log, RX_KEYS).items()},
-            **{f"tx_{k}": v for k, v in tx.items()}}
+    """As the suite's bidi step; nothing counts unless TX ran under RX load."""
+    result = suite.run_bidi(args, shell)
+    if result.error is not None:
+        return {}
+    return {**{f"rx_{k}": v for k, v in values(result.rx_log, RX_KEYS).items()},
+            **{f"tx_{k}": v for k, v in values(result.tx_log, TX_KEYS).items()}}
 
 
 def main() -> int:

@@ -214,14 +214,48 @@ def option(command: list[str], name: str) -> str:
     return command[command.index(name) + 1]
 
 
-def test_bidi_rx_load_outlasts_the_tx_benchmark():
+def test_bidi_rx_load_runs_until_stopped():
     shell = suite.SHELLS["zcu106_r5"]
     rx = suite.bidi_rx_command(bidi_args(), shell)
-    tx = suite.tx_command(bidi_args(), shell)
     assert Path(rx[1]).name == "run_udp_accounting.py"
-    assert float(option(rx, "--duration")) == float(option(tx, "--duration")) + \
-        suite.BIDI_RX_MARGIN_S
+    assert "--until-stdin" in rx
+    assert float(option(rx, "--duration")) == suite.BIDI_RX_CAP_S
     assert option(rx, "--addr") == hex(shell.perf_stats)
+
+
+# Stand-ins for the RX script: one waits for the stop line, as
+# run_udp_accounting.py --until-stdin does; one runs out its duration first
+FAKE_RX_WAITS = ("import sys; print('sending_s=120', flush=True); sys.stdin.readline(); "
+                 "print('stopped_by=stdin')")
+FAKE_RX_ENDS = "print('sending_s=1', flush=True); print('stopped_by=duration')"
+
+
+def fake_bidi(monkeypatch, rx_code: str, tx_code: str):
+    monkeypatch.setattr(suite, "bidi_rx_command", lambda _a, _s: [sys.executable, "-c", rx_code])
+    monkeypatch.setattr(suite, "tx_command", lambda _a, _s: [sys.executable, "-c", tx_code])
+    return suite.run_bidi(bidi_args(), suite.SHELLS["vex"])
+
+
+def test_bidi_stops_the_rx_load_after_the_tx_benchmark(monkeypatch):
+    result = fake_bidi(monkeypatch, FAKE_RX_WAITS, "print('board_payload_mbps=7.5')")
+    assert result.error is None and result.rx_ok and result.tx_ok
+    assert "board_payload_mbps=7.5" in result.tx_log
+    assert "stopped_by=stdin" in result.rx_log
+
+
+def test_bidi_rejects_tx_that_outlasted_the_rx_load(monkeypatch):
+    result = fake_bidi(monkeypatch, FAKE_RX_ENDS, "print('board_payload_mbps=12.2')")
+    assert result.error is not None
+    assert not suite.test_bidi(bidi_args(), suite.SHELLS["vex"])
+
+
+def test_udp_sender_stops_on_request():
+    udp = load("run_udp_accounting")
+    stop = udp.threading.Event()
+    stop.set()
+    args = argparse.Namespace(rate_mbps=1.0, packet_size=64, target="127.0.0.1", port=9,
+                              bind="127.0.0.1", timeout=1.0, duration=60.0)
+    assert udp.send_fast_sink(args, stop) == 0
 
 
 def test_bidi_rx_rate_is_the_shells_unless_given():
