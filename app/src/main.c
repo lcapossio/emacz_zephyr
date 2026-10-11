@@ -47,6 +47,7 @@
 #define EMZ_REG_RX_BCAST 0x58u
 #define EMZ_REG_RX_MCAST 0x5cu
 #define EMZ_REG_RX_SIZE_1024_1518 0x74u
+#define EMZ_REG_RX_DROP 0x7cu
 #define EMZ_REG_GATE_MAGIC 0x100u
 #define EMZ_REG_GATE_GOOD_FRAMES 0x104u
 #define EMZ_REG_GATE_DROPPED_BAD_FRAMES 0x108u
@@ -571,6 +572,7 @@ static void update_perf_stats(void)
 	emacz_perf.mac_rx_err_align = emz_read(EMZ_REG_RX_ERR_ALIGN);
 	emacz_perf.mac_rx_err_overflow = emz_read(EMZ_REG_RX_ERR_OVERFLOW);
 	emacz_perf.mac_rx_err_oversize = emz_read(EMZ_REG_RX_ERR_OVERSIZE);
+	emacz_perf.mac_rx_drop = emz_read(EMZ_REG_RX_DROP);
 	emacz_perf.mac_rx_bcast = emz_read(EMZ_REG_RX_BCAST);
 	emacz_perf.mac_rx_mcast = emz_read(EMZ_REG_RX_MCAST);
 	emacz_perf.mac_rx_size_1024_1518 = emz_read(EMZ_REG_RX_SIZE_1024_1518);

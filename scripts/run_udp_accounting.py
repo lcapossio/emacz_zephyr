@@ -24,6 +24,7 @@ KEEP = [
     "mac_rx_frames",
     "gate_good_frames",
     "mac_rx_err",
+    "mac_rx_drop",
     "gate_dropped_bad_frames",
     "gate_dropped_overflow_frames",
     "gate_drain_tready_low_cycles",
@@ -191,6 +192,8 @@ def main() -> int:
     recv_calls = delta(after, before, "sink_recvfrom_calls")
     recv_cycles = delta(after, before, "sink_recvfrom_cycles_total")
     cycles_per_sec = int(after.cycles_per_sec)
+    # Frames the MAC dropped whole, for want of RX FIFO room
+    mac_drops = delta(after, before, "mac_rx_drop")
     gate_drops = (
         delta(after, before, "gate_dropped_bad_frames") +
         delta(after, before, "gate_dropped_overflow_frames")
@@ -216,6 +219,7 @@ def main() -> int:
     passed = (
         sink_packets >= args.expect_min_packets and
         sink_errors == 0 and
+        mac_drops == 0 and
         gate_drops == 0 and
         rx_failures == 0 and
         dma_failures == 0

@@ -155,7 +155,7 @@ def main() -> int:
     print(f"rx_dma_failed+={rx_dma_failed} tx_dma_failed+={tx_dma_failed}")
     print(f"sink_packets_during_fault={faulted.sink_packets - before.sink_packets}")
     print(f"sent_after={sent} board_after={after.sink_packets - faulted.sink_packets}")
-    post = ("mac_rx_frames", "gate_good_frames", "gate_dropped_bad_frames",
+    post = ("mac_rx_frames", "mac_rx_drop", "gate_good_frames", "gate_dropped_bad_frames",
             "gate_dropped_overflow_frames", "eth_rx_errors", "net_udp_drop",
             "sink_recv_errors")
     print("post " + " ".join(

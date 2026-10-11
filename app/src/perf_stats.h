@@ -14,7 +14,7 @@
 
 #define EMACZ_PERF_STATS_MAGIC 0x45505a53u
 /* scripts/read_perf_stats.py mirrors this layout; bump both together. */
-#define EMACZ_PERF_STATS_VERSION 20u
+#define EMACZ_PERF_STATS_VERSION 21u
 
 /*
  * Counters the app can see from outside the driver: the MAC's own registers,
@@ -34,6 +34,8 @@ struct emacz_perf_stats {
 	uint32_t mac_rx_err_align;
 	uint32_t mac_rx_err_overflow;
 	uint32_t mac_rx_err_oversize;
+	/* frames the MAC dropped whole: no RX FIFO room at their start */
+	uint32_t mac_rx_drop;
 	uint32_t mac_rx_bcast;
 	uint32_t mac_rx_mcast;
 	uint32_t mac_rx_size_1024_1518;

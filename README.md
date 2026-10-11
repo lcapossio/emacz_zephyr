@@ -453,8 +453,8 @@ delivered with an error and discarded by the RX gate) and frames it drops
 whole because the FIFO had no room at their start (`RX_DROP`, `0x7C`).
 At line rate most are dropped whole: in 10 s at 957 Mbit/s the ZCU106 R5
 handed 321k frames to the DMA, 114k of them truncated, and dropped 486k
-whole. The perf stats block does not carry `RX_DROP` yet; read it over
-JTAG-AXI.
+whole. The perf stats block carries `RX_DROP` as `mac_rx_drop`, and
+`run_udp_accounting.py` fails a run in which the MAC dropped any frame.
 
 With both directions loaded, RX takes the CPU first: the driver's RX
 thread and the app's sink thread outrank the thread running the TX

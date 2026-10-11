@@ -17,7 +17,7 @@ import fcapz_jtag  # noqa: E402
 
 # Must match EMACZ_PERF_STATS_VERSION in app/src/perf_stats.h. FIELDS
 # mirrors that layout, so any other version would be read at wrong offsets.
-PERF_STATS_VERSION = 20
+PERF_STATS_VERSION = 21
 
 FIELDS = (
     ("magic", "u32"),
@@ -33,6 +33,7 @@ FIELDS = (
     ("mac_rx_err_align", "u32"),
     ("mac_rx_err_overflow", "u32"),
     ("mac_rx_err_oversize", "u32"),
+    ("mac_rx_drop", "u32"),
     ("mac_rx_bcast", "u32"),
     ("mac_rx_mcast", "u32"),
     ("mac_rx_size_1024_1518", "u32"),
@@ -173,7 +174,7 @@ def main() -> int:
 
     interesting = {
         "magic", "version", "uptime_ms",
-        "mac_rx_frames", "mac_rx_bytes", "mac_rx_err", "mac_tx_frames", "mac_tx_bytes",
+        "mac_rx_frames", "mac_rx_bytes", "mac_rx_err", "mac_rx_drop", "mac_tx_frames", "mac_tx_bytes",
         "gate_good_frames", "gate_dropped_bad_frames", "gate_dropped_overflow_frames",
         "eth_rx_errors", "eth_rx_dma_failed", "eth_tx_dma_failed", "net_ipv4_recv", "net_ipv4_drop", "net_udp_recv", "net_udp_drop",
         "net_processing_error", "net_ip_chkerr", "net_ip_protoerr",
