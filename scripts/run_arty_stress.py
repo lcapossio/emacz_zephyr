@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 import emacz_config as config
 
-# eth_err is the driver's Ethernet errors.rx: frames the MAC rejected plus
-# frames the driver dropped. dma_err counts AXI DMA halts, RX and TX.
+# eth_err is the driver's Ethernet errors.rx: frames the MAC rejected or
+# dropped whole, plus frames the driver dropped. dma_err counts AXI DMA halts, RX and TX.
 ERROR_COUNTERS = (
     "sink_err",
     "mac_err",

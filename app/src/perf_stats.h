@@ -56,7 +56,10 @@ struct emacz_perf_stats {
 	uint32_t gate_drain_tready_low_cycles;
 	uint32_t gate_drain_tready_low_cycles_max;
 	uint32_t gate_drain_tready_low_samples;
-	/* Ethernet errors.rx: frames the MAC rejected plus frames the driver dropped */
+	/*
+	 * Ethernet errors.rx: frames the MAC rejected or dropped whole (RX_DROP)
+	 * plus frames the driver dropped
+	 */
 	uint32_t eth_rx_errors;
 	/* AXI DMA errors that halted S2MM / MM2S; each one starts a recovery */
 	uint32_t eth_rx_dma_failed;

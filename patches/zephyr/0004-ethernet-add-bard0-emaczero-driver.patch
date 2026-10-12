@@ -107,10 +107,10 @@ index 00000000000..fdd6298b13d
 +endif # ETH_EMACZERO
 diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
 new file mode 100644
-index 00000000000..969cde9a0ab
+index 00000000000..147d374adfd
 --- /dev/null
 +++ b/drivers/ethernet/eth_emaczero.c
-@@ -0,0 +1,877 @@
+@@ -0,0 +1,881 @@
 +/*
 + * Copyright (c) 2026 Leonardo Capossio - bard0 design
 + * SPDX-License-Identifier: Apache-2.0
@@ -156,6 +156,8 @@ index 00000000000..969cde9a0ab
 +#define EMZ_REG_RX_ERR_OVERSIZE 0x54
 +#define EMZ_REG_RX_BCAST        0x58
 +#define EMZ_REG_RX_MCAST        0x5c
++/* frames dropped whole, no RX FIFO room at their start; 0 on older cores */
++#define EMZ_REG_RX_DROP         0x7c
 +
 +/* VERSION[15:0] is the core identifier, ASCII "EM" */
 +#define EMZ_VERSION_ID_MASK GENMASK(15, 0)
@@ -871,8 +873,10 @@ index 00000000000..969cde9a0ab
 +	data->stats.error_details.rx_frame_errors = emz_read(cfg, EMZ_REG_RX_ERR_SYMBOL);
 +	data->stats.error_details.rx_over_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERFLOW);
 +	data->stats.error_details.rx_long_length_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERSIZE);
-+	/* frames the MAC rejected plus frames the driver had to drop */
-+	data->stats.errors.rx = emz_read(cfg, EMZ_REG_RX_ERR) + data->rx_dropped;
++	data->stats.error_details.rx_missed_errors = emz_read(cfg, EMZ_REG_RX_DROP);
++	/* frames the MAC rejected or dropped, plus frames the driver had to drop */
++	data->stats.errors.rx = emz_read(cfg, EMZ_REG_RX_ERR) +
++				data->stats.error_details.rx_missed_errors + data->rx_dropped;
 +
 +	return &data->stats;
 +}

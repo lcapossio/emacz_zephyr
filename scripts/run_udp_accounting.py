@@ -198,9 +198,10 @@ def main() -> int:
         delta(after, before, "gate_dropped_bad_frames") +
         delta(after, before, "gate_dropped_overflow_frames")
     )
-    # Frames the MAC rejected plus frames the driver dropped. The stack's
-    # net_*_drop also count the host's background traffic for other
-    # addresses and ports, so they are printed above but not judged.
+    # Frames the MAC rejected or dropped whole plus frames the driver
+    # dropped. The stack's net_*_drop also count the host's background
+    # traffic for other addresses and ports, so they are printed above but
+    # not judged.
     rx_failures = delta(after, before, "eth_rx_errors")
     dma_failures = delta(after, before, "eth_rx_dma_failed")
 
