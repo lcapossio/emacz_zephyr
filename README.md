@@ -3,10 +3,9 @@
 emacz_zephyr integrates [emacZero](https://github.com/lcapossio/emacZero) with
 the AMD/Xilinx Zephyr tree for the Arty A7-100T, with two interchangeable
 CPU options: AMD MicroBlaze V (`mbv32`) and SpinalHDL VexRiscv-full. Both
-run the same Zephyr app, driver, and emacZero MAC — the MBV shell clocks
-CPU and peripherals from MIG's 81.25 MHz `ui_clk`, while the Vex shell runs
-its SoC at 100 MHz `sys_clk` and treats `ui_clk` as a downstream DDR-only
-domain. The same app also targets the AMD ZCU106 over SFP, on a VexRiscv
+run the same Zephyr app, driver, and emacZero MAC, and both shells run
+their SoC at 100 MHz `sys_clk` with MIG's 81.25 MHz `ui_clk` as a
+downstream DDR-only domain. The same app also targets the AMD ZCU106 over SFP, on a VexRiscv
 in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
 
 - [Features](#features)
@@ -110,10 +109,9 @@ west build -b arty_a7_vex -d build-vex-emac app -- \
   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
 
-The two boards are not interchangeable: `arty_a7_vex` sets a 100 MHz timer
-base and builds without the C extension, which the RV32IMA VexRiscv core
-lacks. Booting an `mbv32` image on the Vex bitstream traps on the first
-compressed instruction; the reverse gives a ~23% timer error.
+The two boards are not interchangeable: `arty_a7_vex` builds without the C
+extension, which the RV32IMA VexRiscv core lacks, so an `mbv32` image
+booted on the Vex bitstream traps on its first compressed instruction.
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
 a Zephyr extra module, so the `arty_a7_vex` board, its SoC and the app
@@ -200,8 +198,10 @@ MicroBlaze V shell (`hardware/scripts/build_arty_a7_mbv.py`, Zephyr board
 target `mbv32`):
 
 - MicroBlaze V RV32IMAC with Zicsr/Zifencei and I/D caches.
-- CPU and every AXI/AXI-Lite fabric run on `mig_ddr/ui_clk` at **81.25 MHz**
-  (MIG PHY ratio 4:1, 325 MHz DDR). No separate SoC clock.
+- CPU and SoC-side AXI/AXI-Lite fabrics, the AXI DMA and emacZero run on
+  `sys_clk` at **100 MHz**, as on the Vex shell; MIG's 81.25 MHz `ui_clk`
+  (PHY ratio 4:1, 325 MHz DDR) is a private domain behind a CDC in the DDR
+  SmartConnect.
 - fcapz EJTAG-AXI on BSCANE2 USER3 (chain 3), EJTAG-UART on USER4, ELA on
   USER1, EIO reset on USER1 chain 1.
 
@@ -225,7 +225,7 @@ and `soc/bard0/vexriscv_axi/`):
 
 Top-level RTL diagrams (click for full-size SVG):
 
-**MicroBlaze V shell (81.25 MHz single domain):**
+**MicroBlaze V shell (100 MHz SoC + 81.25 MHz DDR UI):**
 
 <a href="docs/architecture_mbv.svg">
   <img src="docs/architecture_mbv.svg" alt="Arty A7-100T MicroBlaze V SoC">
@@ -358,16 +358,16 @@ tests a board that is already running.
 ## Resource Usage and Frequency
 
 Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, both shells timing
-MET at their target frequencies (MBV: 81.25 MHz `ui_clk`; Vex: 100 MHz
-`sys_clk` + 81.25 MHz `ui_clk` behind CDC).
+MET at the same frequencies: 100 MHz `sys_clk` + 81.25 MHz `ui_clk` behind
+CDC.
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,705 (54.74%) | 28,902 (45.59%) | −5,803 (−16.7%) |
-| Slice Registers | 46,110 (36.36%) | 29,373 (23.16%) | −16,737 (−36.3%) |
-| BRAM Tiles | 44 (32.59%) | 36 (26.67%) | −8 (−18.2%) |
+| Slice LUTs | 34,574 (54.53%) | 28,944 (45.65%) | −5,630 (−16.3%) |
+| Slice Registers | 45,885 (36.19%) | 29,419 (23.20%) | −16,466 (−35.9%) |
+| BRAM Tiles | 43 (31.85%) | 36 (26.67%) | −7 (−16.3%) |
 | DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
-| Setup WNS | +0.680 ns | +0.282 ns | — |
+| Setup WNS | +0.054 ns | +0.023 ns | — |
 
 Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
 I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including
@@ -387,11 +387,11 @@ except the last. Rates in Mbit/s:
 
 | Shell | CPU clock | Caches | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
 |---|---|---|---|---|---|---|
-| Arty MBV | 81.25 MHz | on | 9.5 | 9.2 | 5.3 | 0.00 / 9.2 |
-| | | D-cache off | 4.6 | 2.9 | 0.6 | 0.05 / 4.2 |
-| | | off | 1.7 | 0.9 | 0 ¹ | 0 ¹ / 1.4 |
-| Arty Vex | 100 MHz | on | 9.4 | 11.8 | 6.4 | 0.00 / 9.0 |
-| | | D-cache off | 4.5 | 2.7 | 0.4 | 0 ¹ / 4.2 |
+| Arty MBV | 100 MHz | on | 9.3 | 8.9 | 4.9 | 0.00 / 8.9 |
+| | | D-cache off | 4.3 | 2.7 | 0.4 | 0.05 / 4.0 |
+| | | off | 1.8 | 0.9 | 0 ¹ | 0 ¹ / 1.5 |
+| Arty Vex | 100 MHz | on | 9.4 | 11.5 | 6.3 | 0.36 / 8.9 |
+| | | D-cache off | 4.4 | 2.7 | 0.4 | 0.06 / 4.1 |
 | ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.7 | 0.00 / 11.4 |
 | | | D-cache off | 5.1 | 3.1 | 0.8 | 0.06 / 4.7 |
 | ZCU106 R5 | 500 MHz | on | 66.5 | 215.3 | 204.1 | 0.01 / 66.2 |
@@ -423,7 +423,8 @@ The caches:
 The Arty and ZCU106 Vex shells differ only in the memory path (DDR3
 through MIG at 81.25 MHz behind a CDC, against PS DDR4 through
 `S_AXI_HP0_FPD`) and the link (100 Mbit/s MII, 1 Gbit/s SFP), which neither
-rate comes near. On the Arty, MBV runs at MIG's 81.25 MHz.
+rate comes near. At the same clock the Arty's two CPUs are within 2% on RX
+at every cache setting; Vex's faster byte-store loop shows on TX.
 
 On the soft CPUs the RX ceiling is set by memory latency, not the core.
 The socket's copy of each payload out of the uncached frame buffers costs

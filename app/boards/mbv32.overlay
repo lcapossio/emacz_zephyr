@@ -73,23 +73,20 @@
 };
 
 /*
- * On this Arty A7 MBV shell the AXI fabric (and the AXI Timer that backs
- * sys_clock_cycle_get_32) is clocked from MIG ui_clk at ~81.25 MHz, not the
- * 100 MHz board oscillator. Override the upstream mbv32 DTS clock-frequency
- * values so any DT-derived rate math matches hardware. Rounded from
- * SOC_CLK_HZ=81247969 in hardware/scripts/build_arty_a7_mbv.py so it is
- * cleanly divisible by CONFIG_SYS_CLOCK_TICKS_PER_SEC (25 ppm error).
+ * The CPU, the AXI fabric and the AXI Timer that backs
+ * sys_clock_cycle_get_32 run on the shell's 100 MHz SoC clock (SOC_CLK_HZ in
+ * hardware/scripts/build_arty_a7_mbv.py), as in the VexRiscv shell.
  */
 &clk100 {
-	clock-frequency = <81250000>;
+	clock-frequency = <100000000>;
 };
 
 &cpu_0 {
-	clock-frequency = <81250000>;
+	clock-frequency = <100000000>;
 };
 
 &cpus {
-	timebase-frequency = <81250000>;
+	timebase-frequency = <100000000>;
 };
 
 /*
