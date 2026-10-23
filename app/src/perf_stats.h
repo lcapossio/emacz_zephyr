@@ -14,7 +14,7 @@
 
 #define EMACZ_PERF_STATS_MAGIC 0x45505a53u
 /* scripts/read_perf_stats.py mirrors this layout; bump both together. */
-#define EMACZ_PERF_STATS_VERSION 21u
+#define EMACZ_PERF_STATS_VERSION 22u
 
 /*
  * Counters the app can see from outside the driver: the MAC's own registers,
@@ -98,6 +98,23 @@ struct emacz_perf_stats {
 	uint32_t sink_first_cycle;
 	uint32_t sink_last_cycle;
 	uint32_t sink_last_len;
+	/*
+	 * CONFIG_EMACZ_APP_THREAD_USAGE, else 0: low 32 bits of the cycles each
+	 * thread has run, refreshed every 50 ms, so deltas wrap after 2^32
+	 * cycles (43 s at 100 MHz). ISR time counts to the interrupted thread.
+	 */
+	uint32_t ru_samples;
+	/* every thread, idle included: elapsed cycles */
+	uint32_t ru_all_cycles;
+	uint32_t ru_idle_cycles;
+	/* the driver RX thread, which runs the stack's RX path inline */
+	uint32_t ru_rx_cycles;
+	uint32_t ru_sink_cycles;
+	uint32_t ru_control_cycles;
+	uint32_t ru_main_cycles;
+	uint32_t ru_workq_cycles;
+	/* the thread that writes this block */
+	uint32_t ru_usage_cycles;
 };
 
 BUILD_ASSERT(sizeof(struct emacz_perf_stats) <= EMACZ_HOSTIO_SLOT_SIZE,

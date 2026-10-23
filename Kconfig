@@ -27,4 +27,17 @@ config EMACZ_APP_PAYLOAD_BUF_OFFSET
 	  destination share their alignment: 2 lets the socket copies run on
 	  words instead of bytes.
 
+config EMACZ_APP_THREAD_USAGE
+	bool "Publish per-thread CPU time in the perf stats block"
+	select THREAD_RUNTIME_STATS
+	select THREAD_MONITOR
+	select THREAD_NAME
+	help
+	  Run a high-priority thread that every 50 ms writes the cycles the
+	  driver RX, UDP sink, control, main and system work queue threads and
+	  the idle thread have used into the perf stats block, and refreshes
+	  the MAC and network-stack counters there, which main otherwise does
+	  once a second and not at all while a cooperative RX path holds the
+	  CPU. For measurements: it adds 20 wakeups a second.
+
 endmenu

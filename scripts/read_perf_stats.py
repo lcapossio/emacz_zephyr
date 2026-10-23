@@ -17,7 +17,7 @@ import fcapz_jtag  # noqa: E402
 
 # Must match EMACZ_PERF_STATS_VERSION in app/src/perf_stats.h. FIELDS
 # mirrors that layout, so any other version would be read at wrong offsets.
-PERF_STATS_VERSION = 21
+PERF_STATS_VERSION = 22
 
 FIELDS = (
     ("magic", "u32"),
@@ -85,7 +85,19 @@ FIELDS = (
     ("sink_first_cycle", "u32"),
     ("sink_last_cycle", "u32"),
     ("sink_last_len", "u32"),
+    # v22: CONFIG_EMACZ_APP_THREAD_USAGE, low 32 bits of cycles per thread
+    ("ru_samples", "u32"),
+    ("ru_all_cycles", "u32"),
+    ("ru_idle_cycles", "u32"),
+    ("ru_rx_cycles", "u32"),
+    ("ru_sink_cycles", "u32"),
+    ("ru_control_cycles", "u32"),
+    ("ru_main_cycles", "u32"),
+    ("ru_workq_cycles", "u32"),
+    ("ru_usage_cycles", "u32"),
 )
+# v21 is v22 without the ru_* fields, which then read as 0
+V21_DROPPED = tuple(name for name, _ in FIELDS if name.startswith("ru_"))
 
 
 def field_offsets() -> tuple[dict[str, int], int]:
@@ -153,7 +165,9 @@ def read_stats(
     for name, kind in FIELDS:
         fmt = "<Q" if kind == "u64" else "<I"
         values[name] = struct.unpack_from(fmt, data, offsets[name])[0]
-    if values["version"] != PERF_STATS_VERSION:
+    if values["version"] == 21:
+        values.update(dict.fromkeys(V21_DROPPED, 0))
+    elif values["version"] != PERF_STATS_VERSION:
         raise RuntimeError(
             f"perf stats layout v{values['version']} on the board, this reader "
             f"expects v{PERF_STATS_VERSION}: rebuild the firmware or update FIELDS"

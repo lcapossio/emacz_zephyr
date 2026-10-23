@@ -33,7 +33,10 @@ import run_board_suite as suite
 RX_KEYS = ("sink_payload_mbps", "sent_payload_mbps", "host_to_sink_delivery_pct",
            "sent_pps", "sink_pps",
            "mac_rx_frames_delta", "mac_rx_drop_delta", "eth_rx_errors_delta", "net_ipv4_drop_delta",
-           "net_udp_drop_delta")
+           "net_udp_drop_delta", "sink_recvfrom_avg_us",
+           *(f"ru_{t}_pct" for t in ("idle", "rx", "sink", "control", "main", "workq", "usage",
+                                     "other")),
+           "ru_rx_cycles_per_pkt", "ru_sink_cycles_per_pkt")
 TX_KEYS = ("board_payload_mbps", "host_payload_mbps_board_window", "tx_frames_delta")
 
 

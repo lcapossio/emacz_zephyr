@@ -60,7 +60,31 @@ STOPPED_MARKER = "stopped_by="
 
 
 def delta(after, before, name: str) -> int:
-    return int(getattr(after, name)) - int(getattr(before, name))
+    diff = int(getattr(after, name)) - int(getattr(before, name))
+    # the ru_* cycle counts are the low 32 bits
+    return diff & 0xFFFFFFFF if name.startswith("ru_") else diff
+
+
+RU_THREADS = ("idle", "rx", "sink", "control", "main", "workq", "usage")
+
+
+def print_thread_usage(after, before, sink_packets: int) -> None:
+    """CPU share of each thread over the window, and RX-path cycles per packet."""
+    if delta(after, before, "ru_samples") == 0:
+        return
+    all_cycles = delta(after, before, "ru_all_cycles")
+    if all_cycles == 0:
+        return
+    named = 0
+    for name in RU_THREADS:
+        cycles = delta(after, before, f"ru_{name}_cycles")
+        named += cycles
+        print(f"ru_{name}_pct={cycles * 100.0 / all_cycles:.2f}")
+    print(f"ru_other_pct={(all_cycles - named) * 100.0 / all_cycles:.2f}")
+    if sink_packets > 0:
+        for name in ("rx", "sink"):
+            cycles = delta(after, before, f"ru_{name}_cycles")
+            print(f"ru_{name}_cycles_per_pkt={cycles / sink_packets:.0f}")
 
 
 def control_check(board: str, bind: str, port: int, timeout: float) -> str:
@@ -212,6 +236,7 @@ def main() -> int:
         print(f"sink_pps={sink_packets / elapsed:.1f}")
     if sent_frames > 0:
         print(f"host_to_sink_delivery_pct={sink_packets * 100.0 / sent_frames:.3f}")
+    print_thread_usage(after, before, sink_packets)
     if recv_calls > 0 and cycles_per_sec > 0:
         avg_cycles = recv_cycles / recv_calls
         print(f"sink_recvfrom_avg_cycles={avg_cycles:.1f}")

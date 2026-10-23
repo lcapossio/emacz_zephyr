@@ -132,6 +132,8 @@ static void raw_uart_reg(const char *name, uint32_t reg)
 	raw_uart_puts("\r\n");
 }
 
+static void update_perf_stats(void);
+
 static void read_net_stats(struct net_stats *stats, struct net_stats_eth *eth)
 {
 	memset(stats, 0, sizeof(*stats));
@@ -622,6 +624,87 @@ static void update_perf_stats(void)
 	emacz_perf.net_icmp_typeerr = stats.icmp.typeerr;
 }
 
+#if defined(CONFIG_EMACZ_APP_THREAD_USAGE)
+#define USAGE_THREAD_STACK_SIZE 1024u
+/* above every other thread, so the samples keep coming under a flood */
+#define USAGE_THREAD_PRIORITY K_HIGHEST_THREAD_PRIO
+#define USAGE_PERIOD K_MSEC(50)
+
+K_THREAD_STACK_DEFINE(usage_thread_stack, USAGE_THREAD_STACK_SIZE);
+static struct k_thread usage_thread;
+
+struct usage_lookup {
+	const char *name;
+	k_tid_t tid;
+};
+
+static void usage_lookup_cb(const struct k_thread *thread, void *user_data)
+{
+	struct usage_lookup *lookup = user_data;
+	k_tid_t tid = (k_tid_t)thread;
+
+	if (strcmp(k_thread_name_get(tid), lookup->name) == 0) {
+		lookup->tid = tid;
+	}
+}
+
+static k_tid_t usage_find(const char *name)
+{
+	struct usage_lookup lookup = {.name = name};
+
+	k_thread_foreach(usage_lookup_cb, &lookup);
+	return lookup.tid;
+}
+
+static uint32_t usage_cycles(k_tid_t tid)
+{
+	k_thread_runtime_stats_t stats;
+
+	if (tid == NULL || k_thread_runtime_stats_get(tid, &stats) != 0) {
+		return 0u;
+	}
+	return (uint32_t)stats.execution_cycles;
+}
+
+static void usage_thread_fn(void *arg1, void *arg2, void *arg3)
+{
+	k_tid_t rx = usage_find("emaczero_rx");
+	k_tid_t sink = usage_find("udp_sink");
+	k_tid_t control = usage_find("emacz_control");
+	k_tid_t main_tid = usage_find("main");
+	k_tid_t workq = usage_find("sysworkq");
+
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	while (true) {
+		k_thread_runtime_stats_t all;
+
+		k_sleep(USAGE_PERIOD);
+		(void)k_thread_runtime_stats_all_get(&all);
+		emacz_perf.ru_all_cycles = (uint32_t)all.execution_cycles;
+		emacz_perf.ru_idle_cycles = (uint32_t)all.idle_cycles;
+		emacz_perf.ru_rx_cycles = usage_cycles(rx);
+		emacz_perf.ru_sink_cycles = usage_cycles(sink);
+		emacz_perf.ru_control_cycles = usage_cycles(control);
+		emacz_perf.ru_main_cycles = usage_cycles(main_tid);
+		emacz_perf.ru_workq_cycles = usage_cycles(workq);
+		emacz_perf.ru_usage_cycles = usage_cycles(k_current_get());
+		emacz_perf.ru_samples++;
+		update_perf_stats();
+	}
+}
+
+static void start_usage(void)
+{
+	k_thread_create(&usage_thread, usage_thread_stack,
+			K_THREAD_STACK_SIZEOF(usage_thread_stack), usage_thread_fn, NULL, NULL,
+			NULL, USAGE_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&usage_thread, "emacz_usage");
+}
+#endif
+
 int main(void)
 {
 	struct net_if *iface;
@@ -675,6 +758,9 @@ int main(void)
 		start_udp_sink();
 #endif
 		start_control();
+#if defined(CONFIG_EMACZ_APP_THREAD_USAGE)
+		start_usage();
+#endif
 	}
 
 	while (true) {
@@ -686,7 +772,10 @@ int main(void)
 		now_cycle = k_cycle_get_32();
 		now_uptime = k_uptime_get();
 		emacz_perf.uptime_ms = (uint32_t)now_uptime;
-		update_perf_stats();
+		/* with thread usage on, its thread refreshes them every 50 ms */
+		if (!IS_ENABLED(CONFIG_EMACZ_APP_THREAD_USAGE)) {
+			update_perf_stats();
+		}
 		if ((now_uptime - last_uptime) >= 1000) {
 			emacz_perf.cycle_delta_1s = now_cycle - last_cycle;
 			last_cycle = now_cycle;
