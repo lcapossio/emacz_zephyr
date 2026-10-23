@@ -460,10 +460,40 @@ counts it in `errors.rx`; the perf stats block carries it as
 dropped any frame.
 
 With both directions loaded, RX takes the CPU first: the driver's RX
-thread and the app's sink thread outrank the thread running the TX
-benchmark, so TX gets what RX leaves. At line rate RX leaves nothing: on
-every shell the TX benchmark sends almost nothing while RX holds its
-ceiling, and its 5 s run ends late.
+thread, which runs the stack's RX path inline, and the app's sink thread
+are cooperative and outrank the thread running the TX benchmark. Above the
+RX ceiling frames never stop coming, so one of them is always ready and,
+on their own, TX gets nothing: the full-duplex column above was measured
+that way. The app therefore sets `CONFIG_ETH_EMACZERO_RX_BUDGET_US=20000`:
+after 20 ms of RX in a row the RX thread drops to preemptible priority 4
+(`ETH_EMACZERO_RX_YIELD_PRIORITY`, the TX thread's) and straight back, so a
+ready TX thread runs for up to its 20 ms time slice; with none ready, RX
+carries on at once. Frames arriving meanwhile wait in the posted buffers or
+are dropped whole by the MAC. The budget is time, not frames, so the turns
+do not depend on what a frame costs the CPU: a 64-frame budget gave the
+soft CPUs much the same split but left the R5, which handles 64 frames in
+~3 ms, 29.8 Mbit/s of RX against 173 of TX. RX alone, TX alone and TX with
+3 Mbit/s of RX are unchanged within noise (the R5's RX at 400 Mbit/s
+offered: 238.6 against 240.7), and full duplex splits (TX / RX, Mbit/s):
+
+| Shell | Payload | Budget off | 20 ms budget |
+|---|---|---|---|
+| Arty MBV, 100 MHz | as received | 0.00 / 8.9 | 1.75 / 7.3 |
+| | word copies ² | 0.00 / 19.6 | 4.56 / 14.3 |
+| Arty Vex | as received | 0.36 / 8.9 | 2.15 / 7.5 |
+| | word copies ² | 0.56 / 18.9 | 5.41 / 13.2 |
+| ZCU106 Vex | as received | 0.00 / 11.2 | 3.72 / 8.0 |
+| ZCU106 R5, cacheable frame buffers | as received | 0 ¹ / 240.7 | 111.4 / 103.9 |
+
+On the soft CPUs RX keeps the larger share: most of their RX work is the
+sink's copy out of the uncached buffers, which the driver's budget does
+not cover, and the sink, cooperative, runs before the TX thread at each
+yield. A budget of 0 restores the original behaviour
+(`app/perf/rx_budget_off.conf`).
+
+² `app/perf/payload_align2.conf`: the app's socket buffers start 2 bytes
+off a word boundary, as the payload does in its frame, so the socket
+copies run on words.
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.

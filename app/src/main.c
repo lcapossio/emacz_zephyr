@@ -68,7 +68,7 @@
 #define UDP_SINK_PORT 5001u
 #define UDP_SINK_BUFFER_SIZE 1536u
 #define UDP_SINK_THREAD_STACK_SIZE 2048u
-#define UDP_SINK_THREAD_PRIORITY -2
+#define UDP_SINK_THREAD_PRIORITY CONFIG_EMACZ_APP_SINK_THREAD_PRIORITY
 #define CONTROL_PORT 5002u
 #define CONTROL_THREAD_STACK_SIZE 2048u
 #define CONTROL_THREAD_PRIORITY 4
@@ -200,10 +200,14 @@ static uint8_t *const udp_sink_buf = &udp_sink_raw[CONFIG_EMACZ_APP_PAYLOAD_BUF_
 /*
  * The sink thread is the only writer of the sink_* block. It brackets every
  * update with sink_seq so that readers (the control thread, the JTAG host)
- * can tell a copy that straddled one.
+ * can tell a copy that straddled one. A preemptible sink must not be switched
+ * out mid-update: read_sink() spins while sink_seq is odd, and a reader that
+ * outranks the sink, or shares its priority without time slicing, would spin
+ * for good.
  */
 static inline void sink_stats_begin(void)
 {
+	k_sched_lock();
 	emacz_perf.sink_seq++;
 	compiler_barrier();
 }
@@ -212,6 +216,7 @@ static inline void sink_stats_end(void)
 {
 	compiler_barrier();
 	emacz_perf.sink_seq++;
+	k_sched_unlock();
 }
 
 static void sink_account_packet(uint32_t payload_len)

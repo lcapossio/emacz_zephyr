@@ -24,10 +24,10 @@ index 215a05fa038..3937cac6564 100644
  source "drivers/ethernet/Kconfig.dwmac"
 diff --git a/drivers/ethernet/Kconfig.emaczero b/drivers/ethernet/Kconfig.emaczero
 new file mode 100644
-index 00000000000..fdd6298b13d
+index 00000000000..9f192b5c47b
 --- /dev/null
 +++ b/drivers/ethernet/Kconfig.emaczero
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,128 @@
 +# bard0 emacZero Ethernet MAC
 +
 +# Copyright (c) 2026 Leonardo Capossio - bard0 design
@@ -98,19 +98,70 @@ index 00000000000..fdd6298b13d
 +	  stack.
 +
 +config ETH_EMACZERO_RX_THREAD_PRIORITY
-+	int "RX thread cooperative priority"
++	int "RX thread priority"
 +	default 2
 +	help
-+	  Cooperative priority, as passed to K_PRIO_COOP(), of the thread that
-+	  hands received frames to the network stack.
++	  Priority of the thread that hands received frames to the network
++	  stack, as passed to K_PRIO_COOP(), or to K_PRIO_PREEMPT() with
++	  ETH_EMACZERO_RX_THREAD_PREEMPTIBLE.
++
++config ETH_EMACZERO_RX_THREAD_PREEMPTIBLE
++	bool "Preemptible RX thread"
++	depends on PREEMPT_ENABLED
++	help
++	  Run the RX thread at a preemptible priority. A cooperative RX thread
++	  never gives up the CPU while frames keep arriving, so under a flood
++	  lower-priority threads, a sender among them, do not run at all. A
++	  preemptible one at the same priority as those threads shares the
++	  CPU with them through time slicing (TIMESLICING).
++
++config ETH_EMACZERO_RX_BUDGET_US
++	int "RX time, in microseconds, before the RX thread yields the CPU"
++	default 0
++	range 0 1000000
++	depends on PREEMPT_ENABLED && TIMESLICING
++	help
++	  Once the RX thread has been handing frames to the stack for this
++	  long without running out of them, it drops to the preemptible
++	  priority ETH_EMACZERO_RX_YIELD_PRIORITY and straight back. A
++	  cooperative RX path keeps the CPU while frames keep arriving, so
++	  under a flood the threads below it, a sender among them, never run.
++	  Here, threads ready at the yield priority or above run in between;
++	  with none ready, the RX thread carries on at once, so RX alone loses
++	  nothing. Past what the CPU can take, frames wait in the posted
++	  buffers and the MAC drops the rest without costing CPU time.
++
++	  The time is elapsed time from the first frame of a burst, waits for
++	  a free packet and whatever runs during them included; a burst ends
++	  when no frame is waiting, or at the yield. Against a thread at the
++	  yield priority that never blocks, RX gets this long for each of
++	  that thread's time slices (TIMESLICE_SIZE), whatever a frame costs
++	  the CPU: set it to the slice for roughly equal turns. This is a
++	  courtesy, not a bound: a burst can overrun by one frame's delivery,
++	  which may include waits for a free packet. 0 never yields.
++
++config ETH_EMACZERO_RX_YIELD_PRIORITY
++	int "Preemptible priority the RX thread yields to"
++	depends on ETH_EMACZERO_RX_BUDGET_US > 0
++	default 0
++	help
++	  Priority, as passed to K_PRIO_PREEMPT(), that the RX thread drops to
++	  once its budget is spent: that of the lowest-priority thread that
++	  should share the CPU with RX under a flood. A thread at this
++	  priority that never blocks hands the CPU back when its time slice
++	  ends, so TIMESLICE_SIZE must be non-zero and TIMESLICE_PRIORITY at
++	  or above this priority; threads below it get nothing. With a
++	  preemptible RX thread it must not be above the thread's own. Time
++	  slicing changed at run time (k_sched_time_slice_set()) must keep
++	  covering it.
 +
 +endif # ETH_EMACZERO
 diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
 new file mode 100644
-index 00000000000..147d374adfd
+index 00000000000..020ccf738c9
 --- /dev/null
 +++ b/drivers/ethernet/eth_emaczero.c
-@@ -0,0 +1,881 @@
+@@ -0,0 +1,952 @@
 +/*
 + * Copyright (c) 2026 Leonardo Capossio - bard0 design
 + * SPDX-License-Identifier: Apache-2.0
@@ -212,6 +263,17 @@ index 00000000000..147d374adfd
 +	     "ETH_EMACZERO_TX_BUFFER_COUNT must be below the AXI DMA TX ring size");
 +BUILD_ASSERT(EMZ_RX_POST_COUNT < EMZ_RX_BUF_COUNT,
 +	     "ETH_EMACZERO_RX_DMA_POST_COUNT must be below ETH_EMACZERO_RX_BUFFER_COUNT");
++
++#if defined(CONFIG_ETH_EMACZERO_RX_THREAD_PREEMPTIBLE)
++#define EMZ_RX_THREAD_PRIO       K_PRIO_PREEMPT(CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY)
++#define EMZ_RX_THREAD_PRIO_COUNT CONFIG_NUM_PREEMPT_PRIORITIES
++#else
++#define EMZ_RX_THREAD_PRIO       K_PRIO_COOP(CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY)
++#define EMZ_RX_THREAD_PRIO_COUNT CONFIG_NUM_COOP_PRIORITIES
++#endif
++BUILD_ASSERT(CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY >= 0 &&
++		     CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY < EMZ_RX_THREAD_PRIO_COUNT,
++	     "ETH_EMACZERO_RX_THREAD_PRIORITY is out of range for its priority class");
 +
 +struct emz_rx_buf {
 +	void *fifo_reserved;
@@ -581,6 +643,66 @@ index 00000000000..147d374adfd
 +	emz_rx_release(dev, rx);
 +}
 +
++#if CONFIG_ETH_EMACZERO_RX_BUDGET_US > 0
++BUILD_ASSERT(CONFIG_ETH_EMACZERO_RX_YIELD_PRIORITY >= 0 &&
++		     CONFIG_ETH_EMACZERO_RX_YIELD_PRIORITY < CONFIG_NUM_PREEMPT_PRIORITIES,
++	     "ETH_EMACZERO_RX_YIELD_PRIORITY must be a preemptible priority");
++BUILD_ASSERT(CONFIG_TIMESLICE_SIZE > 0 &&
++		     CONFIG_TIMESLICE_PRIORITY <= CONFIG_ETH_EMACZERO_RX_YIELD_PRIORITY,
++	     "ETH_EMACZERO_RX_BUDGET_US needs time slicing at ETH_EMACZERO_RX_YIELD_PRIORITY");
++/* the budget is measured with k_cycle_get_32() */
++BUILD_ASSERT(CONFIG_ETH_EMACZERO_RX_BUDGET_US <=
++		     (uint64_t)UINT32_MAX * USEC_PER_SEC / CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC,
++	     "ETH_EMACZERO_RX_BUDGET_US does not fit the 32-bit cycle counter");
++#if defined(CONFIG_ETH_EMACZERO_RX_THREAD_PREEMPTIBLE)
++BUILD_ASSERT(CONFIG_ETH_EMACZERO_RX_YIELD_PRIORITY >= CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY,
++	     "ETH_EMACZERO_RX_YIELD_PRIORITY must not be above the RX thread's priority");
++#endif
++
++/*
++ * Drop to the yield priority and back. The first call switches to any thread
++ * ready at a higher priority than that; one at the same priority runs until it
++ * blocks or its time slice ends. No driver lock or mutex is held here: Zephyr
++ * forbids changing the priority of a thread that holds an inheriting mutex.
++ */
++static void emz_rx_yield(void)
++{
++	k_tid_t self = k_current_get();
++	int prio = k_thread_priority_get(self);
++
++	k_thread_priority_set(self, K_PRIO_PREEMPT(CONFIG_ETH_EMACZERO_RX_YIELD_PRIORITY));
++	k_thread_priority_set(self, prio);
++}
++
++static void emz_rx_thread(void *p1, void *p2, void *p3)
++{
++	const struct device *dev = p1;
++	struct emz_data *data = dev->data;
++	/* the timer may read its frequency at run time, so convert here */
++	const uint32_t budget = k_us_to_cyc_ceil32(CONFIG_ETH_EMACZERO_RX_BUDGET_US);
++	uint32_t burst_start = k_cycle_get_32();
++
++	ARG_UNUSED(p2);
++	ARG_UNUSED(p3);
++
++	while (true) {
++		struct emz_rx_buf *rx = k_fifo_get(&data->rx_ready, K_NO_WAIT);
++
++		/* a burst starts with the first frame after the queue ran dry */
++		if (rx == NULL) {
++			rx = k_fifo_get(&data->rx_ready, K_FOREVER);
++			burst_start = k_cycle_get_32();
++		}
++		emz_rx_deliver(dev, rx);
++
++		/* under a flood, let the threads down to the yield priority run */
++		if (k_cycle_get_32() - burst_start >= budget) {
++			emz_rx_yield();
++			burst_start = k_cycle_get_32();
++		}
++	}
++}
++#else
 +static void emz_rx_thread(void *p1, void *p2, void *p3)
 +{
 +	const struct device *dev = p1;
@@ -593,6 +715,7 @@ index 00000000000..147d374adfd
 +		emz_rx_deliver(dev, k_fifo_get(&data->rx_ready, K_FOREVER));
 +	}
 +}
++#endif
 +
 +static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint32_t channel,
 +				int status)
@@ -926,8 +1049,7 @@ index 00000000000..147d374adfd
 +	emz_write(cfg, EMZ_REG_IRQ_STATUS, EMZ_IRQ_ALL);
 +
 +	k_thread_create(&data->rx_thread, cfg->rx_stack, cfg->rx_stack_size, emz_rx_thread,
-+			(void *)dev, NULL, NULL,
-+			K_PRIO_COOP(CONFIG_ETH_EMACZERO_RX_THREAD_PRIORITY), 0, K_NO_WAIT);
++			(void *)dev, NULL, NULL, EMZ_RX_THREAD_PRIO, 0, K_NO_WAIT);
 +	k_thread_name_set(&data->rx_thread, "emaczero_rx");
 +
 +	ret = emz_rx_start(dev);

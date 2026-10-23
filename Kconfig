@@ -27,6 +27,15 @@ config EMACZ_APP_PAYLOAD_BUF_OFFSET
 	  destination share their alignment: 2 lets the socket copies run on
 	  words instead of bytes.
 
+config EMACZ_APP_SINK_THREAD_PRIORITY
+	int "UDP sink thread priority"
+	default -2
+	help
+	  Zephyr priority of the thread that drains the UDP sink socket.
+	  Negative is cooperative: it then runs until its socket is empty,
+	  ahead of the control thread (priority 4) that runs the TX
+	  benchmark. At 4, with time slicing, the two share the CPU.
+
 config EMACZ_APP_THREAD_USAGE
 	bool "Publish per-thread CPU time in the perf stats block"
 	select THREAD_RUNTIME_STATS
