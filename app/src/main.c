@@ -190,7 +190,10 @@ static void start_zperf_server(void)
 #else
 K_THREAD_STACK_DEFINE(udp_sink_thread_stack, UDP_SINK_THREAD_STACK_SIZE);
 static struct k_thread udp_sink_thread;
-static uint8_t udp_sink_buf[UDP_SINK_BUFFER_SIZE];
+/* CONFIG_EMACZ_APP_PAYLOAD_BUF_OFFSET: where the buffer starts within a word */
+static uint8_t udp_sink_raw[UDP_SINK_BUFFER_SIZE + CONFIG_EMACZ_APP_PAYLOAD_BUF_OFFSET]
+	__aligned(4);
+static uint8_t *const udp_sink_buf = &udp_sink_raw[CONFIG_EMACZ_APP_PAYLOAD_BUF_OFFSET];
 
 /*
  * The sink thread is the only writer of the sink_* block. It brackets every
@@ -262,7 +265,7 @@ static void udp_sink_thread_fn(void *arg1, void *arg2, void *arg3)
 
 	while (true) {
 		uint32_t recv_start = k_cycle_get_32();
-		ssize_t got = zsock_recvfrom(sock, udp_sink_buf, sizeof(udp_sink_buf), 0,
+		ssize_t got = zsock_recvfrom(sock, udp_sink_buf, UDP_SINK_BUFFER_SIZE, 0,
 					     NULL, NULL);
 		uint32_t recv_cycles = k_cycle_get_32() - recv_start;
 
@@ -376,7 +379,9 @@ static const char *parse_u32_arg(const char *cursor, uint32_t *value)
 	return end;
 }
 
-static uint8_t tx_bench_payload[TX_BENCH_MAX_PAYLOAD];
+static uint8_t tx_bench_raw[TX_BENCH_MAX_PAYLOAD + CONFIG_EMACZ_APP_PAYLOAD_BUF_OFFSET]
+	__aligned(4);
+static uint8_t *const tx_bench_payload = &tx_bench_raw[CONFIG_EMACZ_APP_PAYLOAD_BUF_OFFSET];
 
 /*
  * "t [duration_ms [payload [rate_mbps_x1000 [port]]]]": send UDP datagrams
@@ -552,7 +557,7 @@ static void start_control(void)
 static void init_perf_stats(void)
 {
 	memset((void *)&emacz_perf, 0, sizeof(emacz_perf));
-	for (uint32_t i = 0u; i < sizeof(tx_bench_payload); i++) {
+	for (uint32_t i = 0u; i < TX_BENCH_MAX_PAYLOAD; i++) {
 		tx_bench_payload[i] = (uint8_t)(i ^ 0xa5u);
 	}
 	emacz_perf.magic = EMACZ_PERF_STATS_MAGIC;

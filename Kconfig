@@ -15,4 +15,16 @@ config EMACZ_APP_RAW_UART
 	  Disable this for performance tests that must rule out blocking UART
 	  output independently from Zephyr's console and logging settings.
 
+config EMACZ_APP_PAYLOAD_BUF_OFFSET
+	int "Byte offset of the UDP sink and TX benchmark buffers"
+	range 0 3
+	default 0
+	help
+	  Start the buffers the UDP sink receives into and the TX benchmark
+	  sends from this many bytes past a word boundary. A UDP payload
+	  starts 42 bytes into its frame, 2 bytes off a word boundary, and
+	  the minimal libc memcpy copies word by word only when source and
+	  destination share their alignment: 2 lets the socket copies run on
+	  words instead of bytes.
+
 endmenu
