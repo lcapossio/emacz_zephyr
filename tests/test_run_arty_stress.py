@@ -27,9 +27,8 @@ def snapshot(**updates: int) -> dict[str, int | str]:
         "sink_p": 100,
         "sink_b": 147200,
         "mac_rx": 110,
-        "dma": 110,
     }
-    values.update({name: 0 for name in stress.ERROR_COUNTERS})
+    values.update({name: 0 for name in (*stress.ERROR_COUNTERS, *stress.INFO_COUNTERS)})
     values.update(updates)
     return values
 
@@ -51,7 +50,7 @@ def test_parse_snapshot_rejects_wrong_identity_and_missing_fields():
 
 def test_evaluate_accepts_exact_delivery_and_zero_errors():
     before = snapshot()
-    after = snapshot(uptime=601000, sink_p=1100, sink_b=1619200, mac_rx=1110, dma=1110)
+    after = snapshot(uptime=601000, sink_p=1100, sink_b=1619200, mac_rx=1110)
     result = stress.evaluate(before, after, 1000, 1472000, 600.0, 100.0)
     assert result.sink_packets == 1000
     assert result.sink_bytes == 1472000
@@ -64,9 +63,15 @@ def test_evaluate_rejects_loss_and_error_counter_changes():
     with pytest.raises(RuntimeError, match="delivery"):
         stress.evaluate(before, lost, 1000, 1472000, 1.0, 100.0)
 
-    failed = snapshot(uptime=2000, sink_p=1100, sink_b=1619200, dma_err=1)
-    with pytest.raises(RuntimeError, match="dma_err"):
+    failed = snapshot(uptime=2000, sink_p=1100, sink_b=1619200, eth_err=1)
+    with pytest.raises(RuntimeError, match="eth_err"):
         stress.evaluate(before, failed, 1000, 1472000, 1.0, 100.0)
+
+
+def test_evaluate_ignores_stack_drops_of_other_traffic():
+    before = snapshot()
+    after = snapshot(uptime=2000, sink_p=1100, sink_b=1619200, ip_drop=7, udp_drop=3)
+    assert stress.evaluate(before, after, 1000, 1472000, 1.0, 100.0).delivery_pct == 100.0
 
 
 def test_choose_bind_ip_is_interface_name_agnostic(monkeypatch):

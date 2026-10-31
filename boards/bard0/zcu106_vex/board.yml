@@ -1,0 +1,6 @@
+board:
+  name: zcu106_vex
+  full_name: ZCU106 VexRiscv-full
+  vendor: bard0
+  socs:
+    - name: vexriscv_axi

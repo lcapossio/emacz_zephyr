@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-"""Run the board-side UDP TX benchmark and print host/perf-counter deltas."""
+"""Run the board-side UDP TX benchmark and print host and MAC counter deltas.
+
+The control port's 't' command sends UDP datagrams through the board's
+network stack and driver to this host for the requested time.
+"""
 
 from __future__ import annotations
 
@@ -13,14 +17,10 @@ import threading
 import time
 from pathlib import Path
 
-from read_perf_stats import read_stats
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
-
+import fcapz_jtag
 
 REGS = {
     "tx_frames": 0x028,
@@ -34,35 +34,15 @@ REGS = {
     "tx_er_frames": 0x1D4,
 }
 
-PERF_KEEP = [
-    "tx_send_calls",
-    "tx_send_read_fail",
-    "tx_setup_calls",
-    "tx_setup_no_dma",
-    "tx_setup_busy",
-    "tx_dma_config_fail",
-    "tx_dma_reload_fail",
-    "tx_dma_start_fail",
-    "tx_dma_start_ok",
-    "tx_dma_completed",
-    "tx_dma_error",
-    "tx_last_len",
-    "tx_last_ret",
-]
+# Printed, flushed, as the board's TX window opens (the command is sent)
+# and closes (its reply is in), for a caller that runs an RX load inside it
+TX_START_MARKER = "tx_command_sent"
+TX_END_MARKER = "tx_reply_received"
 
 
 def read_regs(base: int, tap: str, chain: int) -> dict[str, int]:
-    transport = XilinxHwServerTransport(fpga_name=tap)
-    transport.connect()
-    try:
-        axi = EjtagAxiController(transport, chain=chain)
-        axi.attach()
-        try:
-            return {name: axi.axi_read(base + off) for name, off in REGS.items()}
-        finally:
-            axi.close()
-    finally:
-        transport.close()
+    return fcapz_jtag.read(
+        tap, chain, lambda axi: {name: axi.axi_read(base + off) for name, off in REGS.items()})
 
 
 def parse_reply(text: str) -> dict[str, int]:
@@ -78,11 +58,7 @@ def parse_reply(text: str) -> dict[str, int]:
     return out
 
 
-def delta(after, before, name: str) -> int:
-    return int(getattr(after, name)) - int(getattr(before, name))
-
-
-def profile_check(board: str, bind: str, port: int, timeout: float) -> str:
+def control_check(board: str, bind: str, port: int, timeout: float) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((bind, 0))
         sock.settimeout(timeout)
@@ -110,7 +86,7 @@ class Receiver(threading.Thread):
             while not self.stop.is_set():
                 try:
                     data, _addr = sock.recvfrom(65535)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     self.errors += 1
@@ -125,7 +101,6 @@ class Receiver(threading.Thread):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--addr", type=lambda s: int(s, 0), default=0x9FFFF000)
     parser.add_argument("--csr-base", type=lambda s: int(s, 0), default=0x44A00000)
     parser.add_argument("--tap", default="xc7a100t")
     parser.add_argument("--chain", type=int, default=3)
@@ -133,46 +108,55 @@ def main() -> int:
     parser.add_argument("--bind", default="192.168.137.1")
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--listen-port", type=int, default=5003)
-    parser.add_argument("--profile-timeout", type=float, default=2.0)
-    parser.add_argument("--skip-profile-check", action="store_true")
+    parser.add_argument("--control-timeout", type=float, default=2.0)
+    parser.add_argument("--reply-timeout", type=float, default=60.0,
+                        help="seconds past --duration to wait for the board's reply; a "
+                             "board busy receiving runs its TX thread late")
+    parser.add_argument("--skip-control-check", action="store_true")
     parser.add_argument("--rate-mbps", type=float, default=0.0,
                         help="Payload pacing request; 0 means unthrottled")
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--packet-size", type=int, default=1472)
     args = parser.parse_args()
 
-    rate_x1000 = max(0, int(round(args.rate_mbps * 1000.0)))
-    duration_ms = max(1, int(round(args.duration * 1000.0)))
+    rate_x1000 = max(0, round(args.rate_mbps * 1000.0))
+    duration_ms = max(1, round(args.duration * 1000.0))
     command = f"t {duration_ms} {args.packet_size} {rate_x1000} {args.listen_port}"
 
-    if not args.skip_profile_check:
+    if not args.skip_control_check:
         try:
-            reply = profile_check(args.board, args.bind, args.control_port,
-                                  args.profile_timeout)
+            reply = control_check(args.board, args.bind, args.control_port,
+                                  args.control_timeout)
         except OSError as exc:
-            print(f"profile_check=fail error={exc}")
-            print("hint=profile control must reply before TX tests; try the elevated host context")
+            print(f"control_check=fail error={exc}")
+            print("hint=the control port must reply before TX tests; try the elevated host context")
             return 2
-        print(f"profile_check=ok reply_from={reply}")
+        print(f"control_check=ok reply_from={reply}")
 
     rx = Receiver(args.bind, args.listen_port)
     rx.start()
     time.sleep(0.2)
 
-    before_perf = read_stats(args.addr, args.tap, args.chain)
     before_regs = read_regs(args.csr_base, args.tap, args.chain)
     started = time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((args.bind, 0))
-        sock.settimeout(args.duration + 5.0)
+        sock.settimeout(args.duration + args.reply_timeout)
         sock.sendto(command.encode("ascii"), (args.board, args.control_port))
-        data, addr = sock.recvfrom(2048)
+        print(TX_START_MARKER, flush=True)
+        try:
+            data, addr = sock.recvfrom(2048)
+        except TimeoutError:
+            rx.stop.set()
+            print(f"reply=none after {time.time() - started:.1f} s")
+            print("tx_result=fail")
+            return 1
     elapsed = time.time() - started
+    print(TX_END_MARKER, flush=True)
     time.sleep(0.5)
     rx.stop.set()
     rx.join(timeout=2.0)
 
-    after_perf = read_stats(args.addr, args.tap, args.chain)
     after_regs = read_regs(args.csr_base, args.tap, args.chain)
 
     reply_text = data.decode("ascii", errors="replace").strip()
@@ -195,12 +179,23 @@ def main() -> int:
     if host_window > 0:
         print(f"host_payload_mbps_rx_window={rx.bytes * 8 / host_window / 1_000_000:.3f}")
 
-    for name in PERF_KEEP:
-        print(f"{name}_delta={delta(after_perf, before_perf, name)}")
-    for name in REGS:
-        print(f"{name}_delta={after_regs[name] - before_regs[name]}")
+    deltas = {name: after_regs[name] - before_regs[name] for name in REGS}
+    for name, value in deltas.items():
+        print(f"{name}_delta={value}")
 
-    return 0
+    # Every datagram the board sent is one frame on the wire, so the MAC
+    # count covers them (plus any ARP or control replies). The host may
+    # drop some at line rate, so it only has to receive something, cleanly.
+    board_packets = reply.get("pkts", 0)
+    passed = (
+        board_packets > 0 and
+        deltas["tx_frames"] >= board_packets and
+        deltas["tx_er_frames"] == 0 and
+        rx.packets > 0 and
+        rx.errors == 0
+    )
+    print(f"tx_result={'pass' if passed else 'fail'}")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

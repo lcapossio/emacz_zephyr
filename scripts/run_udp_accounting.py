@@ -14,47 +14,28 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
+import threading
 import time
 
 from read_perf_stats import read_stats
-
 
 KEEP = [
     "mac_rx_frames",
     "gate_good_frames",
     "mac_rx_err",
+    "mac_rx_drop",
     "gate_dropped_bad_frames",
     "gate_dropped_overflow_frames",
     "gate_drain_tready_low_cycles",
-    "dma_callbacks",
-    "dma_errors",
-    "rx_bd_hw_completed",
-    "rx_bd_errors",
-    "rx_invalid",
-    "rx_alloc_pkt_fail",
-    "rx_alloc_frag_fail",
-    "rx_alloc_pkt_zc_fail",
-    "rx_alloc_pkt_copy_fail",
-    "rx_copy_write_fail",
-    "rx_zero_copy_submit",
-    "rx_copy_submit",
-    "rx_net_recv_fail",
-    "rx_refill_no_free",
-    "rx_stack_owned_current",
-    "rx_max_stack_owned",
-    "rx_pre_type_ipv4",
-    "rx_pre_ipv4_udp",
-    "rx_pre_udp_bad_len",
-    "rx_pre_udp_port_5001",
+    "eth_rx_errors",
+    "eth_rx_dma_failed",
     "net_ipv4_recv",
     "net_ipv4_drop",
     "net_udp_recv",
     "net_udp_drop",
     "net_udp_chkerr",
     "net_processing_error",
-    "net_pkt_filter_rx_drop",
-    "net_pkt_filter_rx_ipv4_drop",
-    "net_pkt_filter_rx_local_drop",
     "sink_packets",
     "sink_bytes",
     "sink_recv_errors",
@@ -64,12 +45,49 @@ KEEP = [
     "sink_recvfrom_cycles_max",
 ]
 
+# The firmware refreshes the MAC and network-stack fields once a second; the
+# sink fields are live. Wait this long after sending before the final read.
+SETTLE_S = 1.5
+
+# Printed, with the send duration in seconds, once the first stats read is
+# done; JTAG is idle from here until the final read. The load starts now,
+# or with --stdin-control once the first line arrives.
+SENDING_MARKER = "sending_s="
+
+# Printed when the load ends: "stdin" if --stdin-control stopped it, else
+# "duration"
+STOPPED_MARKER = "stopped_by="
+
 
 def delta(after, before, name: str) -> int:
-    return int(getattr(after, name)) - int(getattr(before, name))
+    diff = int(getattr(after, name)) - int(getattr(before, name))
+    # the ru_* cycle counts are the low 32 bits
+    return diff & 0xFFFFFFFF if name.startswith("ru_") else diff
 
 
-def profile_check(board: str, bind: str, port: int, timeout: float) -> str:
+RU_THREADS = ("idle", "rx", "sink", "control", "main", "workq", "usage")
+
+
+def print_thread_usage(after, before, sink_packets: int) -> None:
+    """CPU share of each thread over the window, and RX-path cycles per packet."""
+    if delta(after, before, "ru_samples") == 0:
+        return
+    all_cycles = delta(after, before, "ru_all_cycles")
+    if all_cycles == 0:
+        return
+    named = 0
+    for name in RU_THREADS:
+        cycles = delta(after, before, f"ru_{name}_cycles")
+        named += cycles
+        print(f"ru_{name}_pct={cycles * 100.0 / all_cycles:.2f}")
+    print(f"ru_other_pct={(all_cycles - named) * 100.0 / all_cycles:.2f}")
+    if sink_packets > 0:
+        for name in ("rx", "sink"):
+            cycles = delta(after, before, f"ru_{name}_cycles")
+            print(f"ru_{name}_cycles_per_pkt={cycles / sink_packets:.0f}")
+
+
+def control_check(board: str, bind: str, port: int, timeout: float) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((bind, 0))
         sock.settimeout(timeout)
@@ -78,7 +96,32 @@ def profile_check(board: str, bind: str, port: int, timeout: float) -> str:
     return f"{addr[0]}:{addr[1]} {data.decode('ascii', errors='replace').strip()}"
 
 
-def send_fast_sink(args: argparse.Namespace) -> int:
+class StdinControl:
+    """--stdin-control: the first line on stdin starts the load, the second
+    stops it, and EOF releases the final stats read. EOF also counts as
+    any line not yet seen."""
+
+    def __init__(self) -> None:
+        self.go = threading.Event()
+        self.stop = threading.Event()
+        self.eof = threading.Event()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        for event in (self.go, self.stop):
+            if not sys.stdin.readline():
+                break
+            event.set()
+        else:
+            while sys.stdin.readline():
+                pass
+        self.go.set()
+        self.stop.set()
+        self.eof.set()
+
+
+def send_fast_sink(args: argparse.Namespace, stop: threading.Event | None) -> int:
+    """Send the load, until the duration or stop, and return the datagram count."""
     rate_bps = args.rate_mbps * 1_000_000.0
     interval = (args.packet_size * 8.0) / rate_bps if rate_bps > 0 else 0.0
     payload = bytes((i & 0xff) for i in range(args.packet_size))
@@ -93,7 +136,11 @@ def send_fast_sink(args: argparse.Namespace) -> int:
         packets = 0
         while True:
             now = time.perf_counter()
+            if stop is not None and stop.is_set():
+                stopped = "stdin"
+                break
             if now - start >= args.duration:
+                stopped = "duration"
                 break
             if interval > 0 and now < next_send:
                 time.sleep(min(next_send - now, 0.001))
@@ -109,7 +156,8 @@ def send_fast_sink(args: argparse.Namespace) -> int:
         f"sender=udp-sink packets={packets} bytes={sent_bytes} "
         f"time={elapsed:.3f}s rate={rate:.3f} Mbits/sec"
     )
-    return 0
+    print(f"{STOPPED_MARKER}{stopped}")
+    return packets
 
 
 def main() -> int:
@@ -124,60 +172,71 @@ def main() -> int:
     parser.add_argument("--control-port", type=int, default=5002)
     parser.add_argument("--rate-mbps", type=float, default=40.0)
     parser.add_argument("--duration", type=float, default=4.0)
+    parser.add_argument("--stdin-control", action="store_true",
+                        help="start sending on a first line on stdin, stop on a second "
+                             "(--duration is then the cap), take the final read on EOF")
     parser.add_argument("--packet-size", type=int, default=1472)
     parser.add_argument("--timeout", type=float, default=1.0)
-    parser.add_argument("--skip-profile-check", action="store_true")
+    parser.add_argument("--skip-control-check", action="store_true")
     parser.add_argument("--expect-min-packets", type=int, default=1)
     args = parser.parse_args()
 
-    if not args.skip_profile_check:
+    if not args.skip_control_check:
         try:
-            reply = profile_check(args.target, args.bind, args.control_port, args.timeout)
+            reply = control_check(args.target, args.bind, args.control_port, args.timeout)
         except OSError as exc:
-            print(f"profile_check=fail error={exc}")
-            print("hint=profile control must reply before RX tests; try the elevated host context")
+            print(f"control_check=fail error={exc}")
+            print("hint=the control port must reply before RX tests; try the elevated host context")
             return 2
-        print(f"profile_check=ok reply_from={reply}")
+        print(f"control_check=ok reply_from={reply}")
 
     before = read_stats(args.addr, args.tap, args.chain)
+    # A caller that runs another JTAG tool alongside (run_board_suite.py's
+    # bidi step) waits for this line, and with --stdin-control times the load
+    control = StdinControl() if args.stdin_control else None
+    print(f"{SENDING_MARKER}{args.duration:g}", flush=True)
+    if control is not None:
+        control.go.wait()
     started = time.time()
-    sender_returncode = send_fast_sink(args)
+    sent_frames = send_fast_sink(args, control.stop if control is not None else None)
     elapsed = time.time() - started
-    time.sleep(1.0)
+    time.sleep(SETTLE_S)
+    if control is not None:
+        control.eof.wait()
     after = read_stats(args.addr, args.tap, args.chain)
 
     print("sender=udp-sink")
-    print(f"sender_returncode={sender_returncode}")
     print(f"elapsed_s={elapsed:.3f}")
     for name in KEEP:
         print(f"{name}_delta={delta(after, before, name)}")
 
-    sent_frames = delta(after, before, "rx_pre_udp_port_5001")
     sink_packets = delta(after, before, "sink_packets")
     sink_bytes = delta(after, before, "sink_bytes")
     sink_errors = delta(after, before, "sink_recv_errors")
     recv_calls = delta(after, before, "sink_recvfrom_calls")
     recv_cycles = delta(after, before, "sink_recvfrom_cycles_total")
     cycles_per_sec = int(after.cycles_per_sec)
+    # Frames the MAC dropped whole, for want of RX FIFO room
+    mac_drops = delta(after, before, "mac_rx_drop")
     gate_drops = (
         delta(after, before, "gate_dropped_bad_frames") +
         delta(after, before, "gate_dropped_overflow_frames")
     )
-    dma_errors = delta(after, before, "dma_errors")
-    rx_failures = (
-        delta(after, before, "rx_bd_errors") +
-        delta(after, before, "rx_invalid") +
-        delta(after, before, "rx_alloc_pkt_fail") +
-        delta(after, before, "rx_alloc_frag_fail") +
-        delta(after, before, "rx_net_recv_fail")
-    )
+    # Frames the MAC rejected or dropped whole plus frames the driver
+    # dropped. The stack's net_*_drop also count the host's background
+    # traffic for other addresses and ports, so they are printed above but
+    # not judged.
+    rx_failures = delta(after, before, "eth_rx_errors")
+    dma_failures = delta(after, before, "eth_rx_dma_failed")
 
     if elapsed > 0:
         print(f"sink_payload_mbps={sink_bytes * 8 / elapsed / 1_000_000:.3f}")
-        print(f"pre_udp_pps={sent_frames / elapsed:.1f}")
+        print(f"sent_pps={sent_frames / elapsed:.1f}")
+        print(f"sent_payload_mbps={sent_frames * args.packet_size * 8 / elapsed / 1_000_000:.3f}")
         print(f"sink_pps={sink_packets / elapsed:.1f}")
     if sent_frames > 0:
-        print(f"driver_to_sink_delivery_pct={sink_packets * 100.0 / sent_frames:.3f}")
+        print(f"host_to_sink_delivery_pct={sink_packets * 100.0 / sent_frames:.3f}")
+    print_thread_usage(after, before, sink_packets)
     if recv_calls > 0 and cycles_per_sec > 0:
         avg_cycles = recv_cycles / recv_calls
         print(f"sink_recvfrom_avg_cycles={avg_cycles:.1f}")
@@ -186,9 +245,10 @@ def main() -> int:
     passed = (
         sink_packets >= args.expect_min_packets and
         sink_errors == 0 and
+        mac_drops == 0 and
         gate_drops == 0 and
-        dma_errors == 0 and
-        rx_failures == 0
+        rx_failures == 0 and
+        dma_failures == 0
     )
     print(f"fast_sink_result={'pass' if passed else 'fail'}")
     return 0 if passed else 1

@@ -1,0 +1,14 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * Measurement variant for zcu106_r5: non-cacheable frame buffers, as on the
+ * soft-CPU shells, whose DMA window is outside their D-cache aperture. Use
+ * with zcu106_r5_uncached_bufs.conf.
+ */
+
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+
+&emz_bufs {
+	zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+};

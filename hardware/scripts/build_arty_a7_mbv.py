@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""Build the Arty A7-100T MicroBlaze V + emacZero Vivado hardware shell."""
+"""Build the Arty A7-100T MicroBlaze V + emacZero Vivado hardware shell.
+
+Clocked as the VexRiscv shell: one 100 MHz SoC domain (clock_root/clk100)
+for the CPU, its peripherals, the AXI DMA and emacZero. MIG's ui_clk
+(81.25 MHz) stays behind the ddr SmartConnect, which does the crossing.
+"""
 
 from __future__ import annotations
 
@@ -11,13 +16,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from emaczero_rtl import emaczero_rtl
 
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PART = "xc7a100tcsg324-1"
 TOP = "arty_a7_100t_mbv"
 BUILD_DIR = Path("build") / "vivado" / TOP
 DDR_BASE = "0x90000000"
 DDR_RANGE = "0x10000000"
-SOC_CLK_HZ = 81247969
+SOC_CLK_HZ = 100000000
 LOADER_BRAM_RANGE = "0x00008000"
 LOADER_BRAM_WORDS = 8192
 LOADER_AXI_BASE = "0x80008000"
@@ -26,26 +34,7 @@ SCRATCH_BRAM_RANGE = "0x00008000"
 SCRATCH_BRAM_WORDS = 8192
 
 
-EMACZERO_RTL = [
-    "external/emacZero/rtl/crc32.v",
-    "external/emacZero/rtl/async_fifo.v",
-    "external/emacZero/rtl/sync_fifo.v",
-    "external/emacZero/rtl/mii_if.v",
-    "external/emacZero/rtl/mii_tx_saf.v",
-    "external/emacZero/rtl/axil_arb2.v",
-    "external/emacZero/rtl/eth_mac_rx.v",
-    "external/emacZero/rtl/eth_mac_tx.v",
-    "external/emacZero/rtl/eth_mac.v",
-    "external/emacZero/rtl/mdio_master.v",
-    "external/emacZero/rtl/eth_stats.v",
-    "external/emacZero/rtl/eth_pause.v",
-    "external/emacZero/rtl/axilite_regs.v",
-    "external/emacZero/rtl/ddr_output.v",
-    "external/emacZero/rtl/ddr_input.v",
-    "external/emacZero/rtl/rgmii_if.v",
-    "external/emacZero/rtl/gmii_cdc.v",
-    "external/emacZero/rtl/net/tx_csum_off.v",
-    "external/emacZero/rtl/eth_mac_sys.v",
+EMACZERO_RTL = emaczero_rtl(REPO_ROOT) + [
     "hardware/rtl/axis_frame_error_drop.v",
     "hardware/rtl/axis_elastic_fifo.v",
     "hardware/rtl/axis_async_fifo.v",
@@ -89,6 +78,13 @@ def make_tcl(args: argparse.Namespace) -> str:
     synth_impl = "1" if args.synth else "0"
     jobs = max(1, args.jobs)
     elf = Path(args.elf).resolve().as_posix() if args.elf else ""
+    # Without caches the CPU reaches DDR through M_AXI_IP/DP and ctrl_axi_ic
+    # only; M_AXI_IC/DC and their ddr_axi_ic ports go away
+    use_cache = 0 if args.no_caches else 1
+    ddr_si = 2 if args.no_caches else 4
+    cache_ports = "" if args.no_caches else (
+        "connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_IC] [get_bd_intf_pins ddr_axi_ic/S02_AXI]\n"
+        "connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_DC] [get_bd_intf_pins ddr_axi_ic/S03_AXI]")
     return f"""
 set repo_root [file normalize [file join [pwd] .. .. ..]]
 set part {PART}
@@ -115,7 +111,8 @@ proc stage_mbv_elf {{}} {{
 create_project $top . -part $part -force
 set_property target_language Verilog [current_project]
 set_property simulator_language Verilog [current_project]
-set_property verilog_define XILINX_7SERIES [current_fileset]
+# XILINX_XPM puts the local FIFOs and frame store on AMD's XPM macros
+set_property verilog_define {{XILINX_7SERIES XILINX_XPM}} [current_fileset]
 
 set rtl_files [list {rel_list(EMACZERO_RTL + LOCAL_DEBUG_RTL)}]
 foreach f $rtl_files {{
@@ -188,12 +185,12 @@ set_property -dict [list \\
     CONFIG.C_D_LMB 1 \\
     CONFIG.C_I_AXI 1 \\
     CONFIG.C_D_AXI 1 \\
-    CONFIG.C_USE_ICACHE 1 \\
+    CONFIG.C_USE_ICACHE {use_cache} \\
     CONFIG.C_ICACHE_BASEADDR 0x0000000090000000 \\
     CONFIG.C_ICACHE_HIGHADDR 0x000000009fffffff \\
     CONFIG.C_ICACHE_BYTE_SIZE 16384 \\
     CONFIG.C_ICACHE_LINE_LEN 4 \\
-    CONFIG.C_USE_DCACHE 1 \\
+    CONFIG.C_USE_DCACHE {use_cache} \\
     CONFIG.C_DCACHE_BASEADDR 0x0000000090000000 \\
     CONFIG.C_DCACHE_HIGHADDR 0x0000000097ffffff \\
     CONFIG.C_DCACHE_BYTE_SIZE 16384 \\
@@ -215,8 +212,7 @@ set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 10] [get_bd_cells ctrl_ax
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 dma_axi_ic
 set_property -dict [list CONFIG.NUM_SI 3 CONFIG.NUM_MI 1] [get_bd_cells dma_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_axi_ic
-set_property -dict [list CONFIG.NUM_SI 4 CONFIG.NUM_MI 1] [get_bd_cells ddr_axi_ic]
-create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 emac_axi_cc
+set_property -dict [list CONFIG.NUM_SI {ddr_si} CONFIG.NUM_MI 1 CONFIG.NUM_CLKS 2] [get_bd_cells ddr_axi_ic]
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 bram_ctrl_cpu
 set_property -dict [list CONFIG.SINGLE_PORT_BRAM 1 CONFIG.DATA_WIDTH 32] [get_bd_cells bram_ctrl_cpu]
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 lmb_loader_ctrl
@@ -253,8 +249,6 @@ set_property -dict [list \\
     CONFIG.c_addr_width 32 \\
 ] [get_bd_cells axi_dma]
 create_bd_cell -type module -reference axis_rx_stream_stats s2mm_stream_stats
-create_bd_cell -type module -reference axis_async_fifo tx_axis_cc
-create_bd_cell -type module -reference axis_async_fifo rx_axis_cc
 create_bd_cell -type module -reference clock_root_100m clock_root
 create_bd_cell -type module -reference emaczero_axi_mii_wrapper emaczero
 set_property -dict [list CONFIG.MII_DEBUG 1] [get_bd_cells emaczero]
@@ -275,60 +269,49 @@ set_property -dict [list CONFIG.CONST_WIDTH 2 CONFIG.CONST_VAL 0] [get_bd_cells 
 create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const1
 set_property -dict [list CONFIG.CONST_WIDTH 1 CONFIG.CONST_VAL 1] [get_bd_cells const1]
 
-set_property FREQ_HZ 100000000 [get_bd_intf_pins emac_axi_cc/M_AXI]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins emac_axi_cc/S_AXI]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins tx_axis_cc/S_AXIS]
-set_property FREQ_HZ 100000000 [get_bd_intf_pins tx_axis_cc/M_AXIS]
-set_property FREQ_HZ 100000000 [get_bd_intf_pins rx_axis_cc/S_AXIS]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins rx_axis_cc/M_AXIS]
-
 connect_bd_net [get_bd_ports CLK100MHZ] [get_bd_pins clock_root/clk_in]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins mig_ddr/sys_clk_i]
 connect_bd_net [get_bd_pins mig_ddr/ui_addn_clk_0] [get_bd_pins mig_ddr/clk_ref_i]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins rst/slowest_sync_clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins rst/slowest_sync_clk]
 connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins mig_rst/slowest_sync_clk]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins eth_rst/slowest_sync_clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins mbv/Clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins ilmb/LMB_Clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins dlmb/LMB_Clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins ilmb_cntlr/LMB_Clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins dlmb_cntlr/LMB_Clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins ctrl_axi_ic/ACLK]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins mbv/Clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins ilmb/LMB_Clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins dlmb/LMB_Clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins ilmb_cntlr/LMB_Clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins dlmb_cntlr/LMB_Clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins ctrl_axi_ic/ACLK]
 foreach p [get_bd_pins ctrl_axi_ic/*ACLK] {{
     if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
-        connect_bd_net [get_bd_pins mig_ddr/ui_clk] $p
+        connect_bd_net [get_bd_pins clock_root/clk100] $p
     }}
 }}
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins dma_axi_ic/ACLK]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins dma_axi_ic/ACLK]
 foreach p [get_bd_pins dma_axi_ic/*ACLK] {{
     if {{[llength [get_bd_nets -quiet -of_objects $p]] == 0}} {{
-        connect_bd_net [get_bd_pins mig_ddr/ui_clk] $p
+        connect_bd_net [get_bd_pins clock_root/clk100] $p
     }}
 }}
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins ddr_axi_ic/aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins bram_ctrl_cpu/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins lmb_loader_ctrl/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins uart/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins timer/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins intc/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins gpio/s_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins axi_dma/s_axi_lite_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins axi_dma/m_axi_mm2s_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins axi_dma/m_axi_s2mm_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins axi_dma/m_axi_sg_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins emac_axi_cc/s_axi_aclk]
-connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins emac_axi_cc/m_axi_aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins tx_axis_cc/s_clk]
-connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins tx_axis_cc/m_clk]
-connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins rx_axis_cc/s_clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins rx_axis_cc/m_clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins s2mm_stream_stats/clk]
+# ddr_axi_ic: aclk = the 100 MHz SoC side, aclk1 = MIG's ui_clk
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins ddr_axi_ic/aclk]
+connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins ddr_axi_ic/aclk1]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins bram_ctrl_cpu/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins lmb_loader_ctrl/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins uart/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins timer/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins intc/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins gpio/s_axi_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins axi_dma/s_axi_lite_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins axi_dma/m_axi_mm2s_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins axi_dma/m_axi_s2mm_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins axi_dma/m_axi_sg_aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins s2mm_stream_stats/clk]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins s2mm_stream_stats/rst_n]
 connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins emaczero/clk]
 connect_bd_net [get_bd_pins clock_root/clk25] [get_bd_pins emaczero/phy_ref_clk_25]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins debug/clk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins debug_axi_slice/aclk]
-connect_bd_net [get_bd_pins mig_ddr/ui_clk] [get_bd_pins emac_irq_sync/clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins debug/clk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins debug_axi_slice/aclk]
+connect_bd_net [get_bd_pins clock_root/clk100] [get_bd_pins emac_irq_sync/clk]
 
 connect_bd_net [get_bd_ports BTN0] [get_bd_pins rst/ext_reset_in]
 connect_bd_net [get_bd_ports BTN0] [get_bd_pins mig_rst/ext_reset_in]
@@ -368,12 +351,6 @@ connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins timer/s_axi_are
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins intc/s_axi_aresetn]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins gpio/s_axi_aresetn]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins axi_dma/axi_resetn]
-connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins emac_axi_cc/s_axi_aresetn]
-connect_bd_net [get_bd_pins eth_rst/peripheral_aresetn] [get_bd_pins emac_axi_cc/m_axi_aresetn]
-connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins tx_axis_cc/s_rst_n]
-connect_bd_net [get_bd_pins eth_rst/peripheral_aresetn] [get_bd_pins tx_axis_cc/m_rst_n]
-connect_bd_net [get_bd_pins eth_rst/peripheral_aresetn] [get_bd_pins rx_axis_cc/s_rst_n]
-connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins rx_axis_cc/m_rst_n]
 connect_bd_net [get_bd_pins eth_rst/peripheral_aresetn] [get_bd_pins emaczero/rst_n]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins debug_axi_slice/aresetn]
 connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins emac_irq_sync/rst_n]
@@ -394,22 +371,18 @@ connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M00_AXI] [get_bd_intf_pins uar
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M01_AXI] [get_bd_intf_pins timer/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M02_AXI] [get_bd_intf_pins intc/s_axi]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M03_AXI] [get_bd_intf_pins gpio/S_AXI]
-connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M04_AXI] [get_bd_intf_pins emac_axi_cc/S_AXI]
-connect_bd_intf_net [get_bd_intf_pins emac_axi_cc/M_AXI] [get_bd_intf_pins emaczero/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M04_AXI] [get_bd_intf_pins emaczero/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M05_AXI] [get_bd_intf_pins axi_dma/S_AXI_LITE]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M06_AXI] [get_bd_intf_pins bram_ctrl_cpu/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M07_AXI] [get_bd_intf_pins lmb_loader_ctrl/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M08_AXI] [get_bd_intf_pins ddr_axi_ic/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_axi_ic/M09_AXI] [get_bd_intf_pins s2mm_stream_stats/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins dma_axi_ic/M00_AXI] [get_bd_intf_pins ddr_axi_ic/S01_AXI]
-connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_IC] [get_bd_intf_pins ddr_axi_ic/S02_AXI]
-connect_bd_intf_net [get_bd_intf_pins mbv/M_AXI_DC] [get_bd_intf_pins ddr_axi_ic/S03_AXI]
+{cache_ports}
 connect_bd_intf_net [get_bd_intf_pins ddr_axi_ic/M00_AXI] [get_bd_intf_pins mig_ddr/S_AXI]
 
-connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXIS_MM2S] [get_bd_intf_pins tx_axis_cc/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins tx_axis_cc/M_AXIS] [get_bd_intf_pins emaczero/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins emaczero/M_AXIS] [get_bd_intf_pins rx_axis_cc/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins rx_axis_cc/M_AXIS] [get_bd_intf_pins s2mm_stream_stats/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins axi_dma/M_AXIS_MM2S] [get_bd_intf_pins emaczero/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins emaczero/M_AXIS] [get_bd_intf_pins s2mm_stream_stats/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins s2mm_stream_stats/M_AXIS] [get_bd_intf_pins axi_dma/S_AXIS_S2MM]
 
 connect_bd_net [get_bd_pins const0_8/dout] [get_bd_pins debug/dma_rx_axis_tdata]
@@ -453,15 +426,6 @@ connect_bd_intf_net [get_bd_intf_pins bram_ctrl_cpu/BRAM_PORTA] [get_bd_intf_pin
 connect_bd_intf_net [get_bd_intf_pins intc/interrupt] [get_bd_intf_pins mbv/INTERRUPT]
 
 connect_bd_net [get_bd_pins debug/debug_reset_req] [get_bd_pins lmb_bram_mux/select_loader]
-
-# Re-assert converter interface metadata after interface connection, since
-# IP integrator can re-propagate the default 10 MHz values during connect.
-set_property FREQ_HZ 100000000 [get_bd_intf_pins emac_axi_cc/M_AXI]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins emac_axi_cc/S_AXI]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins tx_axis_cc/S_AXIS]
-set_property FREQ_HZ 100000000 [get_bd_intf_pins tx_axis_cc/M_AXIS]
-set_property FREQ_HZ 100000000 [get_bd_intf_pins rx_axis_cc/S_AXIS]
-set_property FREQ_HZ {SOC_CLK_HZ} [get_bd_intf_pins rx_axis_cc/M_AXIS]
 
 connect_bd_net [get_bd_pins timer/interrupt] [get_bd_pins irq_concat/In0]
 connect_bd_net [get_bd_pins uart/interrupt] [get_bd_pins irq_concat/In1]
@@ -584,13 +548,24 @@ if {{$synth_impl}} {{
     synth_design -top ${{top}}_wrapper -part $part
     write_checkpoint -force ${{top}}_wrapper_synth.dcp
     report_utilization -file reports/utilization_synth.rpt
-    opt_design
-    place_design
-    phys_opt_design
-    route_design
+    # Same timing-driven flow as the VexRiscv shell at 100 MHz
+    opt_design -directive Explore
+    place_design -directive Explore
+    phys_opt_design -directive AggressiveExplore
+    route_design -directive AggressiveExplore
+    phys_opt_design -directive AggressiveExplore
     write_checkpoint -force ${{top}}_wrapper_routed.dcp
     report_utilization -file reports/utilization_route.rpt
     report_timing_summary -file reports/timing.rpt
+    # Timing gate: a failing image must never replace the bitstream the
+    # programming flow loads, and the build must report failure.
+    set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+    set whs [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -hold]]
+    puts "TIMING_SUMMARY WNS=$wns WHS=$whs"
+    if {{$wns < 0 || $whs < 0}} {{
+        puts "ERROR: timing not met (WNS=$wns ns, WHS=$whs ns); bitstream not written"
+        exit 1
+    }}
     write_bitstream -force ${{top}}_wrapper.bit
     if {{[catch {{write_hw_platform -fixed -force -file ${{top}}.xsa}} hw_err]}} {{
         puts "WARNING: write_hw_platform failed after bitstream generation: $hw_err"
@@ -653,15 +628,19 @@ def main() -> int:
     parser.add_argument("--synth", action="store_true", help="run synthesis/implementation/bitstream")
     parser.add_argument("--jobs", type=int, default=2, help="Vivado implementation jobs")
     parser.add_argument("--elf", help="optional ELF to embed in the MicroBlaze V BRAM bitstream")
+    parser.add_argument("--no-caches", action="store_true",
+                        help="build without the I- and D-cache (for cache-off measurements), "
+                             f"into {BUILD_DIR}_nocache")
     args = parser.parse_args()
+    build_dir = BUILD_DIR.with_name(f"{TOP}_nocache") if args.no_caches else BUILD_DIR
 
     vivado = shutil.which("vivado")
     if vivado is None:
         raise SystemExit("ERROR: vivado was not found in PATH")
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    (BUILD_DIR / "reports").mkdir(exist_ok=True)
-    tcl = BUILD_DIR / "build.tcl"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "reports").mkdir(exist_ok=True)
+    tcl = build_dir / "build.tcl"
     tcl.write_text(make_tcl(args), encoding="utf-8")
 
     cmd = [vivado, "-mode", "batch", "-source", str(tcl.name)]
@@ -669,7 +648,7 @@ def main() -> int:
     env["XILINX_TCLAPP_REPO"] = str(
         (Path("no_commit") / "force_vivado_install_tclstore_missing").resolve()
     )
-    rc = subprocess.call(cmd, cwd=BUILD_DIR, env=env)
+    rc = subprocess.call(cmd, cwd=build_dir, env=env)
     return rc
 
 

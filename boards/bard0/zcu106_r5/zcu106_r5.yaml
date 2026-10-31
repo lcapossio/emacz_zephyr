@@ -1,0 +1,10 @@
+identifier: zcu106_r5
+name: ZCU106 Cortex-R5 with the emacZero PL shell
+type: mcu
+arch: arm
+toolchain:
+  - cross-compile
+  - zephyr
+ram: 65536
+flash: 0
+vendor: bard0

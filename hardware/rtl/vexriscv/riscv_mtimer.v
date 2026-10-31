@@ -2,22 +2,21 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 //
 // Minimal RISC-V "machine-timer" for Zephyr's riscv,machine-timer driver on
-// the VexRiscv-full Arty shell. Presents mtime and mtimecmp as two 64-bit
-// AXI4-Lite registers back-to-back:
+// the VexRiscv-full shells (Arty A7, ZCU106). Presents mtime and mtimecmp
+// as two 64-bit AXI4-Lite registers back-to-back:
 //
-//   0x00 : mtime.lo    (R/W, free-running at aclk / TICK_DIV)
+//   0x00 : mtime.lo    (R/W, free-running at aclk)
 //   0x04 : mtime.hi
 //   0x08 : mtimecmp.lo (R/W)
 //   0x0C : mtimecmp.hi
 //
 // timer_irq asserts while mtime >= mtimecmp (level-sensitive, per RISC-V
-// privileged spec 3.2.1). At 100 MHz with TICK_DIV=1 the tick period is
-// 10 ns — CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC=100000000 in arty_a7_vex.conf
-// matches this directly.
+// privileged spec 3.2.1). mtime counts every aclk, the SoC clock
+// (100 MHz on the Arty, 150 MHz on the ZCU106); Zephyr takes that rate from
+// the board DTS timebase-frequency (soc/bard0/vexriscv_axi).
 //
 // Single-outstanding, no burst — sufficient for CLINT-style single-word
-// polling/store traffic from the CPU. Ticks every aclk cycle — at 100 MHz
-// that gives a 10 ns period, matching CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC.
+// polling/store traffic from the CPU.
 
 `default_nettype none
 

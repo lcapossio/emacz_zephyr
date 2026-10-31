@@ -6,6 +6,48 @@
 / {
 	/delete-node/ memory@80000000;
 
+	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
+	 * scatter-gather descriptor rings.
+	 */
+	dma_desc: memory@9f000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f000000 0x10000>;
+		zephyr,memory-region = "DMA_DESC";
+	};
+
+	/* emacZero RX and TX packet buffers, in the same uncached window. It
+	 * stops where emz_hostio starts.
+	 */
+	emz_bufs: memory@9f010000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f010000 0xfee000>;
+		zephyr,memory-region = "EMZ_BUFFERS";
+	};
+
+	/* Host-visible page at fixed addresses the host tools reach over
+	 * JTAG-AXI: the provisioning mailbox, then the app's perf stats.
+	 */
+	emz_hostio: memory@9fffe000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9fffe000 0x2000>;
+		zephyr,memory-region = "EMZ_HOSTIO";
+	};
+
+	/* The MII PHY is not managed by software; the link is fixed at
+	 * 100 Mbit/s full duplex. The parent node only supplies the address
+	 * cells for the PHY's reg.
+	 */
+	emz_phy_bus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		emz_phy: ethernet-phy@0 {
+			compatible = "ethernet-phy";
+			reg = <0>;
+			fixed-link = "100BASE-T Full-Duplex";
+		};
+	};
+
 	ram0: memory@90000000 {
 		device_type = "memory";
 		reg = <0x90000000 0x0f000000>;
@@ -13,19 +55,13 @@
 
 	aliases {
 		ethernet0 = &emaczero0;
-		/delete-property/ serial0;
 	};
 
+	/* uart0, the shell's AXI UARTLite at 0x40600000, stays the console */
 	chosen {
 		/delete-property/ bootargs;
 		/delete-property/ stdout-path;
-		/delete-property/ zephyr,console;
-		/delete-property/ zephyr,shell-uart;
 	};
-};
-
-&uart0 {
-	status = "disabled";
 };
 
 &axi_gpio {
@@ -37,23 +73,20 @@
 };
 
 /*
- * On this Arty A7 MBV shell the AXI fabric (and the AXI Timer that backs
- * sys_clock_cycle_get_32) is clocked from MIG ui_clk at ~81.25 MHz, not the
- * 100 MHz board oscillator. Override the upstream mbv32 DTS clock-frequency
- * values so any DT-derived rate math matches hardware. Rounded from
- * SOC_CLK_HZ=81247969 in hardware/scripts/build_arty_a7_mbv.py so it is
- * cleanly divisible by CONFIG_SYS_CLOCK_TICKS_PER_SEC (25 ppm error).
+ * The CPU, the AXI fabric and the AXI Timer that backs
+ * sys_clock_cycle_get_32 run on the shell's 100 MHz SoC clock (SOC_CLK_HZ in
+ * hardware/scripts/build_arty_a7_mbv.py), as in the VexRiscv shell.
  */
 &clk100 {
-	clock-frequency = <81250000>;
+	clock-frequency = <100000000>;
 };
 
 &cpu_0 {
-	clock-frequency = <81250000>;
+	clock-frequency = <100000000>;
 };
 
 &cpus {
-	timebase-frequency = <81250000>;
+	timebase-frequency = <100000000>;
 };
 
 /*
@@ -72,7 +105,8 @@
 		axistream-connected = <&axi_dma0>;
 		local-mac-address = [02 00 00 00 00 01];
 		phy-connection-type = "mii";
-		link-speed = <100>;
+		phy-handle = <&emz_phy>;
+		memory-region = <&emz_bufs>;
 	};
 
 	axi_dma0: dma@41e00000 {
@@ -85,5 +119,6 @@
 		#dma-cells = <0>;
 		dma-channels = <2>;
 		xlnx,addrwidth = <32>;
+		memory-region = <&dma_desc>;
 	};
 };

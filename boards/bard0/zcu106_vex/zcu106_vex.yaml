@@ -1,0 +1,9 @@
+identifier: zcu106_vex
+name: ZCU106 VexRiscv-full
+type: mcu
+arch: riscv
+toolchain:
+  - cross-compile
+  - zephyr
+ram: 245760
+flash: 0

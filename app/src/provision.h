@@ -11,7 +11,7 @@
 
 #define EMACZ_PROVISION_PORT 5004u
 
-/* Host->board JTAG-AXI mailbox at EMACZERO_JTAG_MAILBOX_ADDR (0x9FFFE000).
+/* Host->board JTAG-AXI mailbox at EMACZ_JTAG_MAILBOX_ADDR (0x9FFFE000, hostio.h).
  * The board polls it from the provisioning thread; the host pokes it via
  * fcapz when the network path is not yet reachable (typical bring-up).
  *
@@ -44,7 +44,5 @@ struct emacz_jtag_mailbox {
 };
 
 int emacz_provision_start(struct net_if *iface);
-bool emacz_provision_get_ipv4(struct in_addr *addr);
-bool emacz_provision_ingress(const uint8_t *payload, size_t len);
 
 #endif /* EMACZ_PROVISION_H_ */

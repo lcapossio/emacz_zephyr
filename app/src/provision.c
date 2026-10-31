@@ -16,8 +16,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 
-#include "eth_emaczero.h"
-#include "eth_emaczero_profile.h"
+#include "hostio.h"
 #include "provision.h"
 
 /* Mailbox is uncached DDR (see DBusCached I/O predicate in the vex build).
@@ -26,7 +25,8 @@
  * construction; a stray flush against uncached memory is a nop on this CPU
  * but signals confusion about the mapping.
  */
-#define emacz_jtag_mailbox (*(volatile struct emacz_jtag_mailbox *)EMACZERO_JTAG_MAILBOX_ADDR)
+BUILD_ASSERT(sizeof(struct emacz_jtag_mailbox) <= EMACZ_HOSTIO_SLOT_SIZE);
+#define emacz_jtag_mailbox (*(volatile struct emacz_jtag_mailbox *)EMACZ_JTAG_MAILBOX_ADDR)
 
 #define PROV_MAGIC 0x455a4346u /* "EZCF" */
 #define PROV_VERSION 1u
@@ -35,6 +35,8 @@
 #define PROV_THREAD_STACK_SIZE 2048u
 #define PROV_THREAD_PRIORITY -3
 #define PROV_MULTICAST_ADDR 0xefff4d5au /* 239.255.77.90 */
+/* How often the JTAG mailbox is polled while no request arrives */
+#define PROV_MAILBOX_POLL_MS 100
 
 enum prov_op {
 	PROV_DISCOVER = 1,
@@ -76,9 +78,10 @@ static uint8_t prov_prefix;
 static uint32_t prov_token;
 static uint32_t prov_xid;
 static uint8_t prov_mac[NET_ETH_ADDR_LEN];
+/* Replies go out on their own socket, bound to prov_addr: see open_reply_sock() */
+static int prov_reply_sock = -1;
 K_THREAD_STACK_DEFINE(prov_thread_stack, PROV_THREAD_STACK_SIZE);
 static struct k_thread prov_thread;
-K_MSGQ_DEFINE(prov_rx_queue, PROV_PACKET_SIZE, 8, 4);
 
 static void prefix_to_mask(uint8_t prefix, struct in_addr *mask)
 {
@@ -150,25 +153,59 @@ static bool decode_message(const uint8_t *buf, size_t len, struct prov_message *
 	return true;
 }
 
-static uint16_t ipv4_checksum(const uint8_t *data, size_t len)
+/*
+ * The stack picks a reply's source address by itself, and for a multicast
+ * destination it never picks a link-local one: before the host configures
+ * the board, that would send from 0.0.0.0. Bind the reply socket to
+ * prov_addr instead, and connect it to the group so that it never receives.
+ * The bound address changes with prov_addr, so apply_config() closes it.
+ */
+static int open_reply_sock(void)
 {
-	uint32_t sum = 0u;
+	struct sockaddr_in local = {
+		.sin_family = AF_INET,
+		.sin_addr = prov_addr,
+	};
+	struct sockaddr_in group = {
+		.sin_family = AF_INET,
+		.sin_port = htons(EMACZ_PROVISION_PORT),
+		.sin_addr.s_addr = htonl(PROV_MULTICAST_ADDR),
+	};
+	int sock;
 
-	for (size_t i = 0; i < len; i += 2u) {
-		sum += sys_get_be16(&data[i]);
+	if (prov_reply_sock >= 0) {
+		return prov_reply_sock;
 	}
-	while ((sum >> 16) != 0u) {
-		sum = (sum & 0xffffu) + (sum >> 16);
+
+	sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sock < 0) {
+		return -errno;
 	}
-	return (uint16_t)~sum;
+	/* without an installed address, fall back to the stack's choice */
+	if ((prov_addr_installed &&
+	     zsock_bind(sock, (struct sockaddr *)&local, sizeof(local)) < 0) ||
+	    zsock_connect(sock, (struct sockaddr *)&group, sizeof(group)) < 0) {
+		int err = -errno;
+
+		(void)zsock_close(sock);
+		return err;
+	}
+
+	prov_reply_sock = sock;
+	return sock;
+}
+
+static void close_reply_sock(void)
+{
+	if (prov_reply_sock >= 0) {
+		(void)zsock_close(prov_reply_sock);
+		prov_reply_sock = -1;
+	}
 }
 
 static int send_response(uint8_t op, uint8_t status, uint32_t xid)
 {
-	uint8_t frame[14u + 20u + 8u + PROV_PACKET_SIZE] = {0};
-	uint8_t *ip = &frame[14];
-	uint8_t *udp = &frame[34];
-	uint8_t *payload = &frame[42];
+	uint8_t payload[PROV_PACKET_SIZE];
 	struct prov_message response = {
 		.version = PROV_VERSION,
 		.op = op,
@@ -179,31 +216,18 @@ static int send_response(uint8_t op, uint8_t status, uint32_t xid)
 		.gateway = prov_gateway,
 		.token = prov_token,
 	};
+	int sock = open_reply_sock();
+
+	if (sock < 0) {
+		return sock;
+	}
 
 	memcpy(response.mac, prov_mac, sizeof(response.mac));
 	encode_message(payload, &response);
-
-	frame[0] = 0x01u;
-	frame[1] = 0x00u;
-	frame[2] = 0x5eu;
-	frame[3] = 0x7fu;
-	frame[4] = 0x4du;
-	frame[5] = 0x5au;
-	memcpy(&frame[6], prov_mac, sizeof(prov_mac));
-	sys_put_be16(0x0800u, &frame[12]);
-	ip[0] = 0x45u;
-	sys_put_be16((uint16_t)(20u + 8u + PROV_PACKET_SIZE), &ip[2]);
-	sys_put_be16((uint16_t)xid, &ip[4]);
-	ip[8] = 1u;
-	ip[9] = IPPROTO_UDP;
-	memcpy(&ip[12], prov_addr.s4_addr, NET_IPV4_ADDR_SIZE);
-	sys_put_be32(PROV_MULTICAST_ADDR, &ip[16]);
-	sys_put_be16(ipv4_checksum(ip, 20u), &ip[10]);
-	sys_put_be16(EMACZ_PROVISION_PORT, &udp[0]);
-	sys_put_be16(EMACZ_PROVISION_PORT, &udp[2]);
-	sys_put_be16((uint16_t)(8u + PROV_PACKET_SIZE), &udp[4]);
-	/* A zero UDP checksum is valid for IPv4 and avoids offload assumptions. */
-	return emaczero_send_raw_frame(prov_iface, frame, sizeof(frame));
+	if (zsock_send(sock, payload, sizeof(payload), 0) < 0) {
+		return -errno;
+	}
+	return 0;
 }
 
 static int apply_config(const struct prov_message *request)
@@ -220,6 +244,8 @@ static int apply_config(const struct prov_message *request)
 		return -EIO;
 	}
 	prov_addr_installed = false;
+	/* bound to the address just removed, or to none */
+	close_reply_sock();
 
 	if (net_if_ipv4_addr_add(prov_iface, &request->ip, NET_ADDR_MANUAL, 0) == NULL) {
 		if (net_if_ipv4_addr_add(prov_iface, &old_addr, NET_ADDR_MANUAL, 0) != NULL) {
@@ -308,76 +334,106 @@ static void poll_jtag_mailbox(void)
 	last_applied_epoch = epoch;
 }
 
+static int open_request_sock(void)
+{
+	/* INADDR_ANY: requests arrive as 255.255.255.255 broadcasts */
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_port = htons(EMACZ_PROVISION_PORT),
+		.sin_addr.s_addr = htonl(INADDR_ANY),
+	};
+	int sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+	if (sock < 0) {
+		return -errno;
+	}
+	if (zsock_bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		int err = -errno;
+
+		(void)zsock_close(sock);
+		return err;
+	}
+	return sock;
+}
+
+static void handle_request(const struct prov_message *request)
+{
+	if (request->op == PROV_DISCOVER) {
+		prov_xid = request->xid;
+		prov_token =
+			k_cycle_get_32() ^ request->xid ^ sys_get_be32(&prov_mac[2]) ^ 0x455a4346u;
+		if (prov_token == 0u) {
+			prov_token = 1u;
+		}
+		(void)send_response(PROV_OFFER, PROV_OK, request->xid);
+		return;
+	}
+
+	if (request->op != PROV_CONFIG || memcmp(request->mac, prov_mac, sizeof(prov_mac)) != 0) {
+		return;
+	}
+	if (request->xid != prov_xid || request->token == 0u || request->token != prov_token) {
+		(void)send_response(PROV_NACK, PROV_BAD_TOKEN, request->xid);
+		return;
+	}
+	if (!addr_is_usable(&request->ip, request->prefix, &request->gateway)) {
+		(void)send_response(PROV_NACK, PROV_BAD_ADDRESS, request->xid);
+		return;
+	}
+
+	if (apply_config(request) != 0) {
+		(void)send_response(PROV_NACK, PROV_APPLY_FAILED, request->xid);
+	} else {
+		prov_token = 0u;
+		(void)send_response(PROV_ACK, PROV_OK, request->xid);
+	}
+}
+
 static void provision_thread_fn(void *arg1, void *arg2, void *arg3)
 {
+	int sock = -1;
+
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
 	while (true) {
-		uint8_t buf[PROV_PACKET_SIZE];
+		/* one byte more than a message, so an oversized one shows */
+		uint8_t buf[PROV_PACKET_SIZE + 1u];
 		struct prov_message request;
-		int rc = k_msgq_get(&prov_rx_queue, buf, K_MSEC(100));
+		struct zsock_pollfd pfd;
+		ssize_t len;
 
 		/* Poll the JTAG mailbox every iteration, not just on the idle
 		 * tick. It is the fallback path for when the network is
 		 * unusable, so it must not be starved by the very traffic that
 		 * would make someone reach for it: a steady stream of broadcast
-		 * frames to port 5004 keeps the queue non-empty indefinitely.
+		 * datagrams to port 5004 keeps the socket readable indefinitely.
 		 */
 		poll_jtag_mailbox();
 
-		if (rc != 0) {
-			continue;
-		}
-		if (!decode_message(buf, sizeof(buf), &request)) {
-			continue;
-		}
-
-		if (request.op == PROV_DISCOVER) {
-			prov_xid = request.xid;
-			prov_token = k_cycle_get_32() ^ request.xid ^ sys_get_be32(&prov_mac[2]) ^
-				     0x455a4346u;
-			if (prov_token == 0u) {
-				prov_token = 1u;
+		if (sock < 0) {
+			/* keep retrying: the mailbox above must stay serviced */
+			sock = open_request_sock();
+			if (sock < 0) {
+				k_msleep(PROV_MAILBOX_POLL_MS);
+				continue;
 			}
-			(void)send_response(PROV_OFFER, PROV_OK, request.xid);
+		}
+
+		pfd.fd = sock;
+		pfd.events = ZSOCK_POLLIN;
+		if (zsock_poll(&pfd, 1, PROV_MAILBOX_POLL_MS) <= 0 ||
+		    (pfd.revents & ZSOCK_POLLIN) == 0) {
 			continue;
 		}
 
-		if (request.op != PROV_CONFIG ||
-		    memcmp(request.mac, prov_mac, sizeof(prov_mac)) != 0) {
+		len = zsock_recv(sock, buf, sizeof(buf), ZSOCK_MSG_DONTWAIT);
+		if (len < 0 || !decode_message(buf, (size_t)len, &request)) {
 			continue;
 		}
-		if (request.xid != prov_xid || request.token == 0u || request.token != prov_token) {
-			(void)send_response(PROV_NACK, PROV_BAD_TOKEN, request.xid);
-			continue;
-		}
-		if (!addr_is_usable(&request.ip, request.prefix, &request.gateway)) {
-			(void)send_response(PROV_NACK, PROV_BAD_ADDRESS, request.xid);
-			continue;
-		}
-
-		if (apply_config(&request) != 0) {
-			(void)send_response(PROV_NACK, PROV_APPLY_FAILED, request.xid);
-		} else {
-			prov_token = 0u;
-			(void)send_response(PROV_ACK, PROV_OK, request.xid);
-		}
+		handle_request(&request);
 	}
-}
-
-bool emacz_provision_ingress(const uint8_t *payload, size_t len)
-{
-	if (payload == NULL || len != PROV_PACKET_SIZE) {
-		return false;
-	}
-
-	/* k_msgq_put(K_NO_WAIT) is ISR-safe. A full queue means duplicate host
-	 * retries are already pending, so consume the frame without stalling RX.
-	 */
-	(void)k_msgq_put(&prov_rx_queue, payload, K_NO_WAIT);
-	return true;
 }
 
 int emacz_provision_start(struct net_if *iface)
@@ -440,13 +496,4 @@ int emacz_provision_start(struct net_if *iface)
 			provision_thread_fn, NULL, NULL, NULL, PROV_THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(&prov_thread, "emacz_provision");
 	return ret;
-}
-
-bool emacz_provision_get_ipv4(struct in_addr *addr)
-{
-	if (addr == NULL || prov_iface == NULL) {
-		return false;
-	}
-	*addr = prov_addr;
-	return true;
 }
