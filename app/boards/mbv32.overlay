@@ -15,12 +15,14 @@
 		zephyr,memory-region = "DMA_DESC";
 	};
 
-	/* emacZero RX and TX packet buffers, in the same uncached window. It
-	 * stops where emz_hostio starts.
+	/* emacZero RX and TX packet buffers, in the top 1 MiB of the D-cache
+	 * aperture (0x90000000-0x97FFFFFF): the stack's copies out of and into
+	 * them run on cached lines, and the DMA driver keeps them coherent
+	 * (CACHE_MANAGEMENT in mbv32.conf).
 	 */
-	emz_bufs: memory@9f010000 {
+	emz_bufs: memory@97f00000 {
 		compatible = "zephyr,memory-region";
-		reg = <0x9f010000 0xfee000>;
+		reg = <0x97f00000 0x100000>;
 		zephyr,memory-region = "EMZ_BUFFERS";
 	};
 
@@ -48,9 +50,10 @@
 		};
 	};
 
+	/* stops where the frame buffers start */
 	ram0: memory@90000000 {
 		device_type = "memory";
-		reg = <0x90000000 0x0f000000>;
+		reg = <0x90000000 0x07f00000>;
 	};
 
 	aliases {
@@ -81,8 +84,12 @@
 	clock-frequency = <100000000>;
 };
 
+/* 16 KiB write-through D-cache with 4-word lines (build_arty_a7_mbv.py);
+ * the line size also turns on the SoC's cache management (patch 0008)
+ */
 &cpu_0 {
 	clock-frequency = <100000000>;
+	d-cache-line-size = <16>;
 };
 
 &cpus {

@@ -76,7 +76,12 @@ Ethernet driver and DT binding as submitted to mainline Zephyr, and 0005
 backports it to this tree's older Ethernet API. 0006 is upstream
 `ef5b9dc5c1e`, which stops devicetree MPU regions from corrupting their
 memory type on Cortex-R; the ZCU106 R5 build maps the PL window and its
-DMA memory that way. Re-run after
+DMA memory that way. 0007 makes the minimal libc `memcpy` copy whole
+words when source and destination alignments differ: a UDP payload sits 2
+bytes off a word boundary in its frame, so the socket copy used to run a
+byte at a time. 0008 implements the arch cache API for MicroBlaze V with
+its Zicbom instructions, so the frame buffers can live in cached memory.
+Re-run after
 every `west update`; it skips patches that are already applied and refuses
 to touch locally modified driver files.
 
@@ -179,10 +184,11 @@ Shared SoC:
 - Board oscillator `CLK100MHZ` (100 MHz) drives the MIG; each shell picks
   its own SoC clock from there (see per-shell bullets below).
 - 256 MiB DDR3 at `0x90000000` (Arty MIG). Zephyr code/data in the lower
-  240 MiB. The upper 16 MiB at `0x9f000000` lies outside both CPUs' D-cache
+  127 MiB; the emacZero frame buffers take the 1 MiB above them, the top
+  of both CPUs' D-cache aperture (`0x90000000`-`0x97ffffff`), kept coherent
+  by the AXI DMA driver. The upper 16 MiB at `0x9f000000` lies outside the
   aperture: its first 64 KiB is the `dma_desc` memory region holding the
-  AXI DMA SG descriptor rings, and emacZero frame buffers follow from
-  `0x9f010000`.
+  AXI DMA SG descriptor rings, and the host page sits at `0x9fffe000`.
 - AXI INTC `0x41200000`, AXI Timer `0x41c00000`, AXI UARTLite `0x40600000`.
 - emacZero CSRs at `0x44a00000`, Xilinx AXI DMA at `0x41e00000`. MM2S feeds
   emacZero TX, S2MM receives RX.
@@ -405,8 +411,9 @@ that RX load its TX thread got no CPU at all.
 
 The caches:
 
-- *on*: each shell as built. The soft CPUs' frame buffers sit in the DMA
-  window above their D-cache aperture; the R5 variant makes its buffer
+- *on*: each shell as built at the time. The soft CPUs' frame buffers sat
+  in the DMA window above their D-cache aperture (now
+  `app/perf/uncached_bufs.*`, see below); the R5 variant makes its buffer
   region non-cacheable (`app/perf/zcu106_r5_uncached_bufs.*`).
 - *D-cache off*: the image is built with `app/perf/dcache_off.overlay`,
   which links Zephyr at `0x98000000`, above the D-cache aperture, so every
@@ -435,6 +442,46 @@ buffers; cacheable ones, with the AXI DMA driver's cache maintenance around
 each transfer (`CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY`), let it
 read whole lines. That is how `zcu106_r5` is built: 243 Mbit/s RX, while TX
 pays for the cache clean of each buffer.
+
+The tables above were measured on uncached frame buffers and the stock
+`memcpy`. The Arty soft-CPU builds now take three fixes to that copy path,
+none of which changes the hardware:
+
+- `patches/zephyr/0007`: `memcpy` copies words whatever the alignment of
+  its source and destination, shifting and merging two aligned source
+  words into each destination word.
+- `CONFIG_NET_L2_ETHERNET_RESERVE_HEADER` (`app/prj.conf`): the stack
+  builds each TX frame in one word-aligned buffer, so the driver's copy
+  into the DMA buffer runs on words too.
+- Cacheable frame buffers: `emz_bufs` sits in the top 1 MiB of the D-cache
+  aperture (`0x97F00000`), and the AXI DMA driver cleans and invalidates
+  them around each transfer, as on the R5. MicroBlaze V uses its Zicbom
+  instructions (`patches/zephyr/0008`), VexRiscv its custom line operation
+  (`soc/bard0/vexriscv_axi/cache.c`). On this VexRiscv a clean issued while
+  the previous line is still being written back can be lost, so each
+  cleaned line waits for its write-back. That wait is why TX gains nothing
+  from caching on Vex. `app/perf/uncached_bufs.*` restores the old
+  placement.
+
+Same loads as the first table, Arty A7 at 100 MHz, caches on, 20 ms RX
+budget, rates in Mbit/s, each fix added to the ones above it:
+
+| Shell | Copy path | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
+|---|---|---|---|---|---|
+| Arty MBV | stock (`7eb1288`) | 9.1 | 8.9 | 4.9 | 1.75 / 7.3 |
+| | word `memcpy` | 19.3 | 14.8 | 11.3 | 4.79 / 13.0 |
+| | + reserved L2 header | 19.6 | 15.7 | 11.9 | 4.25 / 14.3 |
+| | + cacheable buffers (default) | 28.2 | 18.0 | 14.5 | 6.55 / 17.8 |
+| Arty Vex | stock (`7eb1288`) | 9.1 | 11.8 | 6.3 | 2.15 / 7.5 |
+| | word `memcpy` | 18.6 | 15.0 | 11.1 | 5.31 / 12.1 |
+| | + reserved L2 header | 18.3 | 15.2 | 11.2 | 5.65 / 11.6 |
+| | + cacheable buffers (default) | 29.8 | 15.0 | 11.9 | 7.06 / 15.6 |
+
+Both defaults deliver 100% of a 20 Mbit/s RX load. With
+`CONFIG_NET_UDP_CHECKSUM=y` and a payload that changes on every packet
+(`run_udp_accounting.py --vary-payload`), both deliver 100% at 5 and
+8 Mbit/s, so the cache maintenance loses no data. Without it
+(`MANUAL_CACHE_COHERENCY=n`), the Vex image fails to provision.
 
 To measure a shell (an image variant is built with the overlay or conf as
 `-DEXTRA_DTC_OVERLAY_FILE` / `-DEXTRA_CONF_FILE`):

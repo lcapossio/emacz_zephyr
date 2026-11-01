@@ -30,6 +30,15 @@ the payload so the socket copies run on words.
 | TX single-direction | 8.9 Mbit/s | 11.5 Mbit/s |
 | RX ceiling, word copies | 19.9 Mbit/s | 19.7 Mbit/s |
 | TX, word copies | 15.6 Mbit/s | 15.9 Mbit/s |
+| RX ceiling, current default | 28.2 Mbit/s | 29.8 Mbit/s |
+| TX, current default | 18.0 Mbit/s | 15.0 Mbit/s |
+
+*Current default* is the build as it now stands: word copies at any
+alignment (`patches/zephyr/0007`), the reserved L2 header and cacheable
+frame buffers kept coherent by the DMA driver. The README's Throughput
+section covers each step. Vex's TX gains nothing from caching because each
+cleaned line has to wait for its write-back, a workaround for clean
+operations this VexRiscv build can lose.
 
 At the same clock the RX ceiling is the same on both CPUs, because memory
 latency sets it. Frame buffers live in uncached DDR and the UDP payload
