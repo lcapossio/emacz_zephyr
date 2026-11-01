@@ -13,6 +13,7 @@ therefore uses plain UDP and treats sink_packets/sink_bytes as the pass signal.
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 import threading
@@ -124,7 +125,12 @@ def send_fast_sink(args: argparse.Namespace, stop: threading.Event | None) -> in
     """Send the load, until the duration or stop, and return the datagram count."""
     rate_bps = args.rate_mbps * 1_000_000.0
     interval = (args.packet_size * 8.0) / rate_bps if rate_bps > 0 else 0.0
-    payload = bytes((i & 0xff) for i in range(args.packet_size))
+    if args.vary_payload:
+        # A prime count of random payloads, so neither consecutive datagrams
+        # nor the frames a reused RX buffer holds repeat
+        payloads = [os.urandom(args.packet_size) for _ in range(257)]
+    else:
+        payloads = [bytes((i & 0xff) for i in range(args.packet_size))]
     target = (args.target, args.port)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -145,7 +151,7 @@ def send_fast_sink(args: argparse.Namespace, stop: threading.Event | None) -> in
             if interval > 0 and now < next_send:
                 time.sleep(min(next_send - now, 0.001))
                 continue
-            sock.sendto(payload, target)
+            sock.sendto(payloads[packets % len(payloads)], target)
             packets += 1
             next_send += interval
 
@@ -176,6 +182,10 @@ def main() -> int:
                         help="start sending on a first line on stdin, stop on a second "
                              "(--duration is then the cap), take the final read on EOF")
     parser.add_argument("--packet-size", type=int, default=1472)
+    parser.add_argument("--vary-payload", action="store_true",
+                        help="send random payloads that change every datagram; with the "
+                             "board's UDP checksum on, a corrupted payload is dropped and "
+                             "shows as loss")
     parser.add_argument("--timeout", type=float, default=1.0)
     parser.add_argument("--skip-control-check", action="store_true")
     parser.add_argument("--expect-min-packets", type=int, default=1)
