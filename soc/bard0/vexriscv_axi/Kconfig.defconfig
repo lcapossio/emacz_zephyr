@@ -36,4 +36,8 @@ config 2ND_LVL_INTR_00_OFFSET
 config MAX_IRQ_PER_AGGREGATOR
 	default 32
 
+# DataCacheConfig bytePerLine of the generated core
+config DCACHE_LINE_SIZE
+	default 32
+
 endif # SOC_VEXRISCV_AXI

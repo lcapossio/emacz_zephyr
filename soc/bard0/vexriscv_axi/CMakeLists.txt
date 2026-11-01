@@ -6,5 +6,6 @@ zephyr_sources(
     ${ZEPHYR_BASE}/soc/common/riscv-privileged/soc_irq.S
     ${ZEPHYR_BASE}/soc/common/riscv-privileged/vector.S
 )
+zephyr_sources_ifdef(CONFIG_ARCH_CACHE cache.c)
 
 set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/riscv/common/linker.ld CACHE INTERNAL "")
