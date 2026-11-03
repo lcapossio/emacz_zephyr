@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leonardo Capossio <capossio.leonardo@gmail.com>
+Date: Sun, 1 Nov 2026 12:00:00 +0100
+Subject: [PATCH] ethernet: emaczero: quiesce the DMA before recovery frees its
+ buffers
+
+DMA recovery released the TX packets and took back the RX buffers right
+after dma_stop(), but dma_stop() only clears RS: a running channel
+finishes its transfers before it halts, and the core is not reset until
+the RX channel is configured again. MM2S could still be reading a frame
+whose packet had gone back to its pool. Wait until both channels have
+halted before taking anything back.
+
+Completions that came in while recovery ran were not all ignored. A TX
+completion between the reset of the TX slot accounting and the end of
+recovery advanced tx_done, after which every completion released the
+packet of the slot after its own. The TX callback now ignores
+completions while recovery is pending, as the RX callback does, and a
+sender that waited for a TX buffer checks again for a pending recovery
+before it posts.
+
+In the other direction, recovery restarted S2MM before it let the RX
+callback back in, so a frame completing in between was ignored while
+its buffer stayed on rx_posted, and every later frame was matched with
+the buffer before its own. Configure S2MM, let the callbacks back in,
+and only then start it.
+
+A failed dma_start() after a frame was posted now schedules recovery,
+since that frame holds a TX slot nothing would complete.
+
+Signed-off-by: Leonardo Capossio <capossio.leonardo@gmail.com>
+---
+ drivers/ethernet/eth_emaczero.c | 84 +++++++++++++++++++++++++++------
+ 1 file changed, 70 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
+index 8bc3cad..132a473 100644
+--- a/drivers/ethernet/eth_emaczero.c
++++ b/drivers/ethernet/eth_emaczero.c
+@@ -322,13 +322,13 @@ static int emz_rx_post(const struct device *dev, struct emz_rx_buf *rx)
+ }
+ 
+ /*
+- * (Re)start S2MM with a single buffer, outside rx_lock because configuring the
+- * channel may sleep. Refill and the RX callback must be idle: at init nothing
+- * runs yet, and during recovery dma_recover_pending holds them off.
++ * (Re)configure S2MM with a single buffer, outside rx_lock because configuring
++ * the channel may sleep. Refill and the RX callback must be idle: at init
++ * nothing runs yet, and during recovery dma_recover_pending holds them off.
++ * The channel runs from the next dma_start().
+  */
+-static int emz_rx_start(const struct device *dev)
++static int emz_rx_configure(const struct device *dev)
+ {
+-	const struct emz_config *cfg = dev->config;
+ 	struct emz_data *data = dev->data;
+ 	struct emz_rx_buf *rx;
+ 	int ret;
+@@ -339,10 +339,7 @@ static int emz_rx_start(const struct device *dev)
+ 	}
+ 
+ 	ret = emz_rx_post(dev, rx);
+-	if (ret == 0) {
+-		ret = dma_start(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
+-	}
+-	if (ret != 0 && data->rx_posted_count == 0) {
++	if (ret != 0) {
+ 		k_fifo_put(&data->rx_free, rx);
+ 	}
+ 
+@@ -585,6 +582,13 @@ static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint3
+ 		emz_dma_request_recover(data, false);
+ 		return;
+ 	}
++	/*
++	 * Completions from a ring being torn down are ignored too, so that they
++	 * cannot move tx_done: emz_dma_recover() releases every slot itself.
++	 */
++	if (atomic_get(&data->dma_recover_pending) != 0) {
++		return;
++	}
+ 
+ #if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
+ 	/* MM2S completes frames in the order they were posted */
+@@ -696,6 +700,12 @@ static int emz_send(const struct device *dev, struct net_pkt *pkt)
+ 		ret = -ENOBUFS;
+ 		goto unlock;
+ 	}
++	/* a DMA error may have come in while we waited */
++	if (atomic_get(&data->dma_recover_pending) != 0) {
++		k_sem_give(&data->tx_free);
++		ret = -ENETDOWN;
++		goto unlock;
++	}
+ 
+ #if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
+ 	buf = (uint8_t *)emz_tx_zero_copy_buf(pkt, len);
+@@ -724,12 +734,28 @@ static int emz_send(const struct device *dev, struct net_pkt *pkt)
+ 	/* posted: the buffer stays claimed until MM2S completes it */
+ 	data->tx_next = (data->tx_next + 1) % EMZ_TX_BUF_COUNT;
+ 	ret = dma_start(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM);
++	if (ret != 0) {
++		/* the frame holds a slot MM2S will never complete: rebuild the ring */
++		emz_dma_request_recover(data, false);
++	}
+ 
+ unlock:
+ 	k_mutex_unlock(&data->tx_lock);
+ 	return ret;
+ }
+ 
++/* MM2S finishes the frame it is reading, which takes 1.2 ms at 10 Mbit/s */
++#define EMZ_DMA_HALT_TIMEOUT_US 5000
++
++static bool emz_dma_halted(const struct device *dma)
++{
++	struct dma_status status;
++
++	return dma_get_status(dma, XILINX_AXI_DMA_TX_CHANNEL_NUM, &status) == 0 &&
++	       !status.busy &&
++	       dma_get_status(dma, XILINX_AXI_DMA_RX_CHANNEL_NUM, &status) == 0 && !status.busy;
++}
++
+ /*
+  * An AXI DMA error halts the channel until dma_stop() and then dma_config(),
+  * whose soft reset covers the whole core and sleeps. Rebuild TX and RX
+@@ -750,6 +776,18 @@ static void emz_dma_recover(struct k_work *work)
+ 	(void)dma_stop(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
+ 	(void)dma_stop(cfg->dma, XILINX_AXI_DMA_TX_CHANNEL_NUM);
+ 
++	/*
++	 * dma_stop() only asks a channel to halt, and one still running finishes
++	 * its transfers first. Until both have halted, MM2S may still read the
++	 * frames below and S2MM write the RX buffers.
++	 */
++	if (!WAIT_FOR(emz_dma_halted(cfg->dma), EMZ_DMA_HALT_TIMEOUT_US, k_busy_wait(10))) {
++		k_mutex_unlock(&data->tx_lock);
++		LOG_ERR("DMA did not halt");
++		(void)k_work_reschedule(&data->dma_recover_work, K_MSEC(1));
++		return;
++	}
++
+ 	/* frames queued on MM2S are lost; the next send reconfigures the channel */
+ 	data->tx_dma_configured = false;
+ 	data->tx_next = 0;
+@@ -770,10 +808,10 @@ static void emz_dma_recover(struct k_work *work)
+ 	data->rx_dma_configured = false;
+ 	k_spin_unlock(&data->rx_lock, key);
+ 
+-	ret = emz_rx_start(dev);
+-	k_mutex_unlock(&data->tx_lock);
+-
++	/* resets the DMA core, so nothing of the old rings completes after it */
++	ret = emz_rx_configure(dev);
+ 	if (ret != 0) {
++		k_mutex_unlock(&data->tx_lock);
+ 		/* -ENOBUFS: the stack holds every RX buffer; retry once it frees one */
+ 		if (ret != -ENOBUFS) {
+ 			LOG_ERR("RX DMA restart failed: %d", ret);
+@@ -782,8 +820,23 @@ static void emz_dma_recover(struct k_work *work)
+ 		return;
+ 	}
+ 
+-	LOG_WRN("DMA recovered");
++	/*
++	 * Let the callbacks back in before S2MM runs, so that the first frame of
++	 * the new ring finds its buffer on rx_posted rather than being ignored.
++	 */
++	key = k_spin_lock(&data->rx_lock);
+ 	atomic_clear(&data->dma_recover_pending);
++	ret = dma_start(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
++	k_spin_unlock(&data->rx_lock, key);
++	k_mutex_unlock(&data->tx_lock);
++
++	if (ret != 0) {
++		LOG_ERR("RX DMA start failed: %d", ret);
++		emz_dma_request_recover(data, true);
++		return;
++	}
++
++	LOG_WRN("DMA recovered");
+ 	emz_rx_refill(dev);
+ }
+ 
+@@ -989,7 +1042,10 @@ static int emz_init(const struct device *dev)
+ 			(void *)dev, NULL, NULL, EMZ_RX_THREAD_PRIO, 0, K_NO_WAIT);
+ 	k_thread_name_set(&data->rx_thread, "emaczero_rx");
+ 
+-	ret = emz_rx_start(dev);
++	ret = emz_rx_configure(dev);
++	if (ret == 0) {
++		ret = dma_start(cfg->dma, XILINX_AXI_DMA_RX_CHANNEL_NUM);
++	}
+ 	if (ret != 0) {
+ 		LOG_ERR("RX DMA start failed: %d", ret);
+ 		return ret;
+-- 
+2.52.0.windows.1
+

@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leonardo Capossio <capossio.leonardo@gmail.com>
+Date: Sun, 1 Nov 2026 12:00:00 +0100
+Subject: [PATCH] ethernet: emaczero: leave the traffic counters to the L2
+
+The Ethernet L2 adds every frame it counts to the packet, byte,
+broadcast, multicast and error counters through the pointer get_stats
+returns, fetching it again each time. get_stats overwrote those same
+counters with the MAC's, so they were neither the L2's counts nor the
+MAC's, and it read eleven MAC registers per frame to do it.
+
+Leave the traffic counters to the L2. Fill only the MAC's error
+details, and add to errors.rx the frames the MAC rejected or dropped
+and the frames the driver dropped, by how much those counts grew since
+the last read, so the wrapping MAC counters never overwrite anything.
+Read the MAC at most every 10 ms, under a spinlock, since get_stats is
+also called from the DMA completion interrupt.
+
+Under a UDP RX flood on the Arty A7 at 100 MHz the old get_stats took
+1.4% of the CPU on both a MicroBlaze V and a VexRiscv, by
+program-counter samples.
+
+Signed-off-by: Leonardo Capossio <capossio.leonardo@gmail.com>
+---
+ drivers/ethernet/eth_emaczero.c | 53 +++++++++++++++++++++++++--------
+ 1 file changed, 40 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
+index cdcc0a8..8bc3cad 100644
+--- a/drivers/ethernet/eth_emaczero.c
++++ b/drivers/ethernet/eth_emaczero.c
+@@ -173,6 +173,13 @@ struct emz_data {
+ #if defined(CONFIG_NET_STATISTICS_ETHERNET)
+ 	struct net_stats_eth stats;
+ 	uint32_t rx_dropped;
++	/* stats_lock serialises reads of the MAC counters */
++	struct k_spinlock stats_lock;
++	/* k_uptime_ticks() at the last read */
++	int64_t stats_read_ticks;
++	bool stats_read;
++	/* frames lost before the L2, as far as stats.errors.rx counts them */
++	uint32_t rx_lost_counted;
+ #endif
+ };
+ 
+@@ -891,26 +898,46 @@ static const struct device *emz_get_phy(const struct device *dev)
+ }
+ 
+ #if defined(CONFIG_NET_STATISTICS_ETHERNET)
++/*
++ * The Ethernet L2 owns the traffic counters: it adds each frame it counts
++ * through the pointer returned here, fetched again for every frame. The
++ * driver fills the MAC's error details and adds to errors.rx the frames lost
++ * before the L2 saw them. Each MAC register is a bus read, so read them at
++ * most this often.
++ */
++#define EMZ_STATS_REFRESH_US 10000
++
+ static struct net_stats_eth *emz_get_stats(const struct device *dev)
+ {
+ 	const struct emz_config *cfg = dev->config;
+ 	struct emz_data *data = dev->data;
++	struct net_stats_eth_errors *details = &data->stats.error_details;
++	k_spinlock_key_t key = k_spin_lock(&data->stats_lock);
++	int64_t now = k_uptime_ticks();
++	uint32_t lost;
+ 
++	if (data->stats_read &&
++	    now - data->stats_read_ticks < k_us_to_ticks_ceil64(EMZ_STATS_REFRESH_US)) {
++		goto unlock;
++	}
++	data->stats_read_ticks = now;
++	data->stats_read = true;
+ 
+-	data->stats.pkts.tx = emz_read(cfg, EMZ_REG_TX_FRAME);
+-	data->stats.bytes.sent = emz_read(cfg, EMZ_REG_TX_BYTE);
+-	data->stats.pkts.rx = emz_read(cfg, EMZ_REG_RX_FRAME);
+-	data->stats.bytes.received = emz_read(cfg, EMZ_REG_RX_BYTE);
+-	data->stats.broadcast.rx = emz_read(cfg, EMZ_REG_RX_BCAST);
+-	data->stats.multicast.rx = emz_read(cfg, EMZ_REG_RX_MCAST);
+-	data->stats.error_details.rx_frame_errors = emz_read(cfg, EMZ_REG_RX_ERR_SYMBOL);
+-	data->stats.error_details.rx_over_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERFLOW);
+-	data->stats.error_details.rx_long_length_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERSIZE);
+-	data->stats.error_details.rx_missed_errors = emz_read(cfg, EMZ_REG_RX_DROP);
+-	/* frames the MAC rejected or dropped, plus frames the driver had to drop */
+-	data->stats.errors.rx = emz_read(cfg, EMZ_REG_RX_ERR) +
+-				data->stats.error_details.rx_missed_errors + data->rx_dropped;
++	details->rx_frame_errors = emz_read(cfg, EMZ_REG_RX_ERR_SYMBOL);
++	details->rx_over_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERFLOW);
++	details->rx_long_length_errors = emz_read(cfg, EMZ_REG_RX_ERR_OVERSIZE);
++	details->rx_missed_errors = emz_read(cfg, EMZ_REG_RX_DROP);
+ 
++	/*
++	 * Frames the MAC rejected or dropped whole, and frames the driver had to
++	 * drop. The counters wrap, so add what they gained since the last read.
++	 */
++	lost = emz_read(cfg, EMZ_REG_RX_ERR) + details->rx_missed_errors + data->rx_dropped;
++	data->stats.errors.rx += lost - data->rx_lost_counted;
++	data->rx_lost_counted = lost;
++
++unlock:
++	k_spin_unlock(&data->stats_lock, key);
+ 	return &data->stats;
+ }
+ #endif
+-- 
+2.52.0.windows.1
+
