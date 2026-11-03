@@ -1,5 +1,5 @@
 diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-index 9f339fb4..4353c8b6 100644
+index 67556e94..f8b80b7d 100644
 --- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
 +++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
 @@ -35,9 +35,16 @@ object VexRiscvAxi4WithIntegratedJtag{
@@ -7,12 +7,12 @@ index 9f339fb4..4353c8b6 100644
  //          ),
            new IBusCachedPlugin(
 -            prediction = STATIC,
-+            // bard0: DYNAMIC_TARGET + 16 KiB I$ (was STATIC + 4 KiB). Under
-+            // Zephyr's RX poll path the demo defaults cost ~17.6k cyc/pkt
-+            // and cap RX at ~66 Mbps; widening the cache and using a target
-+            // predictor with a small 256-entry history table brings the CPU
-+            // to parity with the mbv shell and lifts RX to line-rate 95 Mbps
-+            // (see no_commit/BUGS.md bug #48). Mirrors GenFullNoMmuMaxPerf.
++            // bard0: boot straight from DDR, where the loader stages
++            // zephyr.bin while the CPU is held in reset.
++            resetVector = 0x90000000l,
++            // bard0: DYNAMIC_TARGET with a 256-entry history and a 16 KiB
++            // I$ (was STATIC, 4 KiB), as GenFullNoMmuMaxPerf. The demo
++            // defaults cost ~17.6k cycles per packet on Zephyr's RX path.
 +            prediction = DYNAMIC_TARGET,
 +            historyRamSizeLog2 = 8,
              config = InstructionCacheConfig(
@@ -21,45 +21,48 @@ index 9f339fb4..4353c8b6 100644
                bytePerLine =32,
                wayCount = 1,
                addressWidth = 32,
-@@ -56,8 +63,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -55,8 +62,9 @@ object VexRiscvAxi4WithIntegratedJtag{
              //            )
            ),
            new DBusCachedPlugin(
-+            // bard0: 16 KiB D$ (was 4 KiB) — pairs with widened I$ above.
++            // bard0: 16 KiB D$ (was 4 KiB), to pair with the I$ above.
              config = new DataCacheConfig(
 -              cacheSize         = 4096,
 +              cacheSize         = 16384,
                bytePerLine       = 32,
                wayCount          = 1,
                addressWidth      = 32,
-@@ -102,11 +110,21 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -72,7 +80,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+             //            )
+           ),
+           new StaticMemoryTranslatorPlugin(
+-            ioRange      = _(31 downto 28) === 0xF
++            // bard0: cache only the DDR code and data window,
++            // 0x9000_0000-0x97FF_FFFF; peripherals and the DMA memory at
++            // 0x9F00_0000 bypass the caches.
++            ioRange      = _(31 downto 27) =/= U"10010"
+           ),
+           new DecoderSimplePlugin(
+             catchIllegalInstruction = true
+@@ -100,7 +111,9 @@ object VexRiscvAxi4WithIntegratedJtag{
            ),
            new DebugPlugin(ClockDomain.current.clone(reset = Bool().setName("debugReset"))),
            new BranchPlugin(
 -            earlyBranch = false,
-+            // bard0: earlyBranch true resolves mispredicts one stage earlier,
-+            // pairing with DYNAMIC_TARGET on IBusCachedPlugin above.
++            // bard0: resolve mispredicts a stage earlier, to pair with
++            // DYNAMIC_TARGET above.
 +            earlyBranch = true,
              catchAddressMisaligned = true
            ),
            new CsrPlugin(
-             config = CsrPluginConfig(
-+              // bard0: only mtvec is genuinely required by Zephyr's boot
-+              // path — it installs its own trap vector on entry. The RISC-V
-+              // identity CSRs (mhartid / mvendorid / marchid / mimpid /
-+              // misa) are left uninstalled: with catchIllegalAccess=false,
-+              // unknown CSR reads return 0, which is exactly the value
-+              // Zephyr expects for a single-hart minimum-info build. Making
-+              // them explicit widened the CSR read mux enough to push
-+              // placer congestion past the 100 MHz sys_clk timing budget.
-               catchIllegalAccess = false,
-               mvendorid      = null,
-               marchid        = null,
-@@ -114,7 +132,7 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -112,7 +125,10 @@ object VexRiscvAxi4WithIntegratedJtag{
                mhartid        = null,
                misaExtensionsInit = 66,
                misaAccess     = CsrAccess.NONE,
 -              mtvecAccess    = CsrAccess.NONE,
++              // bard0: Zephyr installs its own trap vector. The identity
++              // CSRs stay uninstalled: with catchIllegalAccess = false they
++              // read as 0, which is what Zephyr expects.
 +              mtvecAccess    = CsrAccess.READ_WRITE,
                mtvecInit      = 0x00000020l,
                mepcAccess     = CsrAccess.READ_WRITE,

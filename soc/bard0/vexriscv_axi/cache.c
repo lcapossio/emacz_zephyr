@@ -4,23 +4,20 @@
  *
  * VexRiscv data cache maintenance for Zephyr's cache API.
  *
- * VexRiscv's DBusCachedPlugin decodes a custom MISC-MEM instruction
- * (funct3 = 101, rs1 = address) that works on one write-back D-cache line.
- * Bits 28, 29 and 30 of the instruction, imm bits 8, 9 and 10 of an I-type
- * encoding, select:
- *   clean       write the line back if it is dirty
- *   invalidate  drop the line
- *   index       pick the line by its index bits instead of an address hit
- * An address that misses, or lies outside the cached aperture, is a no-op.
+ * The data cache is write-through without write allocate: every store goes
+ * out on the D-bus, and the cache never holds data memory lacks. Cleaning a
+ * range therefore only has to wait until the stores issued so far have
+ * reached memory. The D-bus bridge holds every uncached read until all
+ * outstanding writes are acknowledged (cached refills wait only for writes
+ * to their own line), so one uncached read does it: once it returns,
+ * a DMA master started afterwards reads what the CPU wrote. FENCE cannot,
+ * this configuration decodes it as a no-op.
  *
- * A clean only hands the dirty line to the victim buffer, which writes it
- * out on the D-bus. A second clean issued while that write-back is still
- * in flight can be lost: back to back, some lines of a range never reach
- * memory. An uncached read waits for the victim buffer to empty, and the
- * bus adapter holds every read until all outstanding writes are
- * acknowledged, so each cleaned line is followed by one. Once it returns,
- * the line is in memory and a DMA master started afterwards reads it.
- * FENCE cannot do this here, the core decodes it as a no-op.
+ * DBusCachedPlugin decodes a MISC-MEM instruction (funct3 = 101, rd = x0,
+ * imm[4:0] = 0) that invalidates one line, chosen by the index bits of rs1,
+ * whether or not it holds that address; with rs1 = x0 it invalidates the
+ * whole cache. Dropping an unrelated line that shares the index costs a
+ * refill and loses no data.
  */
 
 #include <zephyr/arch/cache.h>
@@ -30,12 +27,9 @@
 
 #define LINE_SIZE CONFIG_DCACHE_LINE_SIZE
 
-#define OP_CLEAN 0x100
-#define OP_INVD  0x200
-#define OP_INDEX 0x400
-
-#define VEX_DCACHE_OP(op, addr)                                                                    \
-	__asm__ volatile(".insn i 0x0f, 5, x0, %0, %1" : : "r"(addr), "i"(op) : "memory")
+#define VEX_DCACHE_INVD_LINE(addr)                                                                 \
+	__asm__ volatile(".insn i 0x0f, 5, x0, %0, 0" : : "r"(addr) : "memory")
+#define VEX_DCACHE_INVD_ALL() __asm__ volatile(".insn i 0x0f, 5, x0, x0, 0" : : : "memory")
 
 /* mtime: any uncached read would do, this one has no side effects */
 #define DRAIN_ADDR DT_REG_ADDR(DT_INST(0, riscv_machine_timer))
@@ -45,31 +39,15 @@ static ALWAYS_INLINE void drain_writes(void)
 	(void)sys_read32(DRAIN_ADDR);
 }
 
-/* one line; a clean waits for its write-back before the next op issues */
-#define LINE_OP(op, addr)                                                                          \
-	do {                                                                                       \
-		VEX_DCACHE_OP(op, addr);                                                           \
-		if ((op) & OP_CLEAN) {                                                             \
-			drain_writes();                                                            \
-		}                                                                                  \
-	} while (false)
+static ALWAYS_INLINE void invd_range(void *addr, size_t size)
+{
+	uintptr_t line = ROUND_DOWN((uintptr_t)addr, LINE_SIZE);
+	uintptr_t end = (uintptr_t)addr + size;
 
-#define RANGE_OP(op, addr, size)                                                                   \
-	do {                                                                                       \
-		uintptr_t line = ROUND_DOWN((uintptr_t)(addr), LINE_SIZE);                         \
-		uintptr_t end = (uintptr_t)(addr) + (size);                                        \
-                                                                                                   \
-		for (; line < end; line += LINE_SIZE) {                                            \
-			LINE_OP(op, line);                                                         \
-		}                                                                                  \
-	} while (false)
-
-#define ALL_OP(op)                                                                                 \
-	do {                                                                                       \
-		for (uintptr_t idx = 0; idx < CONFIG_VEXRISCV_DCACHE_SIZE; idx += LINE_SIZE) {     \
-			LINE_OP((op) | OP_INDEX, idx);                                             \
-		}                                                                                  \
-	} while (false)
+	for (; line < end; line += LINE_SIZE) {
+		VEX_DCACHE_INVD_LINE(line);
+	}
+}
 
 void arch_cache_init(void)
 {
@@ -88,36 +66,41 @@ void arch_dcache_disable(void)
 
 int arch_dcache_flush_range(void *addr, size_t size)
 {
-	RANGE_OP(OP_CLEAN, addr, size);
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+
+	drain_writes();
 	return 0;
 }
 
 int arch_dcache_invd_range(void *addr, size_t size)
 {
-	RANGE_OP(OP_INVD, addr, size);
+	invd_range(addr, size);
 	return 0;
 }
 
 int arch_dcache_flush_and_invd_range(void *addr, size_t size)
 {
-	RANGE_OP(OP_CLEAN | OP_INVD, addr, size);
+	drain_writes();
+	invd_range(addr, size);
 	return 0;
 }
 
 int arch_dcache_flush_all(void)
 {
-	ALL_OP(OP_CLEAN);
+	drain_writes();
 	return 0;
 }
 
 int arch_dcache_invd_all(void)
 {
-	ALL_OP(OP_INVD);
+	VEX_DCACHE_INVD_ALL();
 	return 0;
 }
 
 int arch_dcache_flush_and_invd_all(void)
 {
-	ALL_OP(OP_CLEAN | OP_INVD);
+	drain_writes();
+	VEX_DCACHE_INVD_ALL();
 	return 0;
 }

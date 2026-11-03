@@ -17,7 +17,7 @@ config SOC_VEXRISCV_AXI
 	# by not selecting RISCV_PRIVILEGED either — we still consume soc_irq.S
 	# and vector.S from that dir via explicit paths in CMakeLists.txt.
 	select RISCV_HAS_CPU_IDLE
-	# Write-back D-cache with per-line clean/invalidate (cache.c)
+	# Write-through D-cache with per-line invalidate (cache.c)
 	select CPU_HAS_DCACHE
 	# Peripheral IRQs go through the AXI INTC (M-mode external IRQ = 11 on
 	# cpu0_intc). Enable multi-level dispatch so IRQ_CONNECT() sees per-line
@@ -35,12 +35,3 @@ config SOC_VEXRISCV_AXI
 	select XLNX_INTC_USE_SIE if XLNX_INTC
 	select XLNX_INTC_USE_CIE if XLNX_INTC
 	select XLNX_INTC_USE_IVR if XLNX_INTC
-
-config VEXRISCV_DCACHE_SIZE
-	int "VexRiscv D-cache size in bytes"
-	depends on SOC_VEXRISCV_AXI
-	default 16384
-	help
-	  Size of the generated core's data cache, which the whole-cache
-	  maintenance routines walk line by line. It must match the
-	  DataCacheConfig cacheSize the VexRiscv RTL was generated with.

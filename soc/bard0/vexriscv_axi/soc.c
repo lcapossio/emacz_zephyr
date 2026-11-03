@@ -124,30 +124,9 @@ FUNC_NORETURN void k_sys_fatal_error_handler(unsigned int reason,
 		vex_fatal_scratch[3] = esf ? (uint32_t)esf->a0 : 0xDEADBEEFu;
 	}
 
-	/* A fence would not help here: it orders accesses but never writes a
-	 * D-cache line back, and this core has no Zicbom cbo.clean (it traps
-	 * as illegal-instruction, which would turn one fatal into a fault
-	 * storm and clobber the captured (reason, mepc)). To make our scratch
-	 * stores visible to JTAG-AXI despite the D-cache, read 128 KiB of
-	 * unrelated cached RAM to force natural capacity eviction of the
-	 * scratch line. The span starts at the end of the image, so it never
-	 * holds the scratch line itself (.noinit sits below _end), and it must
-	 * lie in the D-cache aperture (0x90000000-0x97FFFFFF): reads from the
-	 * uncached DMA window bypass the cache and would evict nothing. It is
-	 * clipped to the end of zephyr,sram on boards with little RAM.
+	/* The D-cache is write-through, so the scratch stores reach memory,
+	 * where JTAG-AXI reads them, without any maintenance.
 	 */
-	{
-		extern char _end[];
-		uintptr_t start = ROUND_UP((uintptr_t)_end, 64);
-		uintptr_t stop = MIN(start + KB(128),
-				     DT_REG_ADDR(DT_CHOSEN(zephyr_sram)) +
-				     DT_REG_SIZE(DT_CHOSEN(zephyr_sram)));
-
-		for (uintptr_t addr = start; addr < stop; addr += sizeof(uint32_t)) {
-			(void)*(volatile uint32_t *)addr;
-		}
-	}
-
 	for (;;) {
 		__asm__ volatile("" ::: "memory");
 	}
