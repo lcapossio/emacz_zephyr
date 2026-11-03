@@ -49,4 +49,29 @@ config EMACZ_APP_THREAD_USAGE
 	  once a second and not at all while a cooperative RX path holds the
 	  CPU. For measurements: it adds 20 wakeups a second.
 
+config EMACZ_APP_PC_SAMPLE
+	bool "Sample the program counter for scripts/read_pc_samples.py"
+	depends on RISCV
+	depends on $(dt_nodelabel_enabled,emz_pcs)
+	help
+	  Every 1.1 ms, while the host has armed it, record the interrupted
+	  pc and ra into the uncached emz_pcs region (app/perf/pc_sample.conf
+	  and .overlay), for a profile of where the CPU spends its time. The
+	  period rounds up to a whole kernel tick: 10 ms on the MBV, whose
+	  tick rate is 100 Hz. For measurements: it adds a timer interrupt
+	  per sample.
+
+config EMACZ_APP_HOT_TEXT
+	bool "Link the board's profiled hot functions together"
+	default y
+	depends on RISCV
+	help
+	  Place the functions listed in app/boards/<board>_hot_text.ld, if the
+	  board has one, together at the start of .text, so that in a
+	  direct-mapped I-cache they cannot evict each other (other code still
+	  can). scripts/read_pc_samples.py hot-ld generates the list from
+	  profiles, and hot-check reports what an image actually packed. A
+	  list made for older code can cost performance as well as gain it:
+	  regenerate it after large changes.
+
 endmenu

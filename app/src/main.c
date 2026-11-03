@@ -691,6 +691,11 @@ static void update_perf_stats(void)
 	emacz_perf.net_icmp_typeerr = stats.icmp.typeerr;
 }
 
+#if defined(CONFIG_EMACZ_APP_PC_SAMPLE)
+/* pc_sample.c */
+void pc_sample_start(void);
+#endif
+
 #if defined(CONFIG_EMACZ_APP_THREAD_USAGE)
 #define USAGE_THREAD_STACK_SIZE 1024u
 /* above every other thread, so the samples keep coming under a flood */
@@ -827,6 +832,9 @@ int main(void)
 		start_control();
 #if defined(CONFIG_EMACZ_APP_THREAD_USAGE)
 		start_usage();
+#endif
+#if defined(CONFIG_EMACZ_APP_PC_SAMPLE)
+		pc_sample_start();
 #endif
 	}
 
