@@ -240,7 +240,23 @@ def main() -> int:
     dma_failures = delta(after, before, "eth_rx_dma_failed")
 
     if elapsed > 0:
+        # Over the host's sending time; the sink keeps draining buffered
+        # frames after it, so above the board's ceiling this overstates
         print(f"sink_payload_mbps={sink_bytes * 8 / elapsed / 1_000_000:.3f}")
+    # Over the board's own receive window for this burst, first packet to
+    # last (the sink starts a window after 1 s idle). A window much shorter
+    # than the sending time restarted mid-burst, and one much longer took in
+    # an earlier burst; either way it does not match the byte count.
+    window = 0.0
+    if cycles_per_sec > 0:
+        window = ((after.sink_last_cycle - after.sink_first_cycle) & 0xFFFFFFFF) / cycles_per_sec
+    if sink_packets > 1 and window > 0 and after.sink_first_cycle != before.sink_first_cycle:
+        print(f"sink_window_s={window:.3f}")
+        if 0.9 * elapsed <= window <= elapsed + SETTLE_S + 1.0:
+            print(f"sink_payload_mbps_board={sink_bytes * 8 / window / 1_000_000:.3f}")
+        else:
+            print("sink_window_mismatch=1")
+    if elapsed > 0:
         print(f"sent_pps={sent_frames / elapsed:.1f}")
         print(f"sent_payload_mbps={sent_frames * args.packet_size * 8 / elapsed / 1_000_000:.3f}")
         print(f"sink_pps={sink_packets / elapsed:.1f}")

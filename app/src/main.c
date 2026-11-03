@@ -18,6 +18,7 @@
 #if defined(CONFIG_NET_ZPERF)
 #include <zephyr/net/zperf.h>
 #endif
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/sys_io.h>
 
@@ -219,23 +220,76 @@ static inline void sink_stats_end(void)
 	k_sched_unlock();
 }
 
+/*
+ * The per-packet counters build up here, in cached RAM, and go to the
+ * uncached perf block in batches: each field there is a bus access, and with
+ * the seqlock they cost more per packet than the stack's own UDP input.
+ */
+#define SINK_PUBLISH_BATCH 32u
+/*
+ * A packet after this long without one starts a new receive window. Under
+ * overload the RX path can keep the sink off the CPU for over 100 ms, so
+ * the gap has to be longer than that, and shorter than the host's pause
+ * between tests.
+ */
+#define SINK_IDLE_GAP_MS 1000u
+
+static struct {
+	uint64_t packets;
+	uint64_t bytes;
+	uint64_t recvfrom_calls;
+	uint64_t recvfrom_cycles_total;
+	uint32_t recvfrom_cycles_max;
+	uint32_t first_cycle;
+	uint32_t last_cycle;
+	uint32_t last_len;
+	uint32_t unpublished;
+} sink_local;
+
+static void sink_publish(void)
+{
+	sink_stats_begin();
+	emacz_perf.sink_packets = sink_local.packets;
+	emacz_perf.sink_bytes = sink_local.bytes;
+	emacz_perf.sink_recvfrom_calls = sink_local.recvfrom_calls;
+	emacz_perf.sink_recvfrom_cycles_total = sink_local.recvfrom_cycles_total;
+	emacz_perf.sink_recvfrom_cycles_max = sink_local.recvfrom_cycles_max;
+	emacz_perf.sink_first_cycle = sink_local.first_cycle;
+	emacz_perf.sink_last_cycle = sink_local.last_cycle;
+	emacz_perf.sink_last_len = sink_local.last_len;
+	sink_stats_end();
+	sink_local.unpublished = 0u;
+}
+
+static void sink_account_recvfrom(uint32_t cycles)
+{
+	sink_local.recvfrom_calls++;
+	sink_local.recvfrom_cycles_total += cycles;
+	if (cycles > sink_local.recvfrom_cycles_max) {
+		sink_local.recvfrom_cycles_max = cycles;
+	}
+}
+
 static void sink_account_packet(uint32_t payload_len)
 {
 	uint32_t now = k_cycle_get_32();
 
-	sink_stats_begin();
-	if (emacz_perf.sink_packets == 0u) {
-		emacz_perf.sink_first_cycle = now;
+	if (sink_local.packets == 0u ||
+	    now - sink_local.last_cycle >= k_ms_to_cyc_ceil32(SINK_IDLE_GAP_MS)) {
+		sink_local.first_cycle = now;
 	}
-	emacz_perf.sink_packets++;
-	emacz_perf.sink_bytes += (uint64_t)payload_len;
-	emacz_perf.sink_last_len = payload_len;
-	emacz_perf.sink_last_cycle = now;
-	sink_stats_end();
+	sink_local.packets++;
+	sink_local.bytes += (uint64_t)payload_len;
+	sink_local.last_len = payload_len;
+	sink_local.last_cycle = now;
+	if (++sink_local.unpublished >= SINK_PUBLISH_BATCH) {
+		sink_publish();
+	}
 }
 
 static void sink_account_error(uint32_t err)
 {
+	sink_publish();
 	sink_stats_begin();
 	emacz_perf.sink_recv_errors++;
 	emacz_perf.sink_last_errno = err;
@@ -272,17 +326,17 @@ static void udp_sink_thread_fn(void *arg1, void *arg2, void *arg3)
 
 	while (true) {
 		uint32_t recv_start = k_cycle_get_32();
-		ssize_t got = zsock_recvfrom(sock, udp_sink_buf, UDP_SINK_BUFFER_SIZE, 0,
-					     NULL, NULL);
-		uint32_t recv_cycles = k_cycle_get_32() - recv_start;
+		ssize_t got = zsock_recvfrom(sock, udp_sink_buf, UDP_SINK_BUFFER_SIZE,
+					     ZSOCK_MSG_DONTWAIT, NULL, NULL);
 
-		sink_stats_begin();
-		emacz_perf.sink_recvfrom_calls++;
-		emacz_perf.sink_recvfrom_cycles_total += recv_cycles;
-		if (recv_cycles > emacz_perf.sink_recvfrom_cycles_max) {
-			emacz_perf.sink_recvfrom_cycles_max = recv_cycles;
+		if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			/* the queue ran dry: publish the batch, then wait */
+			sink_publish();
+			recv_start = k_cycle_get_32();
+			got = zsock_recvfrom(sock, udp_sink_buf, UDP_SINK_BUFFER_SIZE, 0, NULL,
+					     NULL);
 		}
-		sink_stats_end();
+		sink_account_recvfrom(k_cycle_get_32() - recv_start);
 
 		if (got < 0) {
 			sink_account_error((uint32_t)errno);
@@ -393,7 +447,10 @@ static uint8_t *const tx_bench_payload = &tx_bench_raw[CONFIG_EMACZ_APP_PAYLOAD_
 /*
  * "t [duration_ms [payload [rate_mbps_x1000 [port]]]]": send UDP datagrams
  * from the control socket to the requester for duration_ms, through the
- * network stack and the driver like any application traffic.
+ * network stack and the driver like any application traffic. A payload of
+ * 8 bytes or more starts with the datagram's number and ends with its
+ * complement, both big-endian, so that the host can tell a datagram lost,
+ * sent twice or spliced from two.
  */
 static size_t run_tx_bench(int sock, const struct sockaddr_in *peer, const char *args,
 			   char *reply, size_t reply_len)
@@ -452,6 +509,11 @@ static size_t run_tx_bench(int sock, const struct sockaddr_in *peer, const char 
 	duration_cycles = ((uint64_t)duration_ms * cycles_per_sec) / 1000u;
 	last_cycle = k_cycle_get_32();
 	while (elapsed_cycles < duration_cycles) {
+		if (payload_len >= 8u) {
+			sys_put_be32((uint32_t)packets, tx_bench_payload);
+			sys_put_be32(~(uint32_t)packets, &tx_bench_payload[payload_len - 4u]);
+		}
+
 		ssize_t ret = zsock_sendto(sock, tx_bench_payload, payload_len, 0,
 					   (struct sockaddr *)&dst, sizeof(dst));
 

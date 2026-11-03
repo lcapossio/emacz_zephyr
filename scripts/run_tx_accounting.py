@@ -5,13 +5,17 @@
 """Run the board-side UDP TX benchmark and print host and MAC counter deltas.
 
 The control port's 't' command sends UDP datagrams through the board's
-network stack and driver to this host for the requested time.
+network stack and driver to this host for the requested time. Each one
+carries its number at the start and the complement at the end; the host
+checks that it receives every datagram the board counted, once each, in
+order and whole.
 """
 
 from __future__ import annotations
 
 import argparse
 import socket
+import struct
 import sys
 import threading
 import time
@@ -78,6 +82,13 @@ class Receiver(threading.Thread):
         self.errors = 0
         self.first_time: float | None = None
         self.last_time: float | None = None
+        # datagram numbers: received twice, received after a later one, or
+        # with an end that belongs to another datagram
+        self.seen: set[int] = set()
+        self.duplicates = 0
+        self.reordered = 0
+        self.spliced = 0
+        self.highest = -1
 
     def run(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -97,6 +108,21 @@ class Receiver(threading.Thread):
                 self.last_time = now
                 self.packets += 1
                 self.bytes += len(data)
+                if len(data) >= 8:
+                    self.check(data)
+
+    def check(self, data: bytes) -> None:
+        seq = struct.unpack_from(">I", data)[0]
+        if struct.unpack_from(">I", data, len(data) - 4)[0] != seq ^ 0xFFFFFFFF:
+            self.spliced += 1
+            return
+        if seq in self.seen:
+            self.duplicates += 1
+            return
+        self.seen.add(seq)
+        if seq < self.highest:
+            self.reordered += 1
+        self.highest = max(self.highest, seq)
 
 
 def main() -> int:
@@ -117,6 +143,8 @@ def main() -> int:
                         help="Payload pacing request; 0 means unthrottled")
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--packet-size", type=int, default=1472)
+    parser.add_argument("--max-host-loss-pct", type=float, default=0.0,
+                        help="datagrams the board sent that the host may miss, in percent")
     args = parser.parse_args()
 
     rate_x1000 = max(0, round(args.rate_mbps * 1000.0))
@@ -173,6 +201,9 @@ def main() -> int:
     print(f"host_rx_packets={rx.packets}")
     print(f"host_rx_bytes={rx.bytes}")
     print(f"host_rx_errors={rx.errors}")
+    print(f"host_rx_duplicates={rx.duplicates}")
+    print(f"host_rx_reordered={rx.reordered}")
+    print(f"host_rx_spliced={rx.spliced}")
     if board_elapsed > 0:
         print(f"board_payload_mbps={board_bytes * 8 / board_elapsed / 1_000_000:.3f}")
         print(f"host_payload_mbps_board_window={rx.bytes * 8 / board_elapsed / 1_000_000:.3f}")
@@ -184,15 +215,25 @@ def main() -> int:
         print(f"{name}_delta={value}")
 
     # Every datagram the board sent is one frame on the wire, so the MAC
-    # count covers them (plus any ARP or control replies). The host may
-    # drop some at line rate, so it only has to receive something, cleanly.
+    # count covers them (plus any ARP or control replies), and the host has
+    # to receive each one once, whole, in order
     board_packets = reply.get("pkts", 0)
+    # datagrams under 8 bytes carry no number
+    delivered = len(rx.seen) if args.packet_size >= 8 else rx.packets
+    lost = board_packets - delivered
+    if board_packets > 0:
+        print(f"host_rx_lost={lost}")
+        print(f"host_delivery_pct={delivered * 100.0 / board_packets:.3f}")
     passed = (
         board_packets > 0 and
         deltas["tx_frames"] >= board_packets and
         deltas["tx_er_frames"] == 0 and
-        rx.packets > 0 and
-        rx.errors == 0
+        rx.errors == 0 and
+        rx.duplicates == 0 and
+        rx.reordered == 0 and
+        rx.spliced == 0 and
+        0 <= lost <= board_packets * args.max_host_loss_pct / 100.0 and
+        (args.packet_size < 8 or max(rx.seen, default=-1) < board_packets)
     )
     print(f"tx_result={'pass' if passed else 'fail'}")
     return 0 if passed else 1

@@ -30,14 +30,17 @@ from pathlib import Path
 import emacz_config as config
 import run_board_suite as suite
 
-RX_KEYS = ("sink_payload_mbps", "sent_payload_mbps", "host_to_sink_delivery_pct",
+RX_KEYS = ("sink_payload_mbps", "sink_payload_mbps_board", "sink_window_s",
+           "sent_payload_mbps", "host_to_sink_delivery_pct",
            "sent_pps", "sink_pps",
            "mac_rx_frames_delta", "mac_rx_drop_delta", "eth_rx_errors_delta", "net_ipv4_drop_delta",
            "net_udp_drop_delta", "sink_recvfrom_avg_us",
            *(f"ru_{t}_pct" for t in ("idle", "rx", "sink", "control", "main", "workq", "usage",
                                      "other")),
            "ru_rx_cycles_per_pkt", "ru_sink_cycles_per_pkt")
-TX_KEYS = ("board_payload_mbps", "host_payload_mbps_board_window", "tx_frames_delta")
+TX_KEYS = ("board_payload_mbps", "host_payload_mbps_board_window", "tx_frames_delta",
+           "host_delivery_pct", "host_rx_lost", "host_rx_duplicates", "host_rx_reordered",
+           "host_rx_spliced")
 
 
 def values(lines: list[str], keys: tuple[str, ...]) -> dict[str, float]:
@@ -132,10 +135,11 @@ def main() -> int:
     for test, metrics in results.items():
         if test.startswith("rx@"):
             mbps = metrics.get("sink_payload_mbps")
-            extra = f"delivery {metrics.get('host_to_sink_delivery_pct', float('nan')):.1f}%"
+            extra = (f"board window {metrics.get('sink_payload_mbps_board', float('nan')):.2f}, "
+                     f"delivery {metrics.get('host_to_sink_delivery_pct', float('nan')):.1f}%")
         elif test == "tx":
             mbps = metrics.get("board_payload_mbps")
-            extra = ""
+            extra = f"host got {metrics.get('host_delivery_pct', float('nan')):.2f}%"
         else:
             mbps = metrics.get("tx_board_payload_mbps")
             extra = (f"rx {metrics.get('rx_sink_payload_mbps', float('nan')):.2f} of "

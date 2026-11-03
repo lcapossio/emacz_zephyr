@@ -95,6 +95,11 @@ struct emacz_perf_stats {
 	uint64_t sink_recvfrom_cycles_total;
 	uint32_t sink_recvfrom_cycles_max;
 	uint32_t sink_last_errno;
+	/*
+	 * k_cycle_get_32() at the first packet after the sink had been idle
+	 * 1 s or more, and at the latest packet: the board's receive window
+	 * for the current burst
+	 */
 	uint32_t sink_first_cycle;
 	uint32_t sink_last_cycle;
 	uint32_t sink_last_len;
