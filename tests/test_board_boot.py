@@ -307,7 +307,8 @@ def test_udp_sender_stops_on_request():
     stop = udp.threading.Event()
     stop.set()
     args = argparse.Namespace(rate_mbps=1.0, packet_size=64, target="127.0.0.1", port=9,
-                              bind="127.0.0.1", timeout=1.0, duration=60.0)
+                              bind="127.0.0.1", timeout=1.0, duration=60.0,
+                              vary_payload=False)
     assert udp.send_fast_sink(args, stop) == 0
 
 
