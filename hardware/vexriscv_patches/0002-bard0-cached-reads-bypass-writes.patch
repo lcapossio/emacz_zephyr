@@ -1,8 +1,8 @@
 diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-index f8b80b7d..a749c198 100644
+index cbfa7db0..83a259d6 100644
 --- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
 +++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-@@ -174,7 +174,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -180,7 +180,10 @@ object VexRiscvAxi4WithIntegratedJtag{
            }
            case plugin: DBusCachedPlugin => {
              plugin.dBus.setAsDirectionLess()
@@ -15,7 +15,7 @@ index f8b80b7d..a749c198 100644
                .addTag(ClockDomainTag(ClockDomain.current))
            }
 diff --git a/src/main/scala/vexriscv/ip/DataCache.scala b/src/main/scala/vexriscv/ip/DataCache.scala
-index c7ffa8de..631d67e6 100644
+index c7ffa8de..fdafb929 100644
 --- a/src/main/scala/vexriscv/ip/DataCache.scala
 +++ b/src/main/scala/vexriscv/ip/DataCache.scala
 @@ -278,7 +278,14 @@ case class DataCacheMemBus(p : DataCacheConfig) extends Bundle with IMasterSlave
@@ -61,7 +61,7 @@ index c7ffa8de..631d67e6 100644
 +      val hazard = cmdPreFork.uncached ? (pendingWrites =/= 0) | sameLine
 +    }.hazard
 +
-+    val hazard = (readHazard && !cmdPreFork.wr) || pendingWrites === pendingWritesMax
++    val hazard = (readHazard && !cmdPreFork.wr) || (pendingWrites === pendingWritesMax && cmdPreFork.wr) // a full count holds back writes only
      val (cmdFork, dataFork) = StreamFork2(cmdPreFork.haltWhen(hazard))
      val cmdStage  = cmdFork.throwWhen(RegNextWhen(!cmdFork.last,cmdFork.fire).init(False))
      val dataStage = dataFork.throwWhen(!dataFork.wr)

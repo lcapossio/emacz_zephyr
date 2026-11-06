@@ -25,9 +25,9 @@ in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
 - Runs the mainline Zephyr emacZero driver (`bard0,emaczero`), carried in
   `patches/zephyr/` until the pinned Zephyr tree includes it.
 - Arty A7-100T shells for two CPUs: AMD MicroBlaze V (`mbv32` board) and
-  SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
-  earlyBranch, R-slice on DBUS). Same emacZero MAC and Zephyr app on
-  both.
+  SpinalHDL VexRiscv-full (32 KiB I$, 16 KiB D$, compressed instructions,
+  DYNAMIC_TARGET branch predictor, earlyBranch, R-slice on DBUS). Same
+  emacZero MAC and Zephyr app on both.
 - AMD ZCU106 shells, 1000BASE-X on SFP0: the Vex CPU complex in the PL
   (`zcu106_vex`) or Cortex-R5 #0 in the PS (`zcu106_r5`). Both passed the
   board suite; `zcu106_vex` did so on the VexRiscv 1.0.1 core, and its
@@ -124,9 +124,10 @@ west build -b arty_a7_vex -d build-vex-emac app -- \
   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
 
-The two boards are not interchangeable: `arty_a7_vex` builds without the C
-extension, which the RV32IMA VexRiscv core lacks, so an `mbv32` image
-booted on the Vex bitstream traps on its first compressed instruction.
+The two boards are not interchangeable: their memory maps, interrupt
+controllers and reset paths differ. Both build with the C extension; an
+`arty_a7_vex` image does not run on a Vex bitstream generated before the core
+gained compressed instructions (November 2026).
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
 a Zephyr extra module, so the `arty_a7_vex` board, its SoC and the app
@@ -225,9 +226,10 @@ VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, Zephyr board
 target `arty_a7_vex` — defined in-tree under `boards/bard0/arty_a7_vex/`
 and `soc/bard0/vexriscv_axi/`):
 
-- SpinalHDL VexRiscv-full RV32IMA, upstream `master` `baf7dc82`, with
-  `IBusCachedPlugin` (16 KiB I$, DYNAMIC_TARGET branch predictor,
-  `historyRamSizeLog2=8`) and `DBusCachedPlugin` (16 KiB write-through D$),
+- SpinalHDL VexRiscv-full RV32IMAC, upstream `master` `baf7dc82`, with
+  `IBusCachedPlugin` (32 KiB I$, compressed instructions with the injector
+  stage, DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
+  `DBusCachedPlugin` (16 KiB write-through D$),
   `BranchPlugin(earlyBranch=true)`, `CsrPlugin` with
   `mtvecAccess=READ_WRITE`. A local patch lets D$ refills pass pending
   stores to other lines on the AXI bridge
@@ -382,16 +384,16 @@ CDC.
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,574 (54.53%) | 28,831 (45.47%) | −5,743 (−16.6%) |
-| Slice Registers | 45,885 (36.19%) | 29,395 (23.18%) | −16,490 (−35.9%) |
-| BRAM Tiles | 43 (31.85%) | 36 (26.67%) | −7 (−16.3%) |
+| Slice LUTs | 34,574 (54.53%) | 29,002 (45.74%) | −5,572 (−16.1%) |
+| Slice Registers | 45,885 (36.19%) | 29,534 (23.29%) | −16,351 (−35.6%) |
+| BRAM Tiles | 43 (31.85%) | 40.5 (30.00%) | −2.5 (−5.8%) |
 | DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
-| Setup WNS | +0.054 ns | +0.037 ns | — |
+| Setup WNS | +0.054 ns | +0.062 ns | — |
 
-Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
-I$/D$ and a DYNAMIC_TARGET branch predictor (Vex column: VexRiscv
-`baf7dc82` with the bridge patch; its worst path is the earlyBranch
-redirect into the I$ RAM, as before the patch). Full breakdown, including
+Vex is the cheaper CPU on this Artix-7 target despite carrying a 32 KiB
+I$, a 16 KiB D$ and a DYNAMIC_TARGET branch predictor (Vex column: VexRiscv
+`baf7dc82` with the patches in `hardware/vexriscv_patches/`; its worst path
+is the earlyBranch redirect into the I$ RAM address). Full breakdown, including
 LUT-as-memory and F7/F8 wide-mux counts, is in
 [docs/cpu_comparison.md](docs/cpu_comparison.md).
 
@@ -500,10 +502,11 @@ Then four that a profile of the cacheable-buffer builds pointed at
   and packed the listed functions cannot evict each other, though other
   code still can. `read_pc_samples.py hot-check` reports what an image
   actually packed and whether it fits the I-cache. Vex has no
-  list. Without compressed instructions its RX path alone is ~22 KB and
-  RX with TX ~47 KB, more than its I-cache however it is laid out, and the
-  lists tried moved the misses around without removing them.
-  `app/perf/hot_text_off.conf` turns it off.
+  list. On its earlier 16 KiB I-cache without compressed instructions its
+  RX path alone was ~22 KB and RX with TX ~47 KB, and the lists tried
+  moved the misses around without removing them; the current core's
+  32 KiB I-cache and compressed instructions (RX ~15 KB, RX with TX
+  ~32 KB) are untried with one. `app/perf/hot_text_off.conf` turns it off.
 
 Same loads as the first table, Arty A7 at 100 MHz, caches on, 20 ms RX
 budget, single 5 s runs on the VexRiscv 1.0.1 core of the time, rates in
@@ -543,10 +546,14 @@ range. Rates in Mbit/s:
 |---|---|---|---|---|---|
 | Arty MBV | default | 30.8 (29.50–31.03) | 22.85 | 18.05 (18.02–18.18) | 10.35 / 16.66 |
 | | RX checksum checked | 25.4 (24.3–25.5) | 22.95 | 18.2 (18.14–18.25) | 10.21 / 13.93 |
-| Arty Vex | default: VexRiscv `baf7dc82` + bridge patch | 24.7 (24.69–24.73) | 14.22 | 10.71 | 5.53 / 15.02 |
-| | VexRiscv `baf7dc82`, no bridge patch | 22.2 (22.12–22.24) | 14.20 | 10.57 | 5.31 / 14.47 |
-| | VexRiscv 1.0.1 (2018) | 30.3 (28.9–30.6) | 16.0 | 12.55 | 7.88 / 15.30 |
-| | RX checksum checked | 22.2 (21.17–22.26) | 13.91 | 10.30 (10.30–10.32) | 5.22 / 13.78 |
+| Arty Vex | default: 32 KiB I$, compressed instructions | 34.5 (34.49–34.52) | 23.04 | 19.62 (19.60–19.66) | 12.69 / 15.39 |
+| | RX checksum checked, one run | 28.2 | 22.92 | 19.20 | 10.35 / 15.38 |
+| | 32 KiB I$, no compressed instructions | 31.7 (31.65–31.70) | 18.34 | 14.77 (14.75–14.77) | 9.37 / 15.38 |
+| | 16 KiB I$, compressed instructions | 28.6 (28.52–28.67) | 17.50 | 14.03 (14.02–14.04) | 8.04 / 15.37 |
+| | 16 KiB I$ (the previous default) | 24.7 (24.69–24.73) | 14.22 | 10.71 | 5.53 / 15.02 |
+| | 16 KiB I$, no bridge patch | 22.2 (22.12–22.24) | 14.20 | 10.57 | 5.31 / 14.47 |
+| | 16 KiB I$, VexRiscv 1.0.1 (2018) | 30.3 (28.9–30.6) | 16.0 | 12.55 | 7.88 / 15.30 |
+| | 16 KiB I$, RX checksum checked | 22.2 (21.17–22.26) | 13.91 | 10.30 (10.30–10.32) | 5.22 / 13.78 |
 
 The full-duplex cells are medians of each direction; across runs they
 spread by up to 0.6 Mbit/s on MBV and 0.7 on Vex. Some rows were measured
@@ -556,7 +563,8 @@ MBV default built both ways split full duplex 9.75 / 17.48 before that
 change and 10.35 / 16.66 after it, so the full-duplex split moves with
 small changes to the image.
 
-Three variants of the defaults, same method, medians in Mbit/s:
+Three variants of the defaults, same method, medians in Mbit/s (Vex on
+its earlier 16 KiB I-cache without compressed instructions):
 
 | Variant | MBV RX | MBV TX | Vex RX | Vex TX |
 |---|---|---|---|---|
@@ -583,25 +591,37 @@ D-cache was write-back; the current one is write-through, so every store
 goes out to DDR, and its AXI bridge held every read until all pending
 writes were acknowledged. The bridge patch lets a D-cache refill pass
 pending stores to other lines (uncached reads still wait for all of
-them). That recovered 11% of RX and nothing on TX, so most of what is left
-is the store traffic itself, at most 7 writes in flight, sharing DDR with
-the DMA. In return the current core cannot lose a cache clean, which the
-old one could: a clean issued while the previous line was still being
-written back was dropped, and the old `cache.c` waited out each line's
-write-back to avoid it. See
+them). That recovered 11% of RX and nothing on TX. In return the
+current core cannot lose a cache clean, which the old one could: a clean
+issued while the previous line was still being written back was dropped,
+and the old `cache.c` waited out each line's write-back to avoid it. See
 [hardware/vexriscv_patches/](hardware/vexriscv_patches/README.md).
+
+The store traffic turned out not to be what held Vex back. On the 16 KiB
+I-cache core, 15 writes in flight instead of 7 left RX and TX unchanged
+(24.6 and 14.22 Mbit/s), and so did letting refills pass a full write
+count. Instruction fetch did hold it back: a 32 KiB I-cache took RX to
+31.7 and TX to 18.3, compressed instructions on the 16 KiB I-cache, which
+shrink the code by a third, took them to 28.6 and 17.5, and together, the
+current default, to 34.5 and 23.0. That is faster than the 1.0.1 core on
+every load. Against MBV it is level on TX alone and ahead on RX (12%), on
+TX while RX takes 3 Mbit/s (9%) and on full-duplex TX (23%), and behind on
+full-duplex RX (8%). The `baf7dc82` rows without compressed instructions
+ran one image and the rows with them another, built from the same source
+with the C extension.
 
 Both defaults deliver 100% of a 20 Mbit/s RX load and pass the board
 suite. The app does not check UDP checksums on RX
 (`CONFIG_NET_UDP_CHECKSUM=n` in `app/prj.conf`), so the RX figures leave
 that cost out and do not by themselves show that payloads arrive intact.
 `app/perf/udp_rx_checksum.conf` turns the check on; the "RX checksum
-checked" rows above are that build. Over their three 90 Mbit/s runs the
-boards checked 127,674 datagrams on MBV and 111,504 on Vex with no
-checksum error; the check costs 18% of RX on MBV and 10% on Vex. Earlier,
-with the check on and a payload that changes on every packet
-(`run_udp_accounting.py --vary-payload`), both delivered 100% at 5 and
-8 Mbit/s, Vex then on the 1.0.1 core. Without the DMA driver's cache maintenance
+checked" rows above are that build. At 90 Mbit/s offered the boards
+checked 127,674 datagrams on MBV over three runs and 47,924 on the
+current Vex in one, with no checksum error (111,504 over three runs on
+the 16 KiB I-cache Vex); the check costs 18% of RX on both CPUs. With the
+check on and a payload that changes on every packet
+(`run_udp_accounting.py --vary-payload`), the current Vex delivered 100%
+of 60 s at 5 and 8 Mbit/s, as MBV and the 1.0.1 Vex did before. Without the DMA driver's cache maintenance
 (`MANUAL_CACHE_COHERENCY=n`), the Vex image fails to provision.
 
 On TX the board numbers each datagram, big-endian at the start of its
@@ -625,8 +645,8 @@ interrupts off cleaning the frame line by line, the cost of the old core's
 lost-clean workaround, which the current core does not need, and both
 compute the UDP checksum in software (5–7%). What is left is the memory
 system: larger D-cache lines and write-back on MBV, or on Vex a write-back
-D-cache, compressed instructions or a 2-way I-cache, would each attack the
-largest remaining cost.
+D-cache, would attack the largest remaining cost. (That profile predates
+the larger I-cache and compressed instructions on Vex.)
 
 To profile a build, add `app/perf/pc_sample.conf` and `.overlay` (they
 replace `uncached_bufs.*`, whose buffers overlap the sample area), then:
@@ -702,10 +722,11 @@ copies run on words.
 
 Earlier versions of this repository reported ~95 Mbit/s through a
 driver-level interceptor for port 5001 that bypassed the network stack.
-The mainline driver has no such hook. Pick MBV for throughput (the
-faster of the two with cacheable buffers) and a Vivado-native toolchain
-end-to-end, or Vex for the FPGA-area savings above and a rebuild pipeline
-that uses SpinalHDL/sbt; see [docs/cpu_comparison.md](docs/cpu_comparison.md).
+The mainline driver has no such hook. Pick Vex for RX throughput (12%
+more than MBV, level on TX) and the FPGA-area savings above, with a
+rebuild pipeline that uses SpinalHDL/sbt, or MBV for a Vivado-native
+toolchain end-to-end; see
+[docs/cpu_comparison.md](docs/cpu_comparison.md).
 
 ## Verification
 

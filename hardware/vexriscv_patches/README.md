@@ -27,7 +27,12 @@ To regenerate:
   `VexRiscvAxi4WithIntegratedJtag` demo:
   - IBusCachedPlugin: `resetVector = 0x9000_0000` (DDR, where the loader
     stages `zephyr.bin`), prediction `STATIC` → `DYNAMIC_TARGET` with
-    `historyRamSizeLog2 = 8`, `cacheSize` 4 KiB → 16 KiB.
+    `historyRamSizeLog2 = 8`, `cacheSize` 4 KiB → 32 KiB, and
+    `compressedGen` with the `injectorStage` it needs. Instruction fetch
+    was Vex's bottleneck: on the Arty, the 32 KiB I-cache and compressed
+    instructions together took UDP RX from 24.7 to 34.5 Mbit/s and TX from
+    14.2 to 23.0 (README, Throughput). Zephyr images must then be built
+    with the C extension, which `soc/bard0/vexriscv_axi/Kconfig` selects.
   - DBusCachedPlugin: `cacheSize` 4 KiB → 16 KiB.
   - StaticMemoryTranslatorPlugin: cache only 0x9000_0000-0x97FF_FFFF.
     Peripherals and the DMA memory at 0x9F00_0000 bypass the caches.
@@ -46,6 +51,11 @@ To regenerate:
     pending write to its own line. Uncached reads still wait for all of
     them. That keeps device ordering, and `cache.c`'s drain (one uncached
     read) still orders the stores before it.
+  - A full write count (`pendingWritesMax` writes in flight) holds back
+    only further writes; reads wait on their own hazard above. This
+    measured no faster than holding back everything, nor did 15 writes in
+    flight instead of 7, so the store traffic is not what limits this
+    core here.
   - The cost: store -> load ordering to different lines is no longer kept
     on the bus, and FENCE, a no-op in this configuration, does not restore
     it. That is fine on this single-hart SoC with explicit cache maintenance.

@@ -54,8 +54,8 @@
   <text x="858" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">100 MHz</text>
   <text x="858" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">CSR fan-out</text>
   <rect id="vex" x="1100" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
-  <text x="1210" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">VexRiscv RV32IMA @ 100 MHz</text>
-  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">16 KiB I$/D$, DYN_TARGET</text>
+  <text x="1210" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">VexRiscv RV32IMAC @ 100 MHz</text>
+  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">32/16 KiB I$/D$, DYN_TARGET</text>
   <text x="1210" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">DBUS R-slice (100 MHz)</text>
   <rect id="fcapz_eio" x="1452" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1562" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EIO</text>

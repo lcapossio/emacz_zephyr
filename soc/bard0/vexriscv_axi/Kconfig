@@ -7,7 +7,10 @@ config SOC_VEXRISCV_AXI
 	select RISCV_ISA_RV32I
 	select RISCV_ISA_EXT_M
 	select RISCV_ISA_EXT_A
-	# bard0: disable C — VexRiscv-full has a csrrw+c.j pipeline hazard
+	# The core decodes compressed instructions (compressedGen in
+	# hardware/vexriscv_patches/0001); images built with C do not run on a
+	# bitstream generated before that.
+	select RISCV_ISA_EXT_C
 	select RISCV_ISA_EXT_ZICSR
 	select RISCV_ISA_EXT_ZIFENCEI
 	# NOTE: intentionally NOT selecting RISCV_PRIVILEGED. That would pull

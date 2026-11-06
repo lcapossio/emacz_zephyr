@@ -1,8 +1,8 @@
 diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-index 67556e94..f8b80b7d 100644
+index 67556e94..cbfa7db0 100644
 --- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
 +++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
-@@ -35,9 +35,16 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -35,9 +35,22 @@ object VexRiscvAxi4WithIntegratedJtag{
  //            catchAccessFault = false
  //          ),
            new IBusCachedPlugin(
@@ -10,29 +10,35 @@ index 67556e94..f8b80b7d 100644
 +            // bard0: boot straight from DDR, where the loader stages
 +            // zephyr.bin while the CPU is held in reset.
 +            resetVector = 0x90000000l,
-+            // bard0: DYNAMIC_TARGET with a 256-entry history and a 16 KiB
-+            // I$ (was STATIC, 4 KiB), as GenFullNoMmuMaxPerf. The demo
-+            // defaults cost ~17.6k cycles per packet on Zephyr's RX path.
++            // bard0: DYNAMIC_TARGET with a 256-entry history and a 32 KiB
++            // I$ (was STATIC, 4 KiB). The demo defaults cost ~17.6k cycles
++            // per packet on Zephyr's RX path.
 +            prediction = DYNAMIC_TARGET,
 +            historyRamSizeLog2 = 8,
++            // bard0: compressed instructions, which need the injector stage.
++            // They shrink the code by a third, so that with the 32 KiB I$
++            // Zephyr's UDP RX and TX paths (~32 KB together) mostly stay
++            // resident; without them RX alone overflowed a 16 KiB I$.
++            compressedGen = true,
++            injectorStage = true,
              config = InstructionCacheConfig(
 -              cacheSize = 4096,
-+              cacheSize = 16384,
++              cacheSize = 32768,
                bytePerLine =32,
                wayCount = 1,
                addressWidth = 32,
-@@ -55,8 +62,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -55,8 +68,9 @@ object VexRiscvAxi4WithIntegratedJtag{
              //            )
            ),
            new DBusCachedPlugin(
-+            // bard0: 16 KiB D$ (was 4 KiB), to pair with the I$ above.
++            // bard0: 16 KiB D$ (was 4 KiB).
              config = new DataCacheConfig(
 -              cacheSize         = 4096,
 +              cacheSize         = 16384,
                bytePerLine       = 32,
                wayCount          = 1,
                addressWidth      = 32,
-@@ -72,7 +80,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -72,7 +86,10 @@ object VexRiscvAxi4WithIntegratedJtag{
              //            )
            ),
            new StaticMemoryTranslatorPlugin(
@@ -44,7 +50,7 @@ index 67556e94..f8b80b7d 100644
            ),
            new DecoderSimplePlugin(
              catchIllegalInstruction = true
-@@ -100,7 +111,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -100,7 +117,9 @@ object VexRiscvAxi4WithIntegratedJtag{
            ),
            new DebugPlugin(ClockDomain.current.clone(reset = Bool().setName("debugReset"))),
            new BranchPlugin(
@@ -55,7 +61,7 @@ index 67556e94..f8b80b7d 100644
              catchAddressMisaligned = true
            ),
            new CsrPlugin(
-@@ -112,7 +125,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+@@ -112,7 +131,10 @@ object VexRiscvAxi4WithIntegratedJtag{
                mhartid        = null,
                misaExtensionsInit = 66,
                misaAccess     = CsrAccess.NONE,
