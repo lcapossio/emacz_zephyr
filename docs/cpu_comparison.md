@@ -40,8 +40,8 @@ driver, zero-copy TX (`0009`) and MAC counters left to the L2 (`0010`); on
 MBV also the hottest 15 KiB of code packed at the start of `.text`. The
 README's Throughput section covers each step and the variants (RX
 checksum checked, the previous VexRiscv cores). Both build with
-compressed instructions. Vex has no packed-code list: its 32 KiB I-cache
-already holds most of the RX and TX paths (~32 KB together).
+compressed instructions. Vex has no packed-code list: the RX and TX paths
+(~32 KB together) are about the size of its 32 KiB I-cache.
 
 VexRiscv `master` has only a write-through D-cache: every store, stack
 spills included, goes out to DDR, at most 7 at a time. On the 1.0.1 tag

@@ -273,8 +273,9 @@ its CDC crosses to the transceiver's 125 MHz `userclk2`.
 `hardware/scripts/build_zcu106.py` builds either shell, and for both a Zynq
 MP FSBL that sets up the PS before anything is loaded.
 
-Both shells meet timing and pass the whole board suite (below) on a ZCU106
-whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
+Both shells meet timing and passed the whole board suite (below), `zcu106_vex`
+on the VexRiscv 1.0.1 core (its build on the current core meets timing but
+has not run on the board), on a ZCU106 whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
 with every datagram delivered, DMA error recovery and TX. Each shell needs
 its own MAC address when they share a segment with an Arty (`--mac`;
 the overlays use `02:00:00:00:00:02` for Vex and `:03` for the R5).
@@ -303,11 +304,11 @@ console is PS UART0, the CP2108's first interface.
 
 | | `zcu106_vex` | `zcu106_r5` |
 |---|---|---|
-| CLB LUTs | 22,078 (9.6%) | 13,923 (6.0%) |
-| CLB Registers | 29,418 (6.4%) | 18,708 (4.1%) |
-| Block RAM tiles | 27 | 13 |
-| UltraRAM | 1 | 0 |
-| Setup WNS | +3.387 ns | +1.608 ns |
+| CLB LUTs | 22,170 (9.6%) | 13,923 (6.0%) |
+| CLB Registers | 29,564 (6.4%) | 18,708 (4.1%) |
+| Block RAM tiles | 35 | 13 |
+| UltraRAM | 0 | 0 |
+| Setup WNS | +2.068 ns | +1.608 ns |
 
 The board needs a 1000BASE-X SFP module in cage 0 and a link partner that
 speaks it, such as a fibre NIC or a switch port. DIP switch `GPIO_DIP_SW0`
