@@ -1,5 +1,14 @@
 # emacZero Zephyr Performance Plan
 
+**Status (2026-10-07).** The app now runs the mainline Zephyr emacZero
+driver, which has no port-5001 interceptor, so every number below that
+came from the interceptor's "sink" is history. Through sockets, both shells
+deliver 8.5 Mbit/s RX (~720 frames/s) and 9.5 (MBV) / 11.7 (Vex) Mbit/s
+TX. The RX ceiling is the payload copy out of uncached DDR: the UDP payload
+sits 2 bytes off a word boundary, `memcpy` reads it a byte at a time, and
+that costs ~1.07 ms of the ~1.39 ms per frame on both CPUs. The plan below
+is the record of how the hardware path was made clean; it is not current.
+
 The current 1472-byte UDP receive ceiling is about 8 Mbit/s, or roughly
 680 packets/s. On a 100 MHz MicroBlaze V-class core that is about 147k cycles
 per packet, which is too high to explain as ordinary packet-copy or checksum
@@ -959,6 +968,12 @@ DMA interrupt itself, and records direct-ring counters such as
 `rx_bd_hw_completed`, `rx_bd_refilled`, `rx_bd_tail_updates`, and
 `rx_bd_available_min`. The old generic RX DMA path remains buildable for A/B
 testing by leaving the Kconfig option disabled.
+
+> **Update (2026-10):** the direct ring and its counters have since been
+> removed. Upstream's driver now keeps a persistent descriptor ring, and
+> with batched refills (one `TAILDESC` write per batch) plus DMA error
+> recovery, the DMA-API path reaches the same line rate on both shells.
+> See the README for the current design.
 
 This does not bypass the Zephyr network stack. The packet path is still:
 

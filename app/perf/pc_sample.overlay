@@ -1,0 +1,18 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * 64 KiB for the program-counter samples (app/perf/pc_sample.conf), in the
+ * uncached window of the Arty shells so the host reads them over JTAG-AXI
+ * as written. It overlaps the uncached frame buffers of
+ * app/perf/uncached_bufs.overlay and dcache_off.overlay: use one or the
+ * other.
+ */
+
+/ {
+	emz_pcs: memory@9f800000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f800000 0x10000>;
+		zephyr,memory-region = "EMZ_PCS";
+	};
+};

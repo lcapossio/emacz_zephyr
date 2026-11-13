@@ -1,0 +1,75 @@
+diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+index 67556e94..cbfa7db0 100644
+--- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
++++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+@@ -35,9 +35,22 @@ object VexRiscvAxi4WithIntegratedJtag{
+ //            catchAccessFault = false
+ //          ),
+           new IBusCachedPlugin(
+-            prediction = STATIC,
++            // bard0: boot straight from DDR, where the loader stages
++            // zephyr.bin while the CPU is held in reset.
++            resetVector = 0x90000000l,
++            // bard0: DYNAMIC_TARGET with a 256-entry history and a 32 KiB
++            // I$ (was STATIC, 4 KiB). The demo defaults cost ~17.6k cycles
++            // per packet on Zephyr's RX path.
++            prediction = DYNAMIC_TARGET,
++            historyRamSizeLog2 = 8,
++            // bard0: compressed instructions, which need the injector stage.
++            // They shrink the code by a third, so that with the 32 KiB I$
++            // Zephyr's UDP RX and TX paths (~32 KB together) mostly stay
++            // resident; without them RX alone overflowed a 16 KiB I$.
++            compressedGen = true,
++            injectorStage = true,
+             config = InstructionCacheConfig(
+-              cacheSize = 4096,
++              cacheSize = 32768,
+               bytePerLine =32,
+               wayCount = 1,
+               addressWidth = 32,
+@@ -55,8 +68,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+             //            )
+           ),
+           new DBusCachedPlugin(
++            // bard0: 16 KiB D$ (was 4 KiB).
+             config = new DataCacheConfig(
+-              cacheSize         = 4096,
++              cacheSize         = 16384,
+               bytePerLine       = 32,
+               wayCount          = 1,
+               addressWidth      = 32,
+@@ -72,7 +86,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+             //            )
+           ),
+           new StaticMemoryTranslatorPlugin(
+-            ioRange      = _(31 downto 28) === 0xF
++            // bard0: cache only the DDR code and data window,
++            // 0x9000_0000-0x97FF_FFFF; peripherals and the DMA memory at
++            // 0x9F00_0000 bypass the caches.
++            ioRange      = _(31 downto 27) =/= U"10010"
+           ),
+           new DecoderSimplePlugin(
+             catchIllegalInstruction = true
+@@ -100,7 +117,9 @@ object VexRiscvAxi4WithIntegratedJtag{
+           ),
+           new DebugPlugin(ClockDomain.current.clone(reset = Bool().setName("debugReset"))),
+           new BranchPlugin(
+-            earlyBranch = false,
++            // bard0: resolve mispredicts a stage earlier, to pair with
++            // DYNAMIC_TARGET above.
++            earlyBranch = true,
+             catchAddressMisaligned = true
+           ),
+           new CsrPlugin(
+@@ -112,7 +131,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+               mhartid        = null,
+               misaExtensionsInit = 66,
+               misaAccess     = CsrAccess.NONE,
+-              mtvecAccess    = CsrAccess.NONE,
++              // bard0: Zephyr installs its own trap vector. The identity
++              // CSRs stay uninstalled: with catchIllegalAccess = false they
++              // read as 0, which is what Zephyr expects.
++              mtvecAccess    = CsrAccess.READ_WRITE,
+               mtvecInit      = 0x00000020l,
+               mepcAccess     = CsrAccess.READ_WRITE,
+               mscratchGen    = false,

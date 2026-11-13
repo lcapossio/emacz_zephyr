@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leonardo Capossio <capossio.leonardo@gmail.com>
+Date: Sun, 1 Nov 2026 12:00:00 +0100
+Subject: [PATCH] ethernet: emaczero: transmit straight from network
+ buffers
+
+With ETH_EMACZERO_TX_ZERO_COPY, a frame held whole in one word-aligned
+network buffer goes to MM2S from that buffer instead of a copy in a TX
+buffer. NET_L2_ETHERNET_RESERVE_HEADER gives such buffers for frames up
+to NET_BUF_DATA_SIZE; other frames are still copied. The driver takes a
+reference on the packet and the MM2S completion callback drops it, in
+the order frames were posted. A DMA recovery drops the packets of
+frames lost with the ring. The AXI DMA driver cleans the buffer from
+the D-cache, so the option needs its manual cache coherency on a CPU
+with a data cache.
+
+On the Arty A7 at 100 MHz (caches on, cacheable frame buffers,
+1472-byte UDP, 100 Mbit/s link, 5 s runs) TX rises from 18.0 to 19.1
+Mbit/s on a MicroBlaze V and from 15.0 to 16.4 on a VexRiscv, and TX
+under 3 Mbit/s of RX from 14.5 to 15.4 and from 11.9 to 13.1.
+
+Signed-off-by: Leonardo Capossio <capossio.leonardo@gmail.com>
+---
+ drivers/ethernet/Kconfig.emaczero | 11 +++++
+ drivers/ethernet/eth_emaczero.c   | 81 +++++++++++++++++++++++++++++--
+ 2 files changed, 89 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/ethernet/Kconfig.emaczero b/drivers/ethernet/Kconfig.emaczero
+index 9f192b5..a58968d 100644
+--- a/drivers/ethernet/Kconfig.emaczero
++++ b/drivers/ethernet/Kconfig.emaczero
+@@ -60,6 +60,17 @@ config ETH_EMACZERO_TX_BUFFER_COUNT
+ 	  be queued on the MM2S channel. Must be smaller than
+ 	  DMA_XILINX_AXI_DMA_SG_DESCRIPTOR_NUM_TX.
+ 
++config ETH_EMACZERO_TX_ZERO_COPY
++	bool "Transmit frames straight from network buffers"
++	depends on DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY || !DCACHE
++	help
++	  Point MM2S at the network buffer that holds a frame instead of
++	  copying the frame into a TX buffer, holding the packet until MM2S
++	  completes it. This applies to a frame held whole in one word-aligned
++	  buffer, which NET_L2_ETHERNET_RESERVE_HEADER gives for frames up to
++	  NET_BUF_DATA_SIZE; others are still copied. The AXI DMA must reach
++	  all of the network stack's buffer memory at the CPU's addresses.
++
+ config ETH_EMACZERO_RX_THREAD_STACK_SIZE
+ 	int "RX thread stack size"
+ 	default 2048
+diff --git a/drivers/ethernet/eth_emaczero.c b/drivers/ethernet/eth_emaczero.c
+index 04ef7a5..cdcc0a8 100644
+--- a/drivers/ethernet/eth_emaczero.c
++++ b/drivers/ethernet/eth_emaczero.c
+@@ -157,6 +157,13 @@ struct emz_data {
+ 	/* free TX buffers; given back by the MM2S completion callback */
+ 	struct k_sem tx_free;
+ 	size_t tx_next;
++#if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
++	/* packets MM2S is sending from, by TX slot; NULL for a copied frame */
++	struct net_pkt *tx_pkt[EMZ_TX_BUF_COUNT];
++	/* the slot MM2S completes next; tx_pkt_lock orders it with recovery */
++	size_t tx_done;
++	struct k_spinlock tx_pkt_lock;
++#endif
+ 	bool tx_dma_configured;
+ 
+ 	/* set from a DMA halt until emz_dma_recover() has rebuilt both channels */
+@@ -572,9 +579,60 @@ static void emz_dma_tx_callback(const struct device *dma, void *user_data, uint3
+ 		return;
+ 	}
+ 
++#if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
++	/* MM2S completes frames in the order they were posted */
++	k_spinlock_key_t key = k_spin_lock(&data->tx_pkt_lock);
++	struct net_pkt *pkt = data->tx_pkt[data->tx_done];
++
++	data->tx_pkt[data->tx_done] = NULL;
++	data->tx_done = (data->tx_done + 1) % EMZ_TX_BUF_COUNT;
++	k_spin_unlock(&data->tx_pkt_lock, key);
++
++	if (pkt != NULL) {
++		net_pkt_unref(pkt);
++	}
++#endif
++
+ 	k_sem_give(&data->tx_free);
+ }
+ 
++#if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
++/*
++ * The frame's buffer, if MM2S can send straight from it: the whole frame in
++ * one word-aligned network buffer. The DMA driver cleans it from the D-cache.
++ */
++static const uint8_t *emz_tx_zero_copy_buf(struct net_pkt *pkt, size_t len)
++{
++	struct net_buf *frag = pkt->buffer;
++
++	if (frag == NULL || frag->frags != NULL || frag->len != len ||
++	    !IS_ALIGNED(frag->data, sizeof(uint32_t))) {
++		return NULL;
++	}
++	return frag->data;
++}
++
++/* Drop the packets of frames lost with the MM2S ring */
++static void emz_tx_release_all(struct emz_data *data)
++{
++	struct net_pkt *pkts[EMZ_TX_BUF_COUNT];
++	k_spinlock_key_t key = k_spin_lock(&data->tx_pkt_lock);
++
++	for (int i = 0; i < EMZ_TX_BUF_COUNT; i++) {
++		pkts[i] = data->tx_pkt[i];
++		data->tx_pkt[i] = NULL;
++	}
++	data->tx_done = 0;
++	k_spin_unlock(&data->tx_pkt_lock, key);
++
++	for (int i = 0; i < EMZ_TX_BUF_COUNT; i++) {
++		if (pkts[i] != NULL) {
++			net_pkt_unref(pkts[i]);
++		}
++	}
++}
++#endif
++
+ static int emz_tx_post(const struct device *dev, const uint8_t *buf, size_t len)
+ {
+ 	const struct emz_config *cfg = dev->config;
+@@ -632,10 +690,24 @@ static int emz_send(const struct device *dev, struct net_pkt *pkt)
+ 		goto unlock;
+ 	}
+ 
+-	buf = cfg->tx_storage[data->tx_next];
+-	ret = net_pkt_read(pkt, buf, len);
+-	if (ret == 0) {
++#if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
++	buf = (uint8_t *)emz_tx_zero_copy_buf(pkt, len);
++	if (buf != NULL) {
++		/* the completion callback drops this reference */
++		data->tx_pkt[data->tx_next] = net_pkt_ref(pkt);
+ 		ret = emz_tx_post(dev, buf, len);
++		if (ret != 0) {
++			data->tx_pkt[data->tx_next] = NULL;
++			net_pkt_unref(pkt);
++		}
++	} else
++#endif
++	{
++		buf = cfg->tx_storage[data->tx_next];
++		ret = net_pkt_read(pkt, buf, len);
++		if (ret == 0) {
++			ret = emz_tx_post(dev, buf, len);
++		}
+ 	}
+ 	if (ret != 0) {
+ 		k_sem_give(&data->tx_free);
+@@ -674,6 +746,9 @@ static void emz_dma_recover(struct k_work *work)
+ 	/* frames queued on MM2S are lost; the next send reconfigures the channel */
+ 	data->tx_dma_configured = false;
+ 	data->tx_next = 0;
++#if defined(CONFIG_ETH_EMACZERO_TX_ZERO_COPY)
++	emz_tx_release_all(data);
++#endif
+ 	k_sem_reset(&data->tx_free);
+ 	for (int i = 0; i < EMZ_TX_BUF_COUNT; i++) {
+ 		k_sem_give(&data->tx_free);
+-- 
+2.52.0.windows.1
+

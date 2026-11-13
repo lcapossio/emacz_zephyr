@@ -118,6 +118,8 @@ module vexriscv_full_axi_wrapper (
 
         .timerInterrupt             (timerInterrupt),
         .externalInterrupt          (externalInterrupt),
+        // single hart: no machine software interrupt source
+        .softwareInterrupt          (1'b0),
 
         // JTAG tied off; native VexRiscv debug not wired yet.
         .jtag_tms                   (1'b0),

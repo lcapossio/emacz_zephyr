@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+#
+# The linters scripts/lint.py runs, pinned: newer releases add rules.
+ruff==0.16.10
+clang-format==23.1.3

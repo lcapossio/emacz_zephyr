@@ -16,10 +16,57 @@
  *   axis_rx_stats   @ 0x41F00000
  *   AXI INTC        @ 0x41200000
  *   UARTLite        @ 0x40600000
- *   DDR             @ 0x90000000 (240 MiB Zephyr + 16 MiB DMA at 0x9F000000)
+ *   DDR             @ 0x90000000 (127 MiB Zephyr, then the 1 MiB frame
+ *                     buffers at the top of the D-cache aperture; the
+ *                     uncached window at 0x9F000000 holds the 64 KiB SG
+ *                     descriptors and the 8 KiB host page at 0x9FFFE000)
  */
 
 / {
+	/* Uncached (outside the CPU D-cache aperture) home for the AXI DMA
+	 * scatter-gather descriptor rings.
+	 */
+	dma_desc: memory@9f000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9f000000 0x10000>;
+		zephyr,memory-region = "DMA_DESC";
+	};
+
+	/* emacZero RX and TX packet buffers, in the top 1 MiB of the D-cache
+	 * aperture (0x90000000-0x97FFFFFF): the stack's copies out of and into
+	 * them run on cached lines, and the DMA driver keeps them coherent
+	 * (CACHE_MANAGEMENT in arty_a7_vex.conf).
+	 */
+	emz_bufs: memory@97f00000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x97f00000 0x100000>;
+		zephyr,memory-region = "EMZ_BUFFERS";
+	};
+
+	/* Host-visible page at fixed addresses the host tools reach over
+	 * JTAG-AXI: the provisioning mailbox, then the app's perf stats.
+	 */
+	emz_hostio: memory@9fffe000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x9fffe000 0x2000>;
+		zephyr,memory-region = "EMZ_HOSTIO";
+	};
+
+	/* The MII PHY is not managed by software; the link is fixed at
+	 * 100 Mbit/s full duplex. The parent node only supplies the address
+	 * cells for the PHY's reg.
+	 */
+	emz_phy_bus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		emz_phy: ethernet-phy@0 {
+			compatible = "ethernet-phy";
+			reg = <0>;
+			fixed-link = "100BASE-T Full-Duplex";
+		};
+	};
+
 	aliases {
 		ethernet0 = &emaczero0;
 	};
@@ -34,7 +81,8 @@
 			axistream-connected = <&axi_dma0>;
 			local-mac-address = [02 00 00 00 00 01];
 			phy-connection-type = "mii";
-			link-speed = <100>;
+			phy-handle = <&emz_phy>;
+			memory-region = <&emz_bufs>;
 		};
 
 		axi_dma0: dma@41e00000 {
@@ -47,6 +95,12 @@
 			#dma-cells = <0>;
 			dma-channels = <2>;
 			xlnx,addrwidth = <32>;
+			memory-region = <&dma_desc>;
 		};
 	};
+};
+
+/* Zephyr's RAM stops where the frame buffers start */
+&ram0 {
+	reg = <0x90000000 0x07f00000>;
 };

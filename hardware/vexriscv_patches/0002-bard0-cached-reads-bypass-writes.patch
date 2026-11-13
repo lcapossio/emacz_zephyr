@@ -1,0 +1,67 @@
+diff --git a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+index cbfa7db0..83a259d6 100644
+--- a/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
++++ b/src/main/scala/vexriscv/demo/VexRiscvAxi4WithIntegratedJtag.scala
+@@ -180,7 +180,10 @@ object VexRiscvAxi4WithIntegratedJtag{
+           }
+           case plugin: DBusCachedPlugin => {
+             plugin.dBus.setAsDirectionLess()
+-            master(plugin.dBus.toAxi4Shared().toAxi4().toFullConfig())
++            // bard0: refills skip pending stores to other lines; the
++            // write-through D$ otherwise makes every miss wait out the DDR
++            // write latency of the stores before it.
++            master(plugin.dBus.toAxi4Shared(cachedReadsBypassWrites = true).toAxi4().toFullConfig())
+               .setName("dBusAxi")
+               .addTag(ClockDomainTag(ClockDomain.current))
+           }
+diff --git a/src/main/scala/vexriscv/ip/DataCache.scala b/src/main/scala/vexriscv/ip/DataCache.scala
+index c7ffa8de..fdafb929 100644
+--- a/src/main/scala/vexriscv/ip/DataCache.scala
++++ b/src/main/scala/vexriscv/ip/DataCache.scala
+@@ -278,7 +278,14 @@ case class DataCacheMemBus(p : DataCacheConfig) extends Bundle with IMasterSlave
+     }
+   }
+ 
+-  def toAxi4Shared(stageCmd : Boolean = false, pendingWritesMax  : Int = 7): Axi4Shared = new Area{
++  // cachedReadsBypassWrites: a cached read (line refill) waits only for the
++  // pending writes to its own line instead of for all of them, so a refill
++  // no longer pays for the write latency of unrelated stores. Uncached reads
++  // still wait for every pending write. Store -> load ordering to different
++  // lines is then no longer kept by the bus, and FENCE (a no-op without
++  // withWriteResponse) does not restore it: an uncached read is what orders
++  // the stores before it.
++  def toAxi4Shared(stageCmd : Boolean = false, pendingWritesMax  : Int = 7, cachedReadsBypassWrites : Boolean = false): Axi4Shared = new Area{
+     setName("dBusToAxi4Shared")
+     val axi = Axi4Shared(p.getAxi4SharedConfig()).setName("dbus_axi")
+ 
+@@ -290,7 +297,29 @@ case class DataCacheMemBus(p : DataCacheConfig) extends Bundle with IMasterSlave
+       decWhen = axi.writeRsp.fire
+     )
+ 
+-    val hazard = (pendingWrites =/= 0 && !cmdPreFork.wr) || pendingWrites === pendingWritesMax
++    val readHazard = if(!cachedReadsBypassWrites) {
++      pendingWrites =/= 0
++    } else new Area {
++      // Line address of each pending write, oldest first. Every write uses
++      // the same AXI ID, so the B responses come back in issue order.
++      def lineOf(address : UInt) = address(address.high downto log2Up(p.bytePerLine))
++      val lines = Vec.fill(pendingWritesMax)(Reg(UInt(p.addressWidth - log2Up(p.bytePerLine) bits)))
++      val valids = Vec.fill(pendingWritesMax)(RegInit(False))
++      val pushPtr, popPtr = Counter(pendingWritesMax)
++      when(axi.writeRsp.fire) {
++        valids(popPtr) := False
++        popPtr.increment()
++      }
++      when(cmdPreFork.fire && cmdPreFork.wr) {
++        lines(pushPtr) := lineOf(cmdPreFork.address)
++        valids(pushPtr) := True
++        pushPtr.increment()
++      }
++      val sameLine = (0 until pendingWritesMax).map(i => valids(i) && lines(i) === lineOf(cmdPreFork.address)).reduce(_ || _)
++      val hazard = cmdPreFork.uncached ? (pendingWrites =/= 0) | sameLine
++    }.hazard
++
++    val hazard = (readHazard && !cmdPreFork.wr) || (pendingWrites === pendingWritesMax && cmdPreFork.wr) // a full count holds back writes only
+     val (cmdFork, dataFork) = StreamFork2(cmdPreFork.haltWhen(hazard))
+     val cmdStage  = cmdFork.throwWhen(RegNextWhen(!cmdFork.last,cmdFork.fire).init(False))
+     val dataStage = dataFork.throwWhen(!dataFork.wr)

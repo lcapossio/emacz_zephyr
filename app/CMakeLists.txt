@@ -8,6 +8,11 @@ list(APPEND ZEPHYR_EXTRA_MODULES ${CMAKE_CURRENT_LIST_DIR}/..)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(emacz_zephyr_app)
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../drivers drivers)
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../drivers/ethernet)
 target_sources(app PRIVATE src/main.c src/provision.c)
+target_sources_ifdef(CONFIG_EMACZ_APP_PC_SAMPLE app PRIVATE src/pc_sample.c)
+
+# Profiled hot functions packed at the start of .text (EMACZ_APP_HOT_TEXT)
+set(hot_text ${CMAKE_CURRENT_LIST_DIR}/boards/${BOARD}_hot_text.ld)
+if(CONFIG_EMACZ_APP_HOT_TEXT AND EXISTS ${hot_text})
+  zephyr_linker_sources(TEXT_SECTIONS ${hot_text})
+endif()

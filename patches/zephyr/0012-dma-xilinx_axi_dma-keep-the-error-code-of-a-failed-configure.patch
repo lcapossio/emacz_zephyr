@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leonardo Capossio <capossio.leonardo@gmail.com>
+Date: Sun, 1 Nov 2026 12:00:00 +0100
+Subject: [PATCH] dma: xilinx_axi_dma: keep the error code of a failed
+ configure
+
+dma_xilinx_axi_dma_configure() chained the block transfers with
+ret = ret || ..., which turns any error into 1. A client that checks
+for a negative return, as the Ethernet L2 does on a failed send, took
+the failure for success. Return the transfer's own error code.
+
+Signed-off-by: Leonardo Capossio <capossio.leonardo@gmail.com>
+---
+ drivers/dma/dma_xilinx_axi_dma.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/dma/dma_xilinx_axi_dma.c b/drivers/dma/dma_xilinx_axi_dma.c
+index 388df48..47b7bdf 100644
+--- a/drivers/dma/dma_xilinx_axi_dma.c
++++ b/drivers/dma/dma_xilinx_axi_dma.c
+@@ -989,15 +989,14 @@ static int dma_xilinx_axi_dma_configure(const struct device *dev, uint32_t chann
+ 	LOG_DBG("Completed configuration of AXI DMA - Starting transfer!");
+ 
+ 	do {
+-		ret = ret ||
+-		      dma_xilinx_axi_dma_transfer_block(dev, channel,
++		ret = dma_xilinx_axi_dma_transfer_block(dev, channel,
+ 							channel == XILINX_AXI_DMA_TX_CHANNEL_NUM
+ 								? current_block->source_address
+ 								: current_block->dest_address,
+ 							current_block->block_size, block_count == 0,
+ 							current_block->next_block == NULL);
+ 		block_count++;
+-	} while ((current_block = current_block->next_block) && ret == 0);
++	} while (ret == 0 && (current_block = current_block->next_block));
+ 
+ 	return ret;
+ }
+-- 
+2.52.0.windows.1
+

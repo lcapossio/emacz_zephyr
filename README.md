@@ -3,10 +3,10 @@
 emacz_zephyr integrates [emacZero](https://github.com/lcapossio/emacZero) with
 the AMD/Xilinx Zephyr tree for the Arty A7-100T, with two interchangeable
 CPU options: AMD MicroBlaze V (`mbv32`) and SpinalHDL VexRiscv-full. Both
-run the same Zephyr app, driver, and emacZero MAC — the MBV shell clocks
-CPU and peripherals from MIG's 81.25 MHz `ui_clk`, while the Vex shell runs
-its SoC at 100 MHz `sys_clk` and treats `ui_clk` as a downstream DDR-only
-domain.
+run the same Zephyr app, driver, and emacZero MAC, and both shells run
+their SoC at 100 MHz `sys_clk` with MIG's 81.25 MHz `ui_clk` as a
+downstream DDR-only domain. The same app also targets the AMD ZCU106 over SFP, on a VexRiscv
+in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
 
 - [Features](#features)
 - [Repository Layout](#repository-layout)
@@ -14,24 +14,28 @@ domain.
 - [Build](#build)
 - [Host-configured IPv4](#host-configured-ipv4)
 - [Arty A7-100T SoC](#arty-a7-100t-soc)
+- [ZCU106](#zcu106)
 - [Resource Usage and Frequency](#resource-usage-and-frequency)
-- [MBV vs Vex comparison](#mbv-vs-vex-comparison)
+- [Throughput](#throughput)
 - [Verification](#verification)
 - [Author and License](#author-and-license)
 
 ## Features
 
-- Out-of-tree Zephyr Ethernet driver and DT binding for `bard0,emaczero`.
+- Runs the mainline Zephyr emacZero driver (`bard0,emaczero`), carried in
+  `patches/zephyr/` until the pinned Zephyr tree includes it.
 - Arty A7-100T shells for two CPUs: AMD MicroBlaze V (`mbv32` board) and
-  SpinalHDL VexRiscv-full (16 KiB I$/D$, DYNAMIC_TARGET branch predictor,
-  earlyBranch, R-slice on DBUS). Same emacZero MAC + Zephyr fast-path on
-  both.
-- Direct AXI DMA S2MM RX ring with zero-copy handoff to the Zephyr stack and
+  SpinalHDL VexRiscv-full (32 KiB I$, 16 KiB D$, compressed instructions,
+  DYNAMIC_TARGET branch predictor, earlyBranch, R-slice on DBUS). Same
+  emacZero MAC and Zephyr app on both.
+- AMD ZCU106 shells, 1000BASE-X on SFP0: the Vex CPU complex in the PL
+  (`zcu106_vex`) or Cortex-R5 #0 in the PS (`zcu106_r5`). Both pass the
+  board suite.
+- AXI DMA RX through Zephyr's DMA API (upstream Xilinx AXI DMA driver),
+  with error recovery and zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
-- Optional per-region cycle instrumentation
-  (`CONFIG_ETH_EMACZERO_R7_INSTRUMENTATION`, off by default).
-- Application-owned high-rate UDP endpoint on port 5001 for line-rate RX
-  testing, plus a normal Zephyr socket path for arbitrary traffic.
+- UDP sink on port 5001 and a control port on 5002 for host-side RX/TX
+  accounting, both through ordinary Zephyr sockets.
 - Host-configured IPv4 — no deployment subnet baked into the firmware.
 - `external/emacZero` and `fcapz` pulled in as git submodules; Zephyr is
   pinned to AMD/Xilinx `zephyr-amd` branch `xlnx_rel_v2026.1`.
@@ -40,10 +44,14 @@ domain.
 
 - `external/emacZero/` — emacZero RTL, docs, and bare-metal SW submodule.
 - `fcapz/` — fpgacapZero debug cores and host tools submodule.
-- `drivers/ethernet/` — native Zephyr emacZero Ethernet driver.
-- `dts/bindings/ethernet/` — Zephyr DT binding.
-- `app/` — minimal Zephyr bring-up app for the Arty A7 example.
-- `hardware/` — Vivado build script, RTL, XDC.
+- `patches/zephyr/` — Zephyr patches: AXI DMA driver fixes and the emacZero
+  driver.
+- `app/` — the Zephyr app, with per-board overlays in `app/boards/` and the
+  cache-off measurement variants in `app/perf/`.
+- `boards/bard0/`, `soc/bard0/` — the Zephyr boards defined here
+  (`arty_a7_vex`, `zcu106_vex`, `zcu106_r5`) and the VexRiscv SoC
+  (`vexriscv_axi`) the two Vex boards share.
+- `hardware/` — Vivado build scripts, RTL, XDC.
 - `scripts/` — host tools (loader, provisioning, perf-stats, stress test).
 - `no_commit/BUGS.md` — local bug list required by the project rules.
 
@@ -58,8 +66,33 @@ west zephyr-export
 ```
 
 The patch step asks west for the Zephyr checkout path (falls back to
-`ZEPHYR_BASE`) and applies patches required by the direct AXI DMA RX-ring
-path. Re-run after every `west update`.
+`ZEPHYR_BASE`) and applies the Xilinx AXI DMA driver patches in
+`patches/zephyr/`: 0001 brings the driver up to upstream Zephyr
+`ac03a4a9085`, 0002 adds an optional `memory-region` property that places
+the scatter-gather descriptor rings in a given linker region, and 0003
+reports a channel halted by a DMA error to the client callback (`-EIO`) so
+the driver can reset and rebuild both channels. 0004 adds the emacZero
+Ethernet driver and DT binding as submitted to mainline Zephyr, and 0005
+backports it to this tree's older Ethernet API. 0006 is upstream
+`ef5b9dc5c1e`, which stops devicetree MPU regions from corrupting their
+memory type on Cortex-R; the ZCU106 R5 build maps the PL window and its
+DMA memory that way. 0007 makes the minimal libc `memcpy` copy whole
+words when source and destination alignments differ: a UDP payload sits 2
+bytes off a word boundary in its frame, so the socket copy used to run a
+byte at a time. 0008 implements the arch cache API for MicroBlaze V with
+its Zicbom instructions, so the frame buffers can live in cached memory.
+0009 lets the emacZero driver hand MM2S the network buffer that holds a
+frame instead of copying it (`CONFIG_ETH_EMACZERO_TX_ZERO_COPY`). 0010
+leaves the packet and byte counters to the Ethernet L2: the driver used to
+overwrite them with the MAC's on every frame the L2 counted, and now it fills
+only the MAC's error details, reading the MAC at most every 10 ms. 0011
+stops both DMA channels and waits for them to halt before recovery frees
+their buffers. 0012 makes the AXI DMA driver return the error of a failed
+block configure instead of losing it. 0013 places the RISC-V linker's
+`TEXT_SECTIONS` snippets inside `.text`, after `__text_region_start`, which
+the app's hot-function list relies on. Re-run after
+every `west update`; it skips patches that are already applied and refuses
+to touch locally modified driver files.
 
 A RISC-V cross compiler (`riscv64-unknown-elf-gcc` or the Zephyr SDK RISC-V
 toolchain) must be on `PATH`. On Windows, WSL is the recommended build shell:
@@ -69,6 +102,10 @@ python3 -m pip install --user west pykwalify
 export ZEPHYR_TOOLCHAIN_VARIANT=cross-compile
 export CROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
+
+The `zcu106_r5` board needs an Arm compiler instead, such as the Zephyr
+SDK's `arm-zephyr-eabi` toolchain, and the CMSIS module that `west update`
+fetches.
 
 ## Build
 
@@ -86,14 +123,14 @@ west build -b arty_a7_vex -d build-vex-emac app -- \
   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
 ```
 
-The two boards are not interchangeable: `arty_a7_vex` sets a 100 MHz timer
-base and disables the Zicbom D-cache maintenance ops (`cbo.clean`,
-`cbo.inval`) the VexRiscv core cannot decode. Booting an `mbv32` image on
-the Vex bitstream traps on `cbo.*`; the reverse gives a ~23% timer error.
+The two boards are not interchangeable: their memory maps, interrupt
+controllers and reset paths differ. Both build with the C extension; an
+`arty_a7_vex` image does not run on a Vex bitstream generated before the core
+gained compressed instructions (November 2026).
 
 Add `--pristine` after DT or Kconfig changes. The app registers this repo as
-a Zephyr extra module, so the local driver/binding/Kconfig are picked up
-automatically.
+a Zephyr extra module, so the `arty_a7_vex` board, its SoC and the app
+Kconfig are picked up automatically.
 
 Hardware (Vivado):
 
@@ -107,23 +144,20 @@ python hardware/scripts/build_arty_a7_vex.py                     # BD only
 python hardware/scripts/build_arty_a7_vex.py --synth --jobs 2    # bitstream + XSA
 ```
 
-The bring-up flow avoids repeated bitstream rebuilds — load a flat
-`zephyr.bin` into DDR over fcapz JTAG-AXI and release the CPU through EIO.
-
-MicroBlaze V (fcapz USER3, chain 3):
-
-```sh
-python scripts/load_zephyr_bram.py \
-  --file build-mbv-emac/zephyr/zephyr.bin \
-  --addr 0x90000000
-```
-
-VexRiscv-full (fcapz USER3, chain 4):
+The bring-up flow avoids repeated bitstream rebuilds. Program the shell's
+bitstream once (Vivado on PATH), then load a flat `zephyr.bin` into DDR over
+fcapz JTAG-AXI. The loader holds the CPU in reset while it writes and
+verifies the image, then releases it. MicroBlaze V's reset is an fcapz EIO
+output; VexRiscv's is an AXI GPIO behind the bridge.
 
 ```sh
-python no_commit/vex_boot_zephyr.py \
-  --file build-vex-emac/zephyr/zephyr.bin
+python scripts/program_fpga.py --shell mbv       # or --shell vex
+python scripts/load_zephyr_bram.py --shell mbv   # build-mbv-emac/zephyr/zephyr.bin, chain 3
+python scripts/load_zephyr_bram.py --shell vex   # build-vex-emac/zephyr/zephyr.bin, chain 4
 ```
+
+`program_fpga.py --bit` and `load_zephyr_bram.py --file`, `--addr` and `--chain`
+override the per-shell defaults.
 
 ## Host-configured IPv4
 
@@ -145,11 +179,10 @@ Configuration is intentionally runtime-only and must be re-applied after a
 reboot. Use `--interface NAME`, `--bind HOST_IP`, or `--mac` to disambiguate
 when multiple boards or NICs are present.
 
-The default app registers emacZero, brings up AXI DMA-backed RX/TX,
-provisions IPv4 from the host, and installs a driver-level RX interceptor
-for unicast UDP port 5001 that returns each DMA buffer immediately after
-accounting. ARP, ICMP, port-5004 provisioning, and every other UDP port
-continue through the normal Zephyr network stack.
+The default app brings up emacZero with AXI DMA-backed RX/TX, provisions
+IPv4 from the host, and serves a UDP sink on port 5001 and a control port
+on 5002. All traffic, including provisioning on port 5004, goes through
+the normal Zephyr network stack.
 
 ## Arty A7-100T SoC
 
@@ -161,8 +194,11 @@ Shared SoC:
 - Board oscillator `CLK100MHZ` (100 MHz) drives the MIG; each shell picks
   its own SoC clock from there (see per-shell bullets below).
 - 256 MiB DDR3 at `0x90000000` (Arty MIG). Zephyr code/data in the lower
-  240 MiB; emacZero DMA buffers and SG descriptors in the upper 16 MiB at
-  `0x9f000000`.
+  127 MiB; the emacZero frame buffers take the 1 MiB above them, the top
+  of both CPUs' D-cache aperture (`0x90000000`-`0x97ffffff`), kept coherent
+  by the AXI DMA driver. The upper 16 MiB at `0x9f000000` lies outside the
+  aperture: its first 64 KiB is the `dma_desc` memory region holding the
+  AXI DMA SG descriptor rings, and the host page sits at `0x9fffe000`.
 - AXI INTC `0x41200000`, AXI Timer `0x41c00000`, AXI UARTLite `0x40600000`.
 - emacZero CSRs at `0x44a00000`, Xilinx AXI DMA at `0x41e00000`. MM2S feeds
   emacZero TX, S2MM receives RX.
@@ -178,19 +214,25 @@ MicroBlaze V shell (`hardware/scripts/build_arty_a7_mbv.py`, Zephyr board
 target `mbv32`):
 
 - MicroBlaze V RV32IMAC with Zicsr/Zifencei and I/D caches.
-- CPU and every AXI/AXI-Lite fabric run on `mig_ddr/ui_clk` at **81.25 MHz**
-  (MIG PHY ratio 4:1, 325 MHz DDR). No separate SoC clock.
+- CPU and SoC-side AXI/AXI-Lite fabrics, the AXI DMA and emacZero run on
+  `sys_clk` at **100 MHz**, as on the Vex shell; MIG's 81.25 MHz `ui_clk`
+  (PHY ratio 4:1, 325 MHz DDR) is a private domain behind a CDC in the DDR
+  SmartConnect.
 - fcapz EJTAG-AXI on BSCANE2 USER3 (chain 3), EJTAG-UART on USER4, ELA on
   USER1, EIO reset on USER1 chain 1.
 
 VexRiscv-full shell (`hardware/scripts/build_arty_a7_vex.py`, Zephyr board
 target `arty_a7_vex` — defined in-tree under `boards/bard0/arty_a7_vex/`
-and `soc/bard0/arty_a7_vex/`):
+and `soc/bard0/vexriscv_axi/`):
 
-- SpinalHDL VexRiscv-full RV32IMA with `IBusCachedPlugin` (16 KiB I$,
-  DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
-  `DBusCachedPlugin` (16 KiB D$), `BranchPlugin(earlyBranch=true)`,
-  `CsrPlugin` with `mtvecAccess=READ_WRITE`.
+- SpinalHDL VexRiscv-full RV32IMAC, upstream `master` `baf7dc82`, with
+  `IBusCachedPlugin` (32 KiB I$, compressed instructions with the injector
+  stage, DYNAMIC_TARGET branch predictor, `historyRamSizeLog2=8`) and
+  `DBusCachedPlugin` (16 KiB write-through D$),
+  `BranchPlugin(earlyBranch=true)`, `CsrPlugin` with
+  `mtvecAccess=READ_WRITE`. A local patch lets D$ refills pass pending
+  stores to other lines on the AXI bridge
+  ([hardware/vexriscv_patches/](hardware/vexriscv_patches/README.md)).
 - CPU and SoC-side AXI/AXI-Lite fabrics run on `sys_clk` at **100 MHz**;
   MIG's 81.25 MHz `ui_clk` is a private domain behind a CDC in the DDR
   SmartConnect.
@@ -198,12 +240,12 @@ and `soc/bard0/arty_a7_vex/`):
   combinational path — required for 100 MHz timing on Artix-7.
 - fcapz EJTAG-AXI is one chain higher than MBV (chain 4 instead of 3)
   because Vex's own JTAG debug port sits ahead of it in the BSCAN chain.
-  Host tools: `no_commit/vex_boot_zephyr.py` for boot,
-  `no_commit/vex_set_ip.py` for provisioning.
+  `scripts/load_zephyr_bram.py --shell vex` and the perf readers'
+  `--chain 4` account for this.
 
 Top-level RTL diagrams (click for full-size SVG):
 
-**MicroBlaze V shell (81.25 MHz single domain):**
+**MicroBlaze V shell (100 MHz SoC + 81.25 MHz DDR UI):**
 
 <a href="docs/architecture_mbv.svg">
   <img src="docs/architecture_mbv.svg" alt="Arty A7-100T MicroBlaze V SoC">
@@ -218,45 +260,485 @@ Top-level RTL diagrams (click for full-size SVG):
 Editable sources: [docs/architecture_mbv.json](docs/architecture_mbv.json),
 [docs/architecture_vex.json](docs/architecture_vex.json).
 
+## ZCU106
+
+Two hardware shells for the AMD ZCU106 (`xczu7ev`) share one PL Ethernet
+subsystem: emacZero in GMII mode behind the AMD 1G/2.5G Ethernet PCS/PMA
+core, 1000BASE-X on SFP cage 0, with the AXI DMA, the RX stream counters, a
+PCS status GPIO and the fcapz JTAG-AXI bridge (USER4, chain 4). The
+Ethernet side (emacZero, the DMA, the PS-PL ports) runs at 150 MHz from the
+300 MHz `USER_SI570`, since emacZero needs at least 125 MHz in GMII mode;
+its CDC crosses to the transceiver's 125 MHz `userclk2`.
+`hardware/scripts/build_zcu106.py` builds either shell, and for both a Zynq
+MP FSBL that sets up the PS before anything is loaded.
+
+Both shells meet timing and pass the whole board suite (below) on a ZCU106
+whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
+with every datagram delivered, DMA error recovery and TX. Each shell needs
+its own MAC address when they share a segment with an Arty (`--mac`;
+the overlays use `02:00:00:00:00:02` for Vex and `:03` for the R5).
+
+`zcu106_vex` (`--variant vex`) matches the Arty Vex shell, so the two give
+comparable numbers: the same CPU complex at the same 100 MHz, in its own
+clock domain, and the same address map, with the 256 MiB DDR window at
+`0x90000000` in PS DDR4 instead of DDR3. Zephyr has the 240 MiB inside and
+just above the D-cache aperture; the 16 MiB at `0x9f000000` outside it holds
+the DMA descriptors, frame buffers and the host page (`0x9fffe000`). The CPU
+and DMA reach the window through `S_AXI_HP0_FPD`, which decodes DDR below
+`0x80000000`, so `axi_addr_remap` moves it to `0x10000000`. The PS provides
+only the DDR. Its console is the PL UART, the CP2108's third interface.
+
+`zcu106_r5` (`--variant r5`) runs Zephyr on Cortex-R5 #0. The R5 reaches the
+PL blocks through `M_AXI_HPM0_LPD` at `0x80000000` + the Vex offsets (AXI
+DMA `0x81e00000`, emacZero `0x84a00000`), and the DMA reaches PS DDR through
+`S_AXI_HP0_FPD`. Zephyr runs from the bottom 64 MiB of DDR with the R5's
+I- and D-caches on. The frame buffers (`0x07c00000`), descriptors
+(`0x07e00000`) and host page (`0x07ffe000`) are MPU regions above it, clear
+of the TCM window at `0x0` that the PL cannot reach. The frame buffers are
+cacheable, with the AXI DMA driver's cache maintenance around each transfer
+(`CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY`); the descriptors and
+host page are non-cacheable. The PL interrupts are GIC SPIs 89–92. Its
+console is PS UART0, the CP2108's first interface.
+
+| | `zcu106_vex` | `zcu106_r5` |
+|---|---|---|
+| CLB LUTs | 22,170 (9.6%) | 13,923 (6.0%) |
+| CLB Registers | 29,564 (6.4%) | 18,708 (4.1%) |
+| Block RAM tiles | 35 | 13 |
+| UltraRAM | 0 | 0 |
+| Setup WNS | +2.068 ns | +1.608 ns |
+
+The board needs a 1000BASE-X SFP module in cage 0 and a link partner that
+speaks it, such as a fibre NIC or a switch port. DIP switch `GPIO_DIP_SW0`
+turns auto-negotiation off for partners that do not negotiate, and user LEDs
+0–3 show GT reset done, PCS sync, link up and the `userclk2` heartbeat. JTAG
+and the CP2108 UART both need their USB cables connected.
+
+Build:
+
+```sh
+python hardware/scripts/build_zcu106.py --variant vex --synth  # bitstream, XSA, FSBL
+python hardware/scripts/build_zcu106.py --variant r5 --synth   # bitstream, XSA, FSBL
+python hardware/scripts/build_zcu106.py --variant r5 --fsbl    # just the FSBL, from the XSA
+
+west build -b zcu106_vex -d build-zcu106-vex app --   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile   -DCROSS_COMPILE=/usr/bin/riscv64-unknown-elf-
+west build -b zcu106_r5 -d build-zcu106-r5 app --   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile   -DCROSS_COMPILE=<zephyr-sdk>/arm-zephyr-eabi/bin/arm-zephyr-eabi-
+```
+
+Boot:
+
+```sh
+# Vex: bitstream and FSBL (which sets up the DDR; R5 #0 stays halted), then
+# the image into PS DDR over JTAG-AXI
+python scripts/load_zynqmp_r5.py --shell zcu106_vex
+python scripts/load_zephyr_bram.py --shell zcu106_vex
+
+# R5: one xsdb session puts the PS in JTAG boot mode, resets it, programs
+# the PL, runs the FSBL on R5 #0, then loads and starts zephyr.elf there
+python scripts/load_zynqmp_r5.py
+```
+
+Both builds make a Zynq MP FSBL for R5 #0 from the XSA with `xsct`, so
+they need Vitis installed next to Vivado (or `xsct` on `PATH`). The loader runs
+it before Zephyr, as a normal boot would: it initialises the PS, sizes the
+DDR from the SODIMM's SPD, initialises the TCM ECC and, finding the PL
+configured, lifts the PS-PL isolation and resets the PL. In JTAG boot mode
+it then parks and flags completion in `PMU_GLOBAL.GLOB_GEN_STORAGE5`, which
+the loader waits for. Running only `psu_init` instead leaves R5 reads from
+DDR hanging now and then. `--fsbl` picks another FSBL image.
+
+`load_zynqmp_r5.py` needs `xsdb` (Vivado or Vitis) on `PATH`. It takes every
+xsdb target from the JTAG cable whose FPGA is the `xczu7` (`--tap`), and
+`program_fpga.py` searches every cable for its device, so other boards on
+the same `hw_server` are left alone. The fcapz tools find the FPGA by its
+exact xsdb JTAG name, `xczu7` (`xsdb` then `connect; jtag targets` lists
+it). A board that is missing or named differently fails with "target list
+is empty". hw_server also gives that error, and "JTAG node is not
+accessible", now and then for a working board when a new xsdb session
+starts, so the fcapz tools try a session up to three times, 2 s apart.
+Reads rerun the whole session; a write is never repeated.
+
+The board suite runs the whole acceptance flow on any shell: boot,
+provisioning, the RX accounting test, DMA error recovery, the TX benchmark,
+and RX and TX together (`bidi`: the TX benchmark with RX at about 40% of
+the shell's RX ceiling, `--bidi-rx-mbps` to change it). The bidi step
+sends the board its TX start command before the RX load starts, so the
+load cannot drop it, and stops the load when the board's TX reply comes
+in: RX runs over exactly the board's TX window. The two scripts never
+read counters over JTAG at the same time. The suite stops at the first
+step that fails:
+
+```sh
+python scripts/run_board_suite.py --shell zcu106_r5   --interface "<host NIC>" --board-ip <board IPv4> --uart <console port>
+```
+
+`--shell` is one of `mbv`, `vex`, `zcu106_vex` and `zcu106_r5`; `--skip-boot`
+tests a board that is already running.
+
 ## Resource Usage and Frequency
 
 Vivado 2025.2 on `xc7a100tcsg324-1`, split-fabric build, both shells timing
-MET at their target frequencies (MBV: 81.25 MHz `ui_clk`; Vex: 100 MHz
-`sys_clk` + 81.25 MHz `ui_clk` behind CDC).
+MET at the same frequencies: 100 MHz `sys_clk` + 81.25 MHz `ui_clk` behind
+CDC.
 
 | Resource | MBV | Vex | Δ (vex − mbv) |
 |---|---|---|---|
-| Slice LUTs | 34,688 (54.71%) | 28,907 (45.59%) | −5,781 (−16.7%) |
-| Slice Registers | 46,199 (36.43%) | 29,451 (23.23%) | −16,748 (−36.3%) |
-| BRAM Tiles | 44 (32.59%) | 36 (26.67%) | −8 (−18.2%) |
+| Slice LUTs | 34,574 (54.53%) | 29,002 (45.74%) | −5,572 (−16.1%) |
+| Slice Registers | 45,885 (36.19%) | 29,534 (23.29%) | −16,351 (−35.6%) |
+| BRAM Tiles | 43 (31.85%) | 40.5 (30.00%) | −2.5 (−5.8%) |
 | DSPs | 4 (1.67%) | 4 (1.67%) | 0 |
-| Setup WNS | +0.630 ns | +0.187 ns | — |
+| Setup WNS | +0.054 ns | +0.062 ns | — |
 
-Vex is the cheaper CPU on this Artix-7 target despite carrying 16 KiB
-I$/D$ and a DYNAMIC_TARGET branch predictor. Full breakdown, including
+Vex is the cheaper CPU on this Artix-7 target despite carrying a 32 KiB
+I$, a 16 KiB D$ and a DYNAMIC_TARGET branch predictor (Vex column: VexRiscv
+`baf7dc82` with the patches in `hardware/vexriscv_patches/`; its worst path
+is the earlyBranch redirect into the I$ RAM address). Full breakdown, including
 LUT-as-memory and F7/F8 wide-mux counts, is in
 [docs/cpu_comparison.md](docs/cpu_comparison.md).
 
-## MBV vs Vex comparison
+## Throughput
 
-Both CPUs saturate the 100 Mbps MII in both directions with zero drops.
-Numbers below are delivered rate — the delta in Zephyr's `sink_packets`
-from `emaczero_perf_stats` across the bench window, not iperf's offered
-rate. Sender is `iperf.exe -c <board> -u -b <rate>M -t 5 -l 1472`.
+UDP with 1472 B payloads through Zephyr sockets, delivered rate as counted
+by the board. `scripts/run_perf_matrix.py` boots a shell and runs the same
+loads on each: RX offered at 20 and 90 Mbit/s for 5 s
+(`run_udp_accounting.py`; the table gives the 90 Mbit/s point), TX
+unthrottled for 5 s (`run_tx_accounting.py --rate-mbps 0`), then TX
+unthrottled again with RX over the same window: first at 3 Mbit/s, then at
+the link's payload rate (full duplex). Every row has uncached frame buffers
+except the last. Rates in Mbit/s:
 
-| Test | MBV | Vex |
-|---|---|---|
-| RX single-direction | 96.0 Mbps, 0 drops | 94.5 Mbps, 0 drops |
-| TX single-direction | 91.4 Mbps | 92.3 Mbps |
-| RX+TX concurrent | 187.2 Mbps aggregate | 186.1 Mbps aggregate |
-| % of 200 Mbps full-duplex | 93.6% | 93.1% |
+| Shell | CPU clock | Caches | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
+|---|---|---|---|---|---|---|
+| Arty MBV | 100 MHz | on | 9.3 | 8.9 | 4.9 | 0.00 / 8.9 |
+| | | D-cache off | 4.3 | 2.7 | 0.4 | 0.05 / 4.0 |
+| | | off | 1.8 | 0.9 | 0 ¹ | 0 ¹ / 1.5 |
+| Arty Vex | 100 MHz | on | 9.4 | 11.5 | 6.3 | 0.36 / 8.9 |
+| | | D-cache off | 4.4 | 2.7 | 0.4 | 0.06 / 4.1 |
+| ZCU106 Vex | 100 MHz | on | 11.7 | 12.2 | 7.7 | 0.00 / 11.4 |
+| | | D-cache off | 5.1 | 3.1 | 0.8 | 0.06 / 4.7 |
+| ZCU106 R5 | 500 MHz | on | 66.5 | 215.3 | 204.1 | 0.01 / 66.2 |
+| | | off | 54.5 | 142.5 | 134.5 | 0.00 / 54.2 |
+| ZCU106 R5, cacheable frame buffers | 500 MHz | on | 244 (400 offered) | 199.1 | 196.3 | 0 ¹ / 244.5 |
 
-At the network layer the two CPUs are indistinguishable on this SoC —
-the workload is network-bound, not CPU-bound. Pick MBV for a
-Vivado-native toolchain end-to-end, or Vex for the FPGA-area savings
-above and a rebuild pipeline that uses SpinalHDL/sbt. See
-[docs/cpu_comparison.md](docs/cpu_comparison.md) for the full
-methodology, reproduction steps, and when-to-pick-which.
+Full duplex offers RX at the link's payload rate: 95.7 Mbit/s on the Arty,
+and on the ZCU106 the 948–957 Mbit/s the host's sender reached. ¹ The
+board's 5 s TX run had not finished, so had not replied, 60 s later: under
+that RX load its TX thread got no CPU at all.
+
+The caches:
+
+- *on*: each shell as built at the time. The soft CPUs' frame buffers sat
+  in the DMA window above their D-cache aperture (now
+  `app/perf/uncached_bufs.*`, see below); the R5 variant makes its buffer
+  region non-cacheable (`app/perf/zcu106_r5_uncached_bufs.*`).
+- *D-cache off*: the image is built with `app/perf/dcache_off.overlay`,
+  which links Zephyr at `0x98000000`, above the D-cache aperture, so every
+  data access goes to DDR. It is loaded with `--load-addr 0x98000000`, which
+  puts a jump there at the CPU's `0x90000000` entry. Instruction fetch
+  stays cached: VexRiscv's I-cache caches every fetch and has no switch, so
+  this is the cache-off point for the Vex shells.
+- *off*: MicroBlaze V built without either cache
+  (`build_arty_a7_mbv.py --no-caches`), and the R5 without cache
+  management (`app/perf/zcu106_r5_caches_off.conf`), which leaves both of
+  its caches off. With an RX ceiling below 3 Mbit/s, the MBV gives TX no
+  CPU even at that load.
+
+The Arty and ZCU106 Vex shells differ only in the memory path (DDR3
+through MIG at 81.25 MHz behind a CDC, against PS DDR4 through
+`S_AXI_HP0_FPD`) and the link (100 Mbit/s MII, 1 Gbit/s SFP), which neither
+rate comes near. At the same clock the Arty's two CPUs are within 2% on RX
+at every cache setting; Vex's faster byte-store loop shows on TX.
+
+With uncached buffers the soft CPUs' RX ceiling was set by memory latency,
+not the core. The socket's copy of each payload out of the uncached frame buffers costs
+~1.07 ms of the ~1.25 ms per frame on both Arty shells: the UDP payload
+starts 2 bytes off a word boundary, so `memcpy` falls back to byte reads of
+uncached memory. The same copy limits the R5 to 66.5 Mbit/s with uncached
+buffers; cacheable ones, with the AXI DMA driver's cache maintenance around
+each transfer (`CONFIG_DMA_XILINX_AXI_DMA_MANUAL_CACHE_COHERENCY`), let it
+read whole lines. That is how `zcu106_r5` is built: 243 Mbit/s RX, while TX
+pays for the cache clean of each buffer.
+
+The tables above were measured on uncached frame buffers and the stock
+`memcpy`. The Arty soft-CPU builds now take the fixes below, none of which
+changes the hardware. First, three to that copy path:
+
+- `patches/zephyr/0007`: `memcpy` copies words whatever the alignment of
+  its source and destination, shifting and merging two aligned source
+  words into each destination word.
+- `CONFIG_NET_L2_ETHERNET_RESERVE_HEADER` (`app/prj.conf`): the stack
+  builds each TX frame in one word-aligned buffer, so the driver's copy
+  into the DMA buffer runs on words too.
+- Cacheable frame buffers: `emz_bufs` sits in the top 1 MiB of the D-cache
+  aperture (`0x97F00000`), and the AXI DMA driver cleans and invalidates
+  them around each transfer, as on the R5. MicroBlaze V uses its Zicbom
+  instructions (`patches/zephyr/0008`), VexRiscv its line-invalidate
+  instruction and an uncached read that waits for its stores to reach
+  memory (`soc/bard0/vexriscv_axi/cache.c`). `app/perf/uncached_bufs.*`
+  restores the old placement.
+
+Then four that a profile of the cacheable-buffer builds pointed at
+(`app/perf/pc_sample.*`, below):
+
+- Zero-copy TX (`patches/zephyr/0009`, set in the soft-CPU board confs): with
+  the reserved header a whole frame sits in one word-aligned network
+  buffer, and MM2S sends it from there. The driver holds the packet until
+  MM2S completes it; other frames are still copied.
+- The Ethernet L2 asks the driver for its counters on every frame it
+  counts, and the driver read eleven MAC registers each time, 1.4% of the
+  CPU under an RX flood, overwriting the counters the L2 keeps. It now
+  leaves those to the L2 and reads the MAC's error counters at most every
+  10 ms (`patches/zephyr/0010`).
+- The benchmark's UDP sink updated its counters in the uncached perf block
+  under a seqlock for every packet, ~9% of the CPU under the flood on Vex.
+  It now counts in cached RAM and publishes when its socket runs dry or
+  every 32 packets. This one only makes the measurement cheaper.
+- MicroBlaze V links the 15 KiB of functions it spends its time in under
+  RX and TX together at the start of `.text`
+  (`app/boards/mbv32_hot_text.ld`, `CONFIG_EMACZ_APP_HOT_TEXT`, placed
+  there by `patches/zephyr/0013`). Its 16 KiB I-cache is direct-mapped, so
+  code spread over the image evicted itself: the RX path fits in ~15 KB,
+  and packed the listed functions cannot evict each other, though other
+  code still can. `read_pc_samples.py hot-check` reports what an image
+  actually packed and whether it fits the I-cache. Vex has no
+  list. On its earlier 16 KiB I-cache without compressed instructions its
+  RX path alone was ~22 KB and RX with TX ~47 KB, and the lists tried
+  moved the misses around without removing them; the current core's
+  32 KiB I-cache and compressed instructions (RX ~15 KB, RX with TX
+  ~32 KB) are untried with one. `app/perf/hot_text_off.conf` turns it off.
+
+Same loads as the first table, Arty A7 at 100 MHz, caches on, 20 ms RX
+budget, single 5 s runs on the VexRiscv 1.0.1 core of the time, rates in
+Mbit/s, each fix added to the ones above it. The current figures, measured
+differently, follow the table:
+
+| Shell | Fix | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
+|---|---|---|---|---|---|
+| Arty MBV | stock (`7eb1288`) | 9.1 | 8.9 | 4.9 | 1.75 / 7.3 |
+| | word `memcpy` | 19.3 | 14.8 | 11.3 | 4.79 / 13.0 |
+| | + reserved L2 header | 19.6 | 15.7 | 11.9 | 4.25 / 14.3 |
+| | + cacheable buffers | 28.2 | 18.0 | 14.5 | 6.55 / 17.8 |
+| | + zero-copy TX | 27.4 | 19.1 | 15.4 | 6.60 / 17.8 |
+| | + counters every 10 ms, sink batches | 29.2 | 19.4 | 15.6 | 7.49 / 17.8 |
+| | + hot functions packed | 31.6 | 22.3 | 17.8 | 9.09 / 18.5 |
+| Arty Vex | stock (`7eb1288`) | 9.1 | 11.8 | 6.3 | 2.15 / 7.5 |
+| | word `memcpy` | 18.6 | 15.0 | 11.1 | 5.31 / 12.1 |
+| | + reserved L2 header | 18.3 | 15.2 | 11.2 | 5.65 / 11.6 |
+| | + cacheable buffers | 29.8 | 15.0 | 11.9 | 7.06 / 15.6 |
+| | + zero-copy TX | 32.4 | 16.4 | 13.1 | 8.38 / 15.7 |
+| | + counters every 10 ms, sink batches | 34.8 | 16.4 | 12.9 | 8.98 / 15.4 |
+
+Zero-copy TX does not touch the RX path, yet RX moved, down 2.7% on MBV
+and up 8.8% on Vex. Repeated runs of each image gave the same rates to
+0.1 Mbit/s, which is consistent with the layout of the code changing
+around the RX path rather than with noise. The MBV's hot-function list is
+meant to make RX less sensitive to that.
+
+The current defaults, measured three times per load over 20 s each: Arty
+A7 and ZCU106 soft CPUs at 100 MHz, caches on, cacheable frame buffers, 1472 B UDP payloads,
+20 ms RX budget. RX is offered at 90 Mbit/s and counted over the host's
+sending time; TX is unthrottled, and the host received every datagram of
+every run. Each cell gives the median and, where the runs differ, their
+range. Rates in Mbit/s:
+
+| Shell | Build | RX | TX | TX while RX takes 3 | Full duplex: TX / RX |
+|---|---|---|---|---|---|
+| Arty MBV | default | 30.8 (29.50–31.03) | 22.85 | 18.05 (18.02–18.18) | 10.35 / 16.66 |
+| | RX checksum checked | 25.4 (24.3–25.5) | 22.95 | 18.2 (18.14–18.25) | 10.21 / 13.93 |
+| Arty Vex | default: 32 KiB I$, compressed instructions | 34.5 (34.49–34.52) | 23.04 | 19.62 (19.60–19.66) | 12.69 / 15.39 |
+| | RX checksum checked, one run | 28.2 | 22.92 | 19.20 | 10.35 / 15.38 |
+| | 32 KiB I$, no compressed instructions | 31.7 (31.65–31.70) | 18.34 | 14.77 (14.75–14.77) | 9.37 / 15.38 |
+| | 16 KiB I$, compressed instructions | 28.6 (28.52–28.67) | 17.50 | 14.03 (14.02–14.04) | 8.04 / 15.37 |
+| | 16 KiB I$ (the previous default) | 24.7 (24.69–24.73) | 14.22 | 10.71 | 5.53 / 15.02 |
+| | 16 KiB I$, no bridge patch | 22.2 (22.12–22.24) | 14.20 | 10.57 | 5.31 / 14.47 |
+| | 16 KiB I$, VexRiscv 1.0.1 (2018) | 30.3 (28.9–30.6) | 16.0 | 12.55 | 7.88 / 15.30 |
+| | 16 KiB I$, RX checksum checked | 22.2 (21.17–22.26) | 13.91 | 10.30 (10.30–10.32) | 5.22 / 13.78 |
+| ZCU106 Vex | default | 35.4 (35.33–35.42) | 23.39 | 20.14 (20.12–20.14) | 13.19 / 15.32 (15.29–15.33) |
+| | RX checksum checked, one run | 29.5 | 23.37 | 19.79 | 11.12 / 15.38 |
+| | uncached frame buffers (the previous default) | 18.0 (17.97–18.05) | 20.67 | 16.11 | 6.59 / 12.28 (11.75–12.30) |
+
+The ZCU106 Vex runs the same core and app as the Arty Vex; its full-duplex
+RX is offered at the 941–956 Mbit/s the host's sender reached. Until
+November 2026 its frame buffers stayed in the uncached window, without
+the Arty shells' cache maintenance or zero-copy TX; with them it moved
+level with the Arty Vex: slightly ahead on every load but full-duplex RX,
+which is the same within the spread. On uncached buffers
+it delivered only 89% of a 20 Mbit/s RX load, and the 1.0.1 core had
+measured RX 11.7 and TX 12.2 there (5 s runs, table above).
+
+The full-duplex cells are medians of each direction; across runs they
+spread by up to 0.6 Mbit/s on MBV and 0.7 on Vex. Some rows were measured
+before the UDP sink's idle gap went from 100 ms to 1 s, which changes
+only the board-side receive window, not these host-side rates. Yet the
+MBV default built both ways split full duplex 9.75 / 17.48 before that
+change and 10.35 / 16.66 after it, so the full-duplex split moves with
+small changes to the image.
+
+Three variants of the defaults, same method, medians in Mbit/s (Vex on
+its earlier 16 KiB I-cache without compressed instructions):
+
+| Variant | MBV RX | MBV TX | Vex RX | Vex TX |
+|---|---|---|---|---|
+| default | 30.8 | 22.85 | 24.7 | 14.22 |
+| socket buffers aligned with the payload ² | 33.25 | 23.54 | 24.84 | 14.29 |
+| DMA interrupt after 4 frames or ~320 µs | 30.66 | 22.94 | 23.0 | 14.30 |
+| `-Os` instead of `-O2` | 19.2 | 16.80 | 15.3 | 10.76 |
+
+Aligning the sink's buffer with the payload is still worth 8% of RX on
+MBV, which is what the shifting word copy of `patches/zephyr/0007` costs
+it; on Vex it changes nothing measurable. The default DMA interrupt
+settings (`CONFIG_DMA_XILINX_AXI_DMA_INTERRUPT_THRESHOLD=32`,
+`_TIMEOUT=32`) never reach their count, since the driver keeps 8 RX
+buffers posted and has 16 TX buffers. Interrupts come from the ~40 µs
+delay timer instead, which on the Arty's 100 Mbit/s link, with frames at
+least 123 µs apart, means about one per frame. Collecting four per
+interrupt gains nothing on either CPU. Building for size costs a third or more of every
+rate, and neither CPU then delivers all of a 20 Mbit/s RX load.
+
+Vex lost speed when its VexRiscv moved from the 1.0.1 tag (2018), which
+this project used until November 2026, to upstream `master` `baf7dc82`
+(2026). Upstream stopped tagging releases after 1.0.1. The old core's
+D-cache was write-back; the current one is write-through, so every store
+goes out to DDR, and its AXI bridge held every read until all pending
+writes were acknowledged. The bridge patch lets a D-cache refill pass
+pending stores to other lines (uncached reads still wait for all of
+them). That recovered 11% of RX and nothing on TX. In return the
+current core cannot lose a cache clean, which the old one could: a clean
+issued while the previous line was still being written back was dropped,
+and the old `cache.c` waited out each line's write-back to avoid it. See
+[hardware/vexriscv_patches/](hardware/vexriscv_patches/README.md).
+
+The store traffic turned out not to be what held Vex back. On the 16 KiB
+I-cache core, 15 writes in flight instead of 7 left RX and TX unchanged
+(24.6 and 14.22 Mbit/s), and so did letting refills pass a full write
+count. Instruction fetch did hold it back: a 32 KiB I-cache took RX to
+31.7 and TX to 18.3, compressed instructions on the 16 KiB I-cache, which
+shrink the code by a third, took them to 28.6 and 17.5, and together, the
+current default, to 34.5 and 23.0. That is faster than the 1.0.1 core on
+every load. Against MBV it is level on TX alone and ahead on RX (12%), on
+TX while RX takes 3 Mbit/s (9%) and on full-duplex TX (23%), and behind on
+full-duplex RX (8%). The `baf7dc82` rows without compressed instructions
+ran one image and the rows with them another, built from the same source
+with the C extension.
+
+The defaults deliver 100% of a 20 Mbit/s RX load and pass the board
+suite. The app does not check UDP checksums on RX
+(`CONFIG_NET_UDP_CHECKSUM=n` in `app/prj.conf`), so the RX figures leave
+that cost out and do not by themselves show that payloads arrive intact.
+`app/perf/udp_rx_checksum.conf` turns the check on; the "RX checksum
+checked" rows above are that build. At 90 Mbit/s offered the boards
+checked 127,674 datagrams on MBV over three runs, 47,924 on the
+current Arty Vex in one and 50,064 on the ZCU106 Vex in one, with no
+checksum error (111,504 over three runs on
+the 16 KiB I-cache Vex); the check costs 18% of RX on both CPUs. With the
+check on and a payload that changes on every packet
+(`run_udp_accounting.py --vary-payload`), the current Vex delivered 100%
+of 60 s at 5 and 8 Mbit/s on both boards, as MBV and the 1.0.1 Vex did before. Without the DMA driver's cache maintenance
+(`MANUAL_CACHE_COHERENCY=n`), the Vex image fails to provision.
+
+On TX the board numbers each datagram, big-endian at the start of its
+payload and the complement at the end, and `run_tx_accounting.py` fails a
+run in which the host lost, duplicated or reordered a datagram, or got
+one whose two ends disagree. TX frames also carry a UDP checksum the stack
+computes before MM2S reads the buffer, which the host's stack checks. So
+zero-copy TX sends what the stack wrote, within what a checksum and two
+numbered ends can catch.
+
+Where the time goes now, by program-counter samples under a 90 Mbit/s RX
+flood (both defaults before the hot-function list, Vex on the 1.0.1
+core): the socket's `memcpy` of each payload takes 26% on Vex and 40% on
+MBV. Its source lines were just written by the DMA and invalidated, so,
+short of a refill in between, each one misses and comes from DDR, and the
+MBV's write-through D-cache sends every store there too. Next come the
+stack's per-packet IPv4 address checks and the mutexes around them
+(~9%), and posting each RX buffer back to the DMA with interrupts off
+(5–7%, mostly its cache invalidate). On TX, Vex spent 6.6% with
+interrupts off cleaning the frame line by line, the cost of the old core's
+lost-clean workaround, which the current core does not need, and both
+compute the UDP checksum in software (5–7%). What is left is the memory
+system: larger D-cache lines and write-back on MBV, or on Vex a write-back
+D-cache, would attack the largest remaining cost. (That profile predates
+the larger I-cache and compressed instructions on Vex.)
+
+To profile a build, add `app/perf/pc_sample.conf` and `.overlay` (they
+replace `uncached_bufs.*`, whose buffers overlap the sample area), then:
+
+```sh
+python scripts/read_pc_samples.py --chain 4 arm      # 3 for the MBV shell
+# ... run the load ...
+python scripts/read_pc_samples.py --chain 4 read --elf build/zephyr/zephyr.elf --save rx.json
+```
+
+The sampler records the interrupted PC every 1.1 ms, rounded up to a whole
+kernel tick (10 ms on the MBV). `read_pc_samples.py hot-ld` turns saved
+profiles into a board's hot-function list.
+
+To measure a shell (an image variant is built with the overlay or conf as
+`-DEXTRA_DTC_OVERLAY_FILE` / `-DEXTRA_CONF_FILE`):
+
+```sh
+python scripts/run_perf_matrix.py --shell zcu106_vex --label "zcu106_vex on" --interface "<host NIC>" --board-ip <board IPv4>
+```
+
+Each measurement is appended to `no_commit/perf_matrix.jsonl` (`--out`).
+
+Above the RX ceiling the delivered rate holds: when the stack has no
+packet free, the driver's RX thread waits for one instead of dropping the
+frame, so S2MM runs out of buffers and the excess is dropped in hardware,
+at no CPU cost. DMA and the rest of the system stay healthy. The MAC
+counts both kinds of loss: frames its RX FIFO truncates (`RX_ERR_OVERFLOW`,
+delivered with an error and discarded by the RX gate) and frames it drops
+whole because the FIFO had no room at their start (`RX_DROP`, `0x7C`).
+At line rate most are dropped whole: in 10 s at 957 Mbit/s the ZCU106 R5
+handed 321k frames to the DMA, 114k of them truncated, and dropped 486k
+whole. The driver reports `RX_DROP` as Zephyr's `rx_missed_errors` and
+counts it in `errors.rx`; the perf stats block carries it as
+`mac_rx_drop`, and `run_udp_accounting.py` fails a run in which the MAC
+dropped any frame.
+
+With both directions loaded, RX takes the CPU first: the driver's RX
+thread, which runs the stack's RX path inline, and the app's sink thread
+are cooperative and outrank the thread running the TX benchmark. Above the
+RX ceiling frames never stop coming, so one of them is always ready and,
+on their own, TX gets nothing: the full-duplex column above was measured
+that way. The app therefore sets `CONFIG_ETH_EMACZERO_RX_BUDGET_US=20000`:
+after 20 ms of RX in a row the RX thread drops to preemptible priority 4
+(`ETH_EMACZERO_RX_YIELD_PRIORITY`, the TX thread's) and straight back, so a
+ready TX thread runs for up to its 20 ms time slice; with none ready, RX
+carries on at once. Frames arriving meanwhile wait in the posted buffers or
+are dropped whole by the MAC. The budget is time, not frames, so the turns
+do not depend on what a frame costs the CPU: a 64-frame budget gave the
+soft CPUs much the same split but left the R5, which handles 64 frames in
+~3 ms, 29.8 Mbit/s of RX against 173 of TX. RX alone, TX alone and TX with
+3 Mbit/s of RX are unchanged within noise (the R5's RX at 400 Mbit/s
+offered: 238.6 against 240.7), and full duplex splits (TX / RX, Mbit/s):
+
+| Shell | Payload | Budget off | 20 ms budget |
+|---|---|---|---|
+| Arty MBV, 100 MHz | as received | 0.00 / 8.9 | 1.75 / 7.3 |
+| | word copies ² | 0.00 / 19.6 | 4.56 / 14.3 |
+| Arty Vex | as received | 0.36 / 8.9 | 2.15 / 7.5 |
+| | word copies ² | 0.56 / 18.9 | 5.41 / 13.2 |
+| ZCU106 Vex | as received | 0.00 / 11.2 | 3.72 / 8.0 |
+| ZCU106 R5, cacheable frame buffers | as received | 0 ¹ / 240.7 | 111.4 / 103.9 |
+
+On the soft CPUs RX keeps the larger share: most of their RX work is the
+sink's copy out of the uncached buffers, which the driver's budget does
+not cover, and the sink, cooperative, runs before the TX thread at each
+yield. A budget of 0 restores the original behaviour
+(`app/perf/rx_budget_off.conf`).
+
+² `app/perf/payload_align2.conf`: the app's socket buffers start 2 bytes
+off a word boundary, as the payload does in its frame, so the socket
+copies run on words.
+
+Earlier versions of this repository reported ~95 Mbit/s through a
+driver-level interceptor for port 5001 that bypassed the network stack.
+The mainline driver has no such hook. Pick Vex for RX throughput (12%
+more than MBV, level on TX) and the FPGA-area savings above, with a
+rebuild pipeline that uses SpinalHDL/sbt, or MBV for a Vivado-native
+toolchain end-to-end; see
+[docs/cpu_comparison.md](docs/cpu_comparison.md).
 
 ## Verification
 
@@ -264,7 +746,7 @@ Short-loop checks:
 
 ```sh
 python scripts/lint.py
-python -m pytest tests/test_apply_zephyr_patches.py \
+python -m pytest tests/test_apply_zephyr_patches.py tests/test_board_boot.py \
   tests/test_emacz_config.py tests/test_run_arty_stress.py -q -p no:cacheprovider
 python scripts/check_env.py
 python hardware/sim/run.py
@@ -275,7 +757,9 @@ for board in mbv32 arty_a7_vex; do
 done
 ```
 
-`scripts/lint.py` resolves `ruff` and `clang-format` from `PATH`. Local
+`scripts/lint.py` resolves `ruff` and `clang-format` from `PATH` and
+needs the versions CI uses, pinned in `requirements-lint.txt`
+(`python -m pip install -r requirements-lint.txt`). Local
 CMake/Ninja builds must use no more than half the host's logical CPUs.
 
 Automated hardware acceptance (portable UDP, no JTAG/Npcap needed):
@@ -286,27 +770,30 @@ python scripts/run_arty_stress.py --interface "Ethernet 2" \
   --board-ip 192.168.237.200
 ```
 
-Defaults are 600 s at 95 Mbit/s with 1472 B payloads and 100% delivery
-required. Exits non-zero on any monitored MAC/gate/DMA/driver error delta.
+Defaults are 600 s at 5 Mbit/s with 1472 B payloads and 100% delivery
+required, below the socket path's ceiling (see
+[Throughput](#throughput)). Exits non-zero on any monitored
+MAC/gate/DMA/driver error delta.
 
-### Throughput paths
+`scripts/run_board_suite.py` (see [ZCU106](#zcu106)) runs boot,
+provisioning, RX accounting, DMA recovery, TX and RX+TX in one go, on the
+Arty shells too.
 
-The application registers a driver-level RX interceptor for unicast UDP
-port 5001 (the "sink-bypass" fast path) and lets everything else go
-through the normal Zephyr net stack. These two paths behave very
-differently:
+DMA error recovery (JTAG for the descriptor ring and perf counters;
+`--chain 3` on MBV, `4` on Vex):
 
-- **Sink-bypass (UDP :5001)**: line-rate on 100BASE-TX with zero MAC,
-  RX-gate, S2MM `tready`-low, DMA/BD, allocation, or refill error
-  deltas. Head-to-head numbers for MBV and Vex are in
-  [MBV vs Vex comparison](#mbv-vs-vex-comparison).
-- **Zephyr socket path (any other UDP port)**: saturates around
-  ~12 Mbit/s. Driver overhead is only ~10.9% of the wall (measured via
-  the gated R7 per-region counters); the remainder is Zephyr net-stack
-  work on a single core (81.25 MHz on MBV, 100 MHz on Vex). Reaching
-  25-30 Mbit/s through
-  arbitrary sockets would require a stack rewrite or SMP. See
-  `no_commit/BUGS.md` #33 for the analysis.
+```sh
+python scripts/run_dma_recovery_test.py --chain 3 \
+  --board 192.168.237.200 --bind 192.168.237.1
+```
+
+The test zeroes the length of the RX descriptor at S2MM's TAILDESC, one
+the engine cannot have fetched yet, and sends traffic until S2MM reaches
+it and halts with DMAIntErr, no memory written. It passes when the driver
+counted exactly one RX DMA failure (`rx_dma_failed`), S2MM runs without
+error, RX counts are exact afterwards and TX works. `--rate-mbps`
+(default 5) must stay below the socket path's ceiling for the exact count
+to be meaningful.
 
 ## Author and License
 

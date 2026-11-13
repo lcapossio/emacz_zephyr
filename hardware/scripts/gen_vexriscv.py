@@ -11,19 +11,14 @@ Flow (all under a `try/finally` so the submodule is always reverted):
 
   1. Apply hardware/vexriscv_patches/*.patch to the pinned submodule.
   2. Run sbt runMain vexriscv.demo.VexRiscvAxi4WithIntegratedJtag.
-  3. Post-patch the generated Verilog:
-       * resetVector 0x8000_0000 -> 0x9000_0000 (DDR base — no bootrom).
-       * I/O predicate: cache ONLY 0x9000_0000-0x97FF_FFFF; peripherals at
-         0x4xxx_xxxx and DMA memory at 0x9F00_0000 stay uncached. Applied
-         to BOTH the fetch- and memory-mmu isIoAccess drivers — the
-         DYNAMIC_TARGET config emits exactly two sites.
+  3. Strip the generation date from the Verilog header.
   4. Write the result to hardware/rtl/vexriscv/VexRiscvAxi4.v with LF
      line endings and UTF-8 (deterministic across OSes).
   5. Revert the submodule to its pinned state.
 
-Everything the CsrPlugin needs (writable mtvec, RO-zero mhartid /
-mvendorid / marchid / mimpid, RO misa) is configured natively in the
-Scala patch — no string-patched CSR cases here.
+The Scala patches set everything else: the reset vector (0x9000_0000, DDR),
+the cached window (0x9000_0000-0x97FF_FFFF only), the caches, the branch
+predictor, the CSRs and the D-bus bridge's read ordering.
 """
 from __future__ import annotations
 
@@ -40,6 +35,7 @@ PATCH_DIR = REPO_ROOT / "hardware" / "vexriscv_patches"
 GEN_SRC = SUBMODULE / "VexRiscvAxi4.v"
 OUT_DIR = REPO_ROOT / "hardware" / "rtl" / "vexriscv"
 OUT_FILE = OUT_DIR / "VexRiscvAxi4.v"
+SBT_VERSION = "1.10.11"
 
 
 def run(cmd: list[str], cwd: Path, extra_env: dict | None = None) -> None:
@@ -72,59 +68,20 @@ def sbt_regen() -> None:
             "with `source ~/.profile && python3 hardware/scripts/gen_vexriscv.py`."
         )
     env = None  # sbt inherits PATH/JAVA_HOME from the parent shell.
+    # The submodule pins sbt 1.6.0, which cannot run on JDK 21; a newer sbt
+    # builds it unchanged.
     run(
-        ["sbt", "-Djava.security.manager=allow",
+        ["sbt", f"-Dsbt.version={SBT_VERSION}",
          "runMain vexriscv.demo.VexRiscvAxi4WithIntegratedJtag"],
         cwd=SUBMODULE, extra_env=env,
     )
 
 
 def patch_verilog(text: str) -> str:
-    # 0) Strip the SpinalHDL-emitted `// Date : ...` header comment so the
-    #    checked-in Verilog is byte-identical across regens; without this
-    #    `git diff --exit-code` after a fresh regen would spuriously fail
-    #    on the timestamp alone.
-    text, n_date = re.subn(r"^// Date +: [^\n]*\n", "", text, count=1, flags=re.M)
-    if n_date != 1:
-        raise RuntimeError(f"Date header: stripped {n_date} lines, expected 1")
-
-    # 1) resetVector 0x8000_0000 -> 0x9000_0000 (DDR base). CPU is held
-    #    in reset from bitstream program-time via cpu_reset_gpio so fcapz
-    #    can stage zephyr.bin to DDR before the first fetch.
-    old = "IBusCachedPlugin_fetchPc_pcReg <= (32'b10000000000000000000000000000000);"
-    new = (
-        "IBusCachedPlugin_fetchPc_pcReg <= (32'b10010000000000000000000000000000);   "
-        "// bard0: resetVector -> 0x9000_0000 (DDR direct)"
-    )
-    n = text.count(old)
-    if n != 1:
-        raise RuntimeError(f"resetVector anchor: {n} hits, expected 1")
-    text = text.replace(old, new, 1)
-
-    # 2) I/O predicate: cache ONLY 0x9000_0000-0x97FF_FFFF. Applies to
-    #    BOTH fetch- and memory-mmu isIoAccess drivers — DYNAMIC_TARGET
-    #    emits exactly two sites. Signal numbering is auto-generated so
-    #    match by shape, but assert an exact count so a future config
-    #    change can't silently leave one bus caching peripherals/DMA.
-    pat = re.compile(
-        r"assign (_zz_\d+_) = \((_zz_\d+_)\[31 : 28\] == \(4'b1111\)\);"
-    )
-
-    def repl(m: re.Match) -> str:
-        return (
-            f"assign {m.group(1)} = ({m.group(2)}[31 : 27] != (5'b10010));   "
-            f"// bard0: cache ONLY 0x9000_0000-0x97FF_FFFF; "
-            f"DMA @ 0x9F00_0000 uncached"
-        )
-
-    text, n_iopred = pat.subn(repl, text)
-    if n_iopred != 2:
-        raise RuntimeError(
-            f"I/O predicate: patched {n_iopred} site(s), expected exactly 2 "
-            f"(DYNAMIC_TARGET emits one for I-bus and one for D-bus)"
-        )
-    print(f"I/O predicate: patched {n_iopred} site(s)", file=sys.stderr)
-    return text
+    # Strip a SpinalHDL `// Date : ...` header comment, if this version emits
+    # one, so the checked-in Verilog is byte-identical across regens
+    # (SpinalHDL 1.13 writes the git hash instead).
+    return re.sub(r"^// Date +: [^\n]*\n", "", text, count=1, flags=re.M)
 
 
 def main() -> int:

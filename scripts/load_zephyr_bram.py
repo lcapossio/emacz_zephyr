@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""Load a flat binary into the Arty DDR window through fcapz EJTAG-AXI."""
+"""Load a flat binary into a soft-CPU shell's RAM through fcapz EJTAG-AXI.
+
+The CPU is held in reset while the image is written and verified, then
+released. The shells differ only in their FPGA, where that reset lives and
+which BSCAN chain the JTAG-AXI bridge sits on; --shell picks all three.
+"""
 
 from __future__ import annotations
 
@@ -13,15 +18,44 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "fcapz" / "host"))
 
-from fcapz.eio import EioController  # noqa: E402
-from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
-from fcapz.ejtaguart import EjtagUartController  # noqa: E402
-from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+import fcapz_jtag
+from fcapz.eio import EioController
+from fcapz.ejtagaxi import EjtagAxiController
+from fcapz.ejtaguart import EjtagUartController
 
 # The VexRiscv shell's JTAG-AXI bridge returns SLVERR on a 16-beat burst.
 # 15 works on both shells, so it is the cap everywhere rather than a
 # per-CPU special case.
 MAX_BURST_WORDS = 15
+
+# Per-shell defaults. MicroBlaze V's reset is an fcapz EIO output; VexRiscv's
+# is an AXI GPIO on its own fabric (bit 0 high holds the CPU, and it powers
+# up high), reached through the JTAG-AXI bridge. Vex's debug TAP sits ahead
+# of the bridge in the BSCAN chain, hence chain 4.
+SHELLS = {
+    "mbv": {"chain": 3, "tap": "xc7a100t", "file": "build-mbv-emac/zephyr/zephyr.bin",
+            "reset": "eio"},
+    "vex": {"chain": 4, "tap": "xc7a100t", "file": "build-vex-emac/zephyr/zephyr.bin",
+            "reset": "gpio"},
+    # ZCU106 VexRiscv shell: the Arty Vex shell's CPU complex, reset GPIO,
+    # bridge chain and address map, its DDR window in PS DDR (the FSBL has
+    # to have run: load_zynqmp_r5.py --shell zcu106_vex)
+    "zcu106_vex": {"chain": 4, "tap": "xczu7", "file": "build-zcu106-vex/zephyr/zephyr.bin",
+                   "reset": "gpio"},
+}
+VEX_CPU_RESET_GPIO = 0x40020000
+# Every shell's CPU starts at 0x9000_0000 (the Vex boot ROM jumps there,
+# MicroBlaze V's reset vector is there). An image linked elsewhere, such as
+# above the D-cache aperture, gets a jump to it written there.
+BOOT_ENTRY = 0x90000000
+
+
+def jump_stub(target: int) -> list[int]:
+    """RV32: lui t0, %hi(target); jalr x0, 0(t0). target is 4 KiB aligned."""
+    if target & 0xFFF:
+        raise ValueError(f"load address 0x{target:08X} is not 4 KiB aligned")
+    t0 = 5
+    return [target | (t0 << 7) | 0x37, (t0 << 15) | 0x67]
 
 
 def words_from_file(path: Path) -> list[int]:
@@ -33,8 +67,7 @@ def words_from_file(path: Path) -> list[int]:
 
 def verify_range(axi, addr: int, words: list[int], count: int, burst: int) -> int:
     """Read back `count` words and report the first mismatch. 0 on success."""
-    for offset in range(0, count, burst):
-        span = min(burst, count - offset)
+    for offset, span in fcapz_jtag.bursts(addr, count, burst):
         got = axi.burst_read(addr + offset * 4, span)
         for i, actual in enumerate(got):
             expected = words[offset + i]
@@ -49,12 +82,16 @@ def verify_range(axi, addr: int, words: list[int], count: int, burst: int) -> in
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--file", default="build-mbv-emac/zephyr/zephyr.bin")
-    parser.add_argument("--addr", type=lambda value: int(value, 0), default=0x90000000)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--shell", choices=sorted(SHELLS), default="mbv",
+                        help="CPU shell in the bitstream (default mbv)")
+    parser.add_argument("--file", help="image to load (default: the shell's build dir)")
+    parser.add_argument("--addr", type=lambda value: int(value, 0), default=BOOT_ENTRY,
+                        help="load address; any other than 0x90000000 also gets a jump "
+                             "there from 0x90000000")
     parser.add_argument(
-        "--chain", type=int, default=3,
-        help="EJTAG-AXI BSCAN chain: 3 for the MicroBlaze V shell, 4 for VexRiscv",
+        "--chain", type=int, default=None,
+        help="EJTAG-AXI BSCAN chain (default: 3 for mbv, 4 for the Vex shells)",
     )
     parser.add_argument(
         "--uart-chain", type=int, default=None,
@@ -62,9 +99,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--eio-chain", type=int, default=1,
-        help="EIO reset-control chain (default 1)",
+        help="EIO reset-control chain, mbv only (default 1)",
     )
-    parser.add_argument("--tap", default="xc7a100t")
+    parser.add_argument("--tap", default=None,
+                        help="JTAG target name (default: the shell's FPGA)")
     parser.add_argument(
         "--chunk-words", type=int, default=MAX_BURST_WORDS,
         help=f"words per AXI burst (clamped to {MAX_BURST_WORDS})",
@@ -77,6 +115,13 @@ def main() -> int:
     parser.add_argument("--monitor", type=float, default=0.0)
     parser.add_argument("--send", default="")
     args = parser.parse_args()
+    shell = SHELLS[args.shell]
+    if args.chain is None:
+        args.chain = shell["chain"]
+    if args.tap is None:
+        args.tap = shell["tap"]
+    if args.file is None:
+        args.file = shell["file"]
 
     burst = max(1, min(args.chunk_words, MAX_BURST_WORDS))
     if args.chunk_words > MAX_BURST_WORDS:
@@ -92,20 +137,33 @@ def main() -> int:
         image = ROOT / image
     words = words_from_file(image)
 
-    transport = XilinxHwServerTransport(fpga_name=args.tap)
-    eio = None
-    if not args.no_reset:
-        eio = EioController(transport, chain=args.eio_chain, base_addr=0x8000)
-        eio.connect()
+    def connect() -> tuple[fcapz_jtag.XilinxHwServerTransport, EioController | None,
+                           EjtagAxiController]:
+        transport = fcapz_jtag.transport(args.tap)
+        try:
+            eio = None
+            if not args.no_reset and shell["reset"] == "eio":
+                eio = EioController(transport, chain=args.eio_chain, base_addr=0x8000)
+                eio.connect()
+            axi = EjtagAxiController(transport, chain=args.chain)
+            axi.connect()
+        except Exception:
+            transport.close()
+            raise
+        return transport, eio, axi
+
+    transport, eio, axi = fcapz_jtag.open_session(connect)
+    if eio is not None:
         eio.write_outputs(1)
         print(f"held CPU reset through EIO chain {args.eio_chain}")
-
-    axi = EjtagAxiController(transport, chain=args.chain)
-    axi.connect()
+    gpio_reset = not args.no_reset and shell["reset"] == "gpio"
+    if gpio_reset:
+        axi.axi_write(VEX_CPU_RESET_GPIO, 1)
+        print(f"held CPU reset through AXI GPIO 0x{VEX_CPU_RESET_GPIO:08X}")
 
     try:
-        for offset in range(0, len(words), burst):
-            chunk = words[offset:offset + burst]
+        for offset, span in fcapz_jtag.bursts(args.addr, len(words), burst):
+            chunk = words[offset:offset + span]
             axi.burst_write(args.addr + offset * 4, chunk)
             print(f"loaded {offset + len(chunk):5d}/{len(words)} words", flush=True)
 
@@ -115,6 +173,12 @@ def main() -> int:
         print(f"verified {verify_count}/{len(words)} words", flush=True)
 
         print(f"loaded {len(words) * 4} bytes to 0x{args.addr:08X}")
+        if args.addr != BOOT_ENTRY:
+            stub = jump_stub(args.addr)
+            axi.burst_write(BOOT_ENTRY, stub)
+            if verify_range(axi, BOOT_ENTRY, stub, len(stub), burst) != 0:
+                return 1
+            print(f"wrote a jump to 0x{args.addr:08X} at 0x{BOOT_ENTRY:08X}")
         uart = None
         if args.monitor > 0:
             uart = EjtagUartController(transport, chain=uart_chain)
@@ -131,6 +195,9 @@ def main() -> int:
         if eio is not None:
             eio.write_outputs(0)
             print(f"released CPU reset through EIO chain {args.eio_chain}")
+        if gpio_reset:
+            axi.axi_write(VEX_CPU_RESET_GPIO, 0)
+            print(f"released CPU reset through AXI GPIO 0x{VEX_CPU_RESET_GPIO:08X}")
         if uart is not None:
             time.sleep(0.25)
             for _ in range(2):

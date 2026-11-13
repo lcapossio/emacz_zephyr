@@ -1,5 +1,5 @@
 {
-  "title": "Arty A7-100T MicroBlaze V SoC (81.25 MHz)",
+  "title": "Arty A7-100T MicroBlaze V SoC (100 MHz)",
   "top": "arty_a7_100t_mbv",
   "theme": "dark",
   "legend": "compact",
@@ -11,6 +11,11 @@
     "margin": 44
   },
   "domains": {
+    "soc_clk": {
+      "freq_mhz": 100,
+      "color": "#1D4ED8",
+      "border": "#93C5FD"
+    },
     "ddr_ui": {
       "freq_mhz": 81.247969,
       "color": "#047857",
@@ -30,7 +35,7 @@
       "side": "top",
       "row": 0,
       "col": 5,
-      "lines": ["CLK100MHZ", "100 MHz", "MIG sys_clk_i"]
+      "lines": ["CLK100MHZ", "100 MHz", "sys_clk + MIG"]
     },
     {
       "id": "eth_phy",
@@ -47,12 +52,12 @@
       "domain_b": "ddr_ui",
       "row": 1,
       "col": 1,
-      "lines": ["emacZero MAC", "MII 25 MHz", "AXI 81.25 MHz"]
+      "lines": ["emacZero MAC", "MII 25 MHz", "AXI 100 MHz"]
     },
     {
       "id": "axis_rx_stats",
       "label": "axis_rx_stream_stats",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 1,
       "col": 2,
       "lines": ["axis_rx_stream_stats", "CSR @ 0x41F00000", "TLAST/stall probe"]
@@ -60,7 +65,7 @@
     {
       "id": "axi_dma",
       "label": "AXI DMA",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 1,
       "col": 3,
       "lines": ["AXI DMA @ 0x41E00000", "MM2S / S2MM", "SG descriptors on DDR"]
@@ -68,10 +73,10 @@
     {
       "id": "ddr_axi",
       "label": "DDR SmartConnect",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 1,
       "col": 4,
-      "lines": ["AXI SmartConnect", "data fabric", "81.25 MHz"]
+      "lines": ["AXI SmartConnect", "100 to 81 MHz CDC", "data fabric"]
     },
     {
       "id": "mig",
@@ -79,7 +84,7 @@
       "domain": "ddr_ui",
       "row": 1,
       "col": 5,
-      "lines": ["MIG 7-Series", "S_AXI on ui_clk", "ui_addn 199.7 MHz"]
+      "lines": ["MIG 7-Series", "ui_clk 81.25 MHz", "ui_addn 199.7 MHz"]
     },
     {
       "id": "ddr3",
@@ -93,7 +98,7 @@
     {
       "id": "fcapz_ejtagaxi",
       "label": "fcapz EJTAG-AXI",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 2,
       "col": 1,
       "lines": ["fcapz EJTAG-AXI", "BSCANE2 USER3", "AXI master bridge"]
@@ -101,23 +106,23 @@
     {
       "id": "ctrl_axi",
       "label": "Control AXI",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 2,
       "col": 2,
-      "lines": ["AXI-Lite fabric", "81.25 MHz", "CSR fan-out"]
+      "lines": ["AXI-Lite fabric", "100 MHz", "CSR fan-out"]
     },
     {
       "id": "mbv",
       "label": "MicroBlaze V",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 2,
       "col": 3,
-      "lines": ["MicroBlaze V", "RV32IMAC @ 81.25 MHz", "I/D cache over DDR"]
+      "lines": ["MicroBlaze V", "RV32IMAC @ 100 MHz", "I/D cache over DDR"]
     },
     {
       "id": "fcapz_eio",
       "label": "fcapz EIO",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 2,
       "col": 4,
       "lines": ["fcapz EIO", "BSCANE2 USER1 ch1", "MBV reset ctrl"]
@@ -133,7 +138,7 @@
     {
       "id": "fcapz_ejtaguart",
       "label": "fcapz EJTAG-UART",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 3,
       "col": 1,
       "lines": ["fcapz EJTAG-UART", "BSCANE2 USER4", "console into UARTLite"]
@@ -141,7 +146,7 @@
     {
       "id": "peripherals",
       "label": "Peripherals",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 3,
       "col": 2,
       "lines": ["UARTLite / Timer", "INTC / GPIO", "MAC + DMA CSRs"]
@@ -149,7 +154,7 @@
     {
       "id": "loader_bram",
       "label": "Loader BRAM",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 3,
       "col": 3,
       "lines": ["BRAM scratch only", "32 KiB LMB", "32 KiB AXI loader"]
@@ -157,7 +162,7 @@
     {
       "id": "fcapz_ela",
       "label": "fcapz ELA",
-      "domain": "ddr_ui",
+      "domain": "soc_clk",
       "row": 3,
       "col": 4,
       "lines": ["fcapz ELA", "BSCANE2 USER1", "signal probes"]

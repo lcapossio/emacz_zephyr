@@ -1,0 +1,17 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ *
+ * Measurement variant for the soft-CPU boards (mbv32, arty_a7_vex,
+ * zcu106_vex): the emacZero frame buffers back in the uncached DMA window
+ * after the descriptors, where they were before the D-cache held them, and
+ * Zephyr's RAM grown back over the freed aperture. Use with uncached_bufs.conf.
+ */
+
+&ram0 {
+	reg = <0x90000000 0x0f000000>;
+};
+
+&emz_bufs {
+	reg = <0x9f010000 0xfee000>;
+};

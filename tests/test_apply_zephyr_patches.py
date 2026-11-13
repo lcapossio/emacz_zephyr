@@ -69,3 +69,49 @@ def test_all_zephyr_patches_have_valid_git_syntax():
             text=True,
         )
         assert result.returncode == 0, f"{patch.name}: {result.stderr}"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_stacked_series_on_one_file(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "zephyr"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    target = repo / "drv.c"
+    target.write_text("a\nb\nc\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "drv.c")
+    _git(repo, "commit", "-qm", "base")
+
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    for name, content in (("0001-x.patch", "a\nB\nc\n"), ("0002-y.patch", "a\nB\nC\n")):
+        target.write_text(content, encoding="utf-8", newline="\n")
+        (patch_dir / name).write_text(_git(repo, "diff"), encoding="utf-8", newline="\n")
+        _git(repo, "add", "drv.c")
+    _git(repo, "reset", "-q", "--hard", "HEAD")
+    monkeypatch.setattr(apply_zephyr_patches, "PATCH_DIR", patch_dir)
+    monkeypatch.setattr(apply_zephyr_patches, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["apply", "--zephyr-dir", str(repo)])
+    patches = sorted(patch_dir.glob("*.patch"))
+
+    assert apply_zephyr_patches.series_state(repo, patches) == 0
+    assert apply_zephyr_patches.main() == 0
+    assert target.read_text(encoding="utf-8") == "a\nB\nC\n"
+    assert apply_zephyr_patches.series_state(repo, patches) == 2
+    assert apply_zephyr_patches.main() == 0
+    assert "already applied" in capsys.readouterr().out
+
+    target.write_text("a\nB\nc\n", encoding="utf-8", newline="\n")
+    assert apply_zephyr_patches.series_state(repo, patches) == 1
+    assert apply_zephyr_patches.main() == 0
+    assert target.read_text(encoding="utf-8") == "a\nB\nC\n"
+
+    target.write_text("a\nlocal edit\nC\n", encoding="utf-8", newline="\n")
+    assert apply_zephyr_patches.series_state(repo, patches) is None
+    assert apply_zephyr_patches.main() == 1

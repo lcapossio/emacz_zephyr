@@ -1,16 +1,77 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-rsource "drivers/Kconfig"
+DT_CHOSEN_Z_CONSOLE := zephyr,console
 
 menu "emacz Zephyr app"
 
 config EMACZ_APP_RAW_UART
 	bool "emacz app raw UART status output"
+	depends on SERIAL && $(dt_chosen_enabled,$(DT_CHOSEN_Z_CONSOLE))
 	default y
 	help
-	  Enable the bring-up application's direct UARTLite status prints.
+	  Enable the bring-up application's status prints, polled out on the
+	  console UART.
 	  Disable this for performance tests that must rule out blocking UART
 	  output independently from Zephyr's console and logging settings.
+
+config EMACZ_APP_PAYLOAD_BUF_OFFSET
+	int "Byte offset of the UDP sink and TX benchmark buffers"
+	range 0 3
+	default 0
+	help
+	  Start the buffers the UDP sink receives into and the TX benchmark
+	  sends from this many bytes past a word boundary. A UDP payload
+	  starts 42 bytes into its frame, 2 bytes off a word boundary, and
+	  the minimal libc memcpy copies word by word only when source and
+	  destination share their alignment: 2 lets the socket copies run on
+	  words instead of bytes.
+
+config EMACZ_APP_SINK_THREAD_PRIORITY
+	int "UDP sink thread priority"
+	default -2
+	help
+	  Zephyr priority of the thread that drains the UDP sink socket.
+	  Negative is cooperative: it then runs until its socket is empty,
+	  ahead of the control thread (priority 4) that runs the TX
+	  benchmark. At 4, with time slicing, the two share the CPU.
+
+config EMACZ_APP_THREAD_USAGE
+	bool "Publish per-thread CPU time in the perf stats block"
+	select THREAD_RUNTIME_STATS
+	select THREAD_MONITOR
+	select THREAD_NAME
+	help
+	  Run a high-priority thread that every 50 ms writes the cycles the
+	  driver RX, UDP sink, control, main and system work queue threads and
+	  the idle thread have used into the perf stats block, and refreshes
+	  the MAC and network-stack counters there, which main otherwise does
+	  once a second and not at all while a cooperative RX path holds the
+	  CPU. For measurements: it adds 20 wakeups a second.
+
+config EMACZ_APP_PC_SAMPLE
+	bool "Sample the program counter for scripts/read_pc_samples.py"
+	depends on RISCV
+	depends on $(dt_nodelabel_enabled,emz_pcs)
+	help
+	  Every 1.1 ms, while the host has armed it, record the interrupted
+	  pc and ra into the uncached emz_pcs region (app/perf/pc_sample.conf
+	  and .overlay), for a profile of where the CPU spends its time. The
+	  period rounds up to a whole kernel tick: 10 ms on the MBV, whose
+	  tick rate is 100 Hz. For measurements: it adds a timer interrupt
+	  per sample.
+
+config EMACZ_APP_HOT_TEXT
+	bool "Link the board's profiled hot functions together"
+	default y
+	depends on RISCV
+	help
+	  Place the functions listed in app/boards/<board>_hot_text.ld, if the
+	  board has one, together at the start of .text, so that in a
+	  direct-mapped I-cache they cannot evict each other (other code still
+	  can). scripts/read_pc_samples.py hot-ld generates the list from
+	  profiles, and hot-check reports what an image actually packed. A
+	  list made for older code can cost performance as well as gain it:
+	  regenerate it after large changes.
 
 endmenu

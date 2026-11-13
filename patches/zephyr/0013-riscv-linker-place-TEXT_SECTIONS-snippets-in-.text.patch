@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leonardo Capossio <capossio.leonardo@gmail.com>
+Date: Sun, 1 Nov 2026 12:00:00 +0100
+Subject: [PATCH] riscv: linker: place TEXT_SECTIONS snippets in .text
+
+zephyr_linker_sources(TEXT_SECTIONS ...) had no effect on RISC-V,
+whose linker script never included the snippets file. Include it at the
+start of .text, after __text_region_start and ahead of the catch-all
+input patterns, so that a snippet can gather functions into one place,
+for instance to keep a hot path from conflicting with itself in a small
+direct-mapped instruction cache.
+
+ROM_START can also hold such a list, but it lies before
+__text_region_start, and the stack unwinder and the perf backend reject
+return addresses outside the text region: functions placed there drop
+out of stack traces.
+
+Signed-off-by: Leonardo Capossio <capossio.leonardo@gmail.com>
+---
+ include/zephyr/arch/riscv/common/linker.ld | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/include/zephyr/arch/riscv/common/linker.ld b/include/zephyr/arch/riscv/common/linker.ld
+index c1314e9..a8d5aa6 100644
+--- a/include/zephyr/arch/riscv/common/linker.ld
++++ b/include/zephyr/arch/riscv/common/linker.ld
+@@ -180,6 +180,12 @@ SECTIONS
+ 
+ 		__text_region_start = .;
+ 
++/* Located in generated directory. This file is populated by calling
++ * zephyr_linker_sources(TEXT_SECTIONS ...). Ahead of the catch-all
++ * patterns below, so that it can claim input sections of its own.
++ */
++#include <snippets-text-sections.ld>
++
+ 		*(.text)
+ 		*(".text.*")
+ 		*(.gnu.linkonce.t.*)
+-- 
+2.52.0.windows.1
+

@@ -6,6 +6,7 @@
 
 Usage:
     python hardware/sim/run.py
+    python hardware/sim/run.py axis_elastic_fifo
     python hardware/sim/run.py axis_frame_error_drop
     python hardware/sim/run.py emaczero_rx_burst_backpressure_bug
 """
@@ -34,6 +35,13 @@ class Testbench:
 
 
 TESTBENCHES = {
+    "axis_elastic_fifo": Testbench(
+        tb_file=TB / "tb_axis_elastic_fifo.v",
+        rtl_sources=(
+            HW_RTL / "axis_elastic_fifo.v",
+        ),
+        pass_text="AXIS-ELASTIC-FIFO: ALL TESTS PASSED",
+    ),
     "axis_frame_error_drop": Testbench(
         tb_file=TB / "tb_axis_frame_error_drop.v",
         rtl_sources=(

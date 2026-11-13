@@ -118,7 +118,7 @@
       "domain": "soc_clk",
       "row": 2,
       "col": 3,
-      "lines": ["VexRiscv RV32IMA @ 100 MHz", "16 KiB I$/D$, DYN_TARGET", "DBUS R-slice (100 MHz)"]
+      "lines": ["VexRiscv RV32IMAC @ 100 MHz", "32/16 KiB I$/D$, DYN_TARGET", "DBUS R-slice (100 MHz)"]
     },
     {
       "id": "fcapz_eio",

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Leonardo Capossio - bard0 design
+//
+// Zephyr DTS for Cortex-R5 #0 of the ZCU106's Zynq UltraScale+ PS, running
+// with the emacZero PL shell (hardware/scripts/build_zcu106.py --variant r5)
+// and loaded over JTAG by scripts/load_zynqmp_r5.py.
+//
+//   0x0000_0000  64 MiB of PS DDR4 for Zephyr. The R5 sees its TCMs at
+//                0x0-0x3FFFF instead (lockstep), which the PL cannot reach,
+//                so nothing the DMA touches may live in this window; the app
+//                overlay places those buffers higher in DDR.
+//   0x8000_0000  M_AXI_HPM0_LPD, the PL window (512 MiB): the Ethernet
+//                blocks at 0x8000_0000 + the Vex shells' offsets.
+//
+// The PS block reports UART0_REF and LPD_LSBUS (the TTC) at 99.990005 MHz
+// for the ZCU106 board preset (build log: PS_CLOCKS), the nearest the
+// 33.333 MHz PS reference gets to 100 MHz. The console gets the real value.
+// The TTC driver needs a whole number of cycles per tick, so the timer is
+// given 100 MHz, as on kv260_r5; Zephyr time then runs 100 ppm slow.
+
+/dts-v1/;
+#include <arm/xilinx/zynqmp_rpu.dtsi>
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+
+/ {
+	model = "ZCU106 Cortex-R5 (bard0 emacZero shell)";
+	compatible = "bard0,zcu106-r5", "xlnx,zynqmp-r5";
+
+	sram0: memory@0 {
+		compatible = "mmio-sram";
+		reg = <0x0 DT_SIZE_M(64)>;
+	};
+
+	/* Device memory for the PL; the R5 MPU has no background region */
+	pl_lpd: memory@80000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x80000000 DT_SIZE_M(512)>;
+		zephyr,memory-region = "PL_LPD";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_IO)>;
+	};
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,ocm = &ocm;
+		/* USB-UART interface 0 (CP2108), MIO 18/19 */
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	clock-frequency = <99990005>;
+};
+
+&ttc0 {
+	status = "okay";
+	clock-frequency = <100000000>;
+};

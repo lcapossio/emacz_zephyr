@@ -11,11 +11,11 @@
     <linearGradient id="grad-emaczero" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="50%" stop-color="#B45309"/><stop offset="50%" stop-color="#047857"/></linearGradient>
   </defs>
   <rect width="2692" height="718" fill="#000000" id="_canvas_bg"/>
-  <text x="1210.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MicroBlaze V SoC (81.25 MHz)</text>
+  <text x="1210.0" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">Arty A7-100T MicroBlaze V SoC (100 MHz)</text>
   <rect id="clk100" x="1804" y="74" width="220" height="96" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
   <text x="1914" y="112" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">CLK100MHZ</text>
   <text x="1914" y="127" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">100 MHz</text>
-  <text x="1914" y="142" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">MIG sys_clk_i</text>
+  <text x="1914" y="142" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">sys_clk + MIG</text>
   <rect id="eth_phy" x="44" y="242" width="220" height="96" fill="#B45309" stroke="#FCD34D" stroke-width="1.4" rx="8"/>
   <text x="154" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">DP83848 PHY (off-chip)</text>
   <text x="154" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MII / MDIO</text>
@@ -23,40 +23,40 @@
   <rect id="emaczero" x="396" y="242" width="220" height="96" fill="url(#grad-emaczero)" stroke="#4b5563" stroke-width="1.4" rx="8"/>
   <text x="506" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">emacZero MAC</text>
   <text x="506" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MII 25 MHz</text>
-  <text x="506" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">AXI 81.25 MHz</text>
-  <rect id="axis_rx_stats" x="748" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <text x="506" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">AXI 100 MHz</text>
+  <rect id="axis_rx_stats" x="748" y="242" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="858" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">axis_rx_stream_stats</text>
   <text x="858" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">CSR @ 0x41F00000</text>
   <text x="858" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">TLAST/stall probe</text>
-  <rect id="axi_dma" x="1100" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="axi_dma" x="1100" y="242" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1210" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI DMA @ 0x41E00000</text>
   <text x="1210" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MM2S / S2MM</text>
   <text x="1210" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">SG descriptors on DDR</text>
-  <rect id="ddr_axi" x="1452" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="ddr_axi" x="1452" y="242" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1562" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI SmartConnect</text>
-  <text x="1562" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">data fabric</text>
-  <text x="1562" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">81.25 MHz</text>
+  <text x="1562" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">100 to 81 MHz CDC</text>
+  <text x="1562" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">data fabric</text>
   <rect id="mig" x="1804" y="242" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
   <text x="1914" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">MIG 7-Series</text>
-  <text x="1914" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">S_AXI on ui_clk</text>
+  <text x="1914" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">ui_clk 81.25 MHz</text>
   <text x="1914" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">ui_addn 199.7 MHz</text>
   <rect id="ddr3" x="2156" y="242" width="220" height="96" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
   <text x="2266" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#e2e8f0">DDR3 SDRAM</text>
   <text x="2266" y="295" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">0x90000000..0x9FFFFFFF</text>
   <text x="2266" y="310" text-anchor="middle" font-size="14" font-weight="500" fill="#e2e8f0">Zephyr + buffers</text>
-  <rect id="fcapz_ejtagaxi" x="396" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="fcapz_ejtagaxi" x="396" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="506" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EJTAG-AXI</text>
   <text x="506" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER3</text>
   <text x="506" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">AXI master bridge</text>
-  <rect id="ctrl_axi" x="748" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="ctrl_axi" x="748" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="858" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">AXI-Lite fabric</text>
-  <text x="858" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">81.25 MHz</text>
+  <text x="858" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">100 MHz</text>
   <text x="858" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">CSR fan-out</text>
-  <rect id="mbv" x="1100" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="mbv" x="1100" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1210" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">MicroBlaze V</text>
-  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">RV32IMAC @ 81.25 MHz</text>
+  <text x="1210" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">RV32IMAC @ 100 MHz</text>
   <text x="1210" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">I/D cache over DDR</text>
-  <rect id="fcapz_eio" x="1452" y="410" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="fcapz_eio" x="1452" y="410" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1562" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EIO</text>
   <text x="1562" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER1 ch1</text>
   <text x="1562" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MBV reset ctrl</text>
@@ -64,19 +64,19 @@
   <text x="1914" y="448" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">0x90000000 Zephyr RAM</text>
   <text x="1914" y="463" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">lower 240 MiB</text>
   <text x="1914" y="478" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">0x9F000000 DMA heap</text>
-  <rect id="fcapz_ejtaguart" x="396" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="fcapz_ejtaguart" x="396" y="578" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="506" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz EJTAG-UART</text>
   <text x="506" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER4</text>
   <text x="506" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">console into UARTLite</text>
-  <rect id="peripherals" x="748" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="peripherals" x="748" y="578" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="858" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">UARTLite / Timer</text>
   <text x="858" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">INTC / GPIO</text>
   <text x="858" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">MAC + DMA CSRs</text>
-  <rect id="loader_bram" x="1100" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="loader_bram" x="1100" y="578" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1210" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">BRAM scratch only</text>
   <text x="1210" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">32 KiB LMB</text>
   <text x="1210" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">32 KiB AXI loader</text>
-  <rect id="fcapz_ela" x="1452" y="578" width="220" height="96" fill="#047857" stroke="#6EE7B7" stroke-width="1.4" rx="8"/>
+  <rect id="fcapz_ela" x="1452" y="578" width="220" height="96" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.4" rx="8"/>
   <text x="1562" y="616" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">fcapz ELA</text>
   <text x="1562" y="631" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">BSCANE2 USER1</text>
   <text x="1562" y="646" text-anchor="middle" font-size="14" font-weight="500" fill="#ffffff">signal probes</text>
@@ -131,10 +131,12 @@
   <text x="663.7" y="447.8" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-MM 32b</text>
   <text x="654.9" y="615.8" text-anchor="middle" font-size="15" fill="#e2e8f0">UART RX</text>
   <text x="1406.0" y="478.8" text-anchor="middle" font-size="15" fill="#e2e8f0">reset</text>
-  <rect id="legend_card" x="2436" y="46" width="240" height="94" fill="#0f172a" stroke="#475569" stroke-width="1" rx="6"/>
+  <rect id="legend_card" x="2436" y="46" width="240" height="116" fill="#0f172a" stroke="#475569" stroke-width="1" rx="6"/>
   <text x="2556" y="74" text-anchor="middle" font-size="13" font-weight="700" fill="#e2e8f0" letter-spacing="0.4">Clock domains</text>
-  <rect x="2450" y="86" width="22" height="14" fill="#047857" stroke="#6EE7B7" stroke-width="1.2" rx="2"/>
-  <text x="2482" y="98" font-size="13" fill="#e2e8f0">ddr_ui  81.247969 MHz</text>
-  <rect x="2450" y="108" width="22" height="14" fill="#B45309" stroke="#FCD34D" stroke-width="1.2" rx="2"/>
-  <text x="2482" y="120" font-size="13" fill="#e2e8f0">eth_mii  25 MHz</text>
+  <rect x="2450" y="86" width="22" height="14" fill="#1D4ED8" stroke="#93C5FD" stroke-width="1.2" rx="2"/>
+  <text x="2482" y="98" font-size="13" fill="#e2e8f0">soc_clk  100 MHz</text>
+  <rect x="2450" y="108" width="22" height="14" fill="#047857" stroke="#6EE7B7" stroke-width="1.2" rx="2"/>
+  <text x="2482" y="120" font-size="13" fill="#e2e8f0">ddr_ui  81.247969 MHz</text>
+  <rect x="2450" y="130" width="22" height="14" fill="#B45309" stroke="#FCD34D" stroke-width="1.2" rx="2"/>
+  <text x="2482" y="142" font-size="13" fill="#e2e8f0">eth_mii  25 MHz</text>
 </svg>

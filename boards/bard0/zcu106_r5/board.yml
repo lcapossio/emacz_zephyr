@@ -1,0 +1,6 @@
+board:
+  name: zcu106_r5
+  full_name: ZCU106 Cortex-R5 with the emacZero PL shell
+  vendor: bard0
+  socs:
+    - name: zynqmp_rpu
