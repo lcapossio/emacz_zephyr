@@ -480,7 +480,7 @@ changes the hardware. First, three to that copy path:
 Then four that a profile of the cacheable-buffer builds pointed at
 (`app/perf/pc_sample.*`, below):
 
-- Zero-copy TX (`patches/zephyr/0009`, set in both Arty board confs): with
+- Zero-copy TX (`patches/zephyr/0009`, set in the soft-CPU board confs): with
   the reserved header a whole frame sits in one word-aligned network
   buffer, and MM2S sends it from there. The driver holds the packet until
   MM2S completes it; other frames are still copied.
@@ -535,7 +535,7 @@ around the RX path rather than with noise. The MBV's hot-function list is
 meant to make RX less sensitive to that.
 
 The current defaults, measured three times per load over 20 s each: Arty
-A7 at 100 MHz, caches on, cacheable frame buffers, 1472 B UDP payloads,
+A7 and ZCU106 soft CPUs at 100 MHz, caches on, cacheable frame buffers, 1472 B UDP payloads,
 20 ms RX budget. RX is offered at 90 Mbit/s and counted over the host's
 sending time; TX is unthrottled, and the host received every datagram of
 every run. Each cell gives the median and, where the runs differ, their
@@ -553,14 +553,18 @@ range. Rates in Mbit/s:
 | | 16 KiB I$, no bridge patch | 22.2 (22.12–22.24) | 14.20 | 10.57 | 5.31 / 14.47 |
 | | 16 KiB I$, VexRiscv 1.0.1 (2018) | 30.3 (28.9–30.6) | 16.0 | 12.55 | 7.88 / 15.30 |
 | | 16 KiB I$, RX checksum checked | 22.2 (21.17–22.26) | 13.91 | 10.30 (10.30–10.32) | 5.22 / 13.78 |
+| ZCU106 Vex | default | 35.4 (35.33–35.42) | 23.39 | 20.14 (20.12–20.14) | 13.19 / 15.32 (15.29–15.33) |
+| | RX checksum checked, one run | 29.5 | 23.37 | 19.79 | 11.12 / 15.38 |
+| | uncached frame buffers (the previous default) | 18.0 (17.97–18.05) | 20.67 | 16.11 | 6.59 / 12.28 (11.75–12.30) |
 
-The ZCU106 Vex shell on the current core, same method but with its frame
-buffers still uncached (its app overlay does not yet have the Arty shells'
-cacheable buffers, cache maintenance or zero-copy TX), measured RX 18.0
-(17.97–18.05), TX 20.67, TX while RX takes 3 16.11, and full duplex
-6.59 / 12.28 with 955 Mbit/s offered. RX at 20 Mbit/s offered delivered
-89%. On the same uncached buffers, the 1.0.1 core measured RX 11.7 and
-TX 12.2 (5 s runs, table above).
+The ZCU106 Vex runs the same core and app as the Arty Vex; its full-duplex
+RX is offered at the 941–956 Mbit/s the host's sender reached. Until
+November 2026 its frame buffers stayed in the uncached window, without
+the Arty shells' cache maintenance or zero-copy TX; with them it moved
+level with the Arty Vex: slightly ahead on every load but full-duplex RX,
+which is the same within the spread. On uncached buffers
+it delivered only 89% of a 20 Mbit/s RX load, and the 1.0.1 core had
+measured RX 11.7 and TX 12.2 there (5 s runs, table above).
 
 The full-duplex cells are medians of each direction; across runs they
 spread by up to 0.6 Mbit/s on MBV and 0.7 on Vex. Some rows were measured
@@ -617,18 +621,19 @@ full-duplex RX (8%). The `baf7dc82` rows without compressed instructions
 ran one image and the rows with them another, built from the same source
 with the C extension.
 
-Both defaults deliver 100% of a 20 Mbit/s RX load and pass the board
+The defaults deliver 100% of a 20 Mbit/s RX load and pass the board
 suite. The app does not check UDP checksums on RX
 (`CONFIG_NET_UDP_CHECKSUM=n` in `app/prj.conf`), so the RX figures leave
 that cost out and do not by themselves show that payloads arrive intact.
 `app/perf/udp_rx_checksum.conf` turns the check on; the "RX checksum
 checked" rows above are that build. At 90 Mbit/s offered the boards
-checked 127,674 datagrams on MBV over three runs and 47,924 on the
-current Vex in one, with no checksum error (111,504 over three runs on
+checked 127,674 datagrams on MBV over three runs, 47,924 on the
+current Arty Vex in one and 50,064 on the ZCU106 Vex in one, with no
+checksum error (111,504 over three runs on
 the 16 KiB I-cache Vex); the check costs 18% of RX on both CPUs. With the
 check on and a payload that changes on every packet
 (`run_udp_accounting.py --vary-payload`), the current Vex delivered 100%
-of 60 s at 5 and 8 Mbit/s, as MBV and the 1.0.1 Vex did before. Without the DMA driver's cache maintenance
+of 60 s at 5 and 8 Mbit/s on both boards, as MBV and the 1.0.1 Vex did before. Without the DMA driver's cache maintenance
 (`MANUAL_CACHE_COHERENCY=n`), the Vex image fails to provision.
 
 On TX the board numbers each datagram, big-endian at the start of its
