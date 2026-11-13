@@ -29,9 +29,8 @@ in the PL or on the Zynq UltraScale+ PS's Cortex-R5 (see [ZCU106](#zcu106)).
   DYNAMIC_TARGET branch predictor, earlyBranch, R-slice on DBUS). Same
   emacZero MAC and Zephyr app on both.
 - AMD ZCU106 shells, 1000BASE-X on SFP0: the Vex CPU complex in the PL
-  (`zcu106_vex`) or Cortex-R5 #0 in the PS (`zcu106_r5`). Both passed the
-  board suite; `zcu106_vex` did so on the VexRiscv 1.0.1 core, and its
-  build on the current core is not yet tested on the board.
+  (`zcu106_vex`) or Cortex-R5 #0 in the PS (`zcu106_r5`). Both pass the
+  board suite.
 - AXI DMA RX through Zephyr's DMA API (upstream Xilinx AXI DMA driver),
   with error recovery and zero-copy handoff to the Zephyr stack and
   a copy fallback under overload.
@@ -273,9 +272,8 @@ its CDC crosses to the transceiver's 125 MHz `userclk2`.
 `hardware/scripts/build_zcu106.py` builds either shell, and for both a Zynq
 MP FSBL that sets up the PS before anything is loaded.
 
-Both shells meet timing and passed the whole board suite (below), `zcu106_vex`
-on the VexRiscv 1.0.1 core (its build on the current core meets timing but
-has not run on the board), on a ZCU106 whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
+Both shells meet timing and pass the whole board suite (below) on a ZCU106
+whose SFP0 links to a 1 Gbit/s host NIC: boot, provisioning, RX accounting
 with every datagram delivered, DMA error recovery and TX. Each shell needs
 its own MAC address when they share a segment with an Arty (`--mac`;
 the overlays use `02:00:00:00:00:02` for Vex and `:03` for the R5).
@@ -555,6 +553,14 @@ range. Rates in Mbit/s:
 | | 16 KiB I$, no bridge patch | 22.2 (22.12–22.24) | 14.20 | 10.57 | 5.31 / 14.47 |
 | | 16 KiB I$, VexRiscv 1.0.1 (2018) | 30.3 (28.9–30.6) | 16.0 | 12.55 | 7.88 / 15.30 |
 | | 16 KiB I$, RX checksum checked | 22.2 (21.17–22.26) | 13.91 | 10.30 (10.30–10.32) | 5.22 / 13.78 |
+
+The ZCU106 Vex shell on the current core, same method but with its frame
+buffers still uncached (its app overlay does not yet have the Arty shells'
+cacheable buffers, cache maintenance or zero-copy TX), measured RX 18.0
+(17.97–18.05), TX 20.67, TX while RX takes 3 16.11, and full duplex
+6.59 / 12.28 with 955 Mbit/s offered. RX at 20 Mbit/s offered delivered
+89%. On the same uncached buffers, the 1.0.1 core measured RX 11.7 and
+TX 12.2 (5 s runs, table above).
 
 The full-duplex cells are medians of each direction; across runs they
 spread by up to 0.6 Mbit/s on MBV and 0.7 on Vex. Some rows were measured
